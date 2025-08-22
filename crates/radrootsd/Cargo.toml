@@ -10,6 +10,7 @@ description = "Radroots local runtime daemon for storage, sync, and relay publis
 [dependencies]
 radroots-core = { workspace = true, features = ["std", "serde", "typeshare"] }
 radroots-events = { workspace = true, features = ["serde"] }
+radroots-events-codec = { workspace = true, features = ["nostr"] }
 radroots-runtime = { workspace = true, features = ["cli"] }
 
 anyhow = { workspace = true }
@@ -23,3 +24,4 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 tracing = { workspace = true }
+uuid = { workspace = true, features = ["v4"] }

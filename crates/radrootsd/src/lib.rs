@@ -3,6 +3,7 @@ pub mod config;
 pub mod infra {
     pub mod nostr;
 }
+pub mod identity;
 pub mod radrootsd;
 pub mod rpc;
 pub mod utils;
@@ -12,10 +13,12 @@ use anyhow::Result;
 pub use cli::Args as cli_args;
 use tracing::info;
 
-use crate::radrootsd::Radrootsd;
+use crate::{identity::Identity, radrootsd::Radrootsd};
 
-pub async fn run_radrootsd(settings: &config::Settings) -> Result<()> {
-    let keys = nostr::Keys::generate();
+pub async fn run_radrootsd(settings: &config::Settings, args: &cli_args) -> Result<()> {
+    let store = Identity::load_or_generate(args.identity.as_ref(), args.allow_generate_identity)?;
+    let keys = store.value.to_keys()?;
+
     let radrootsd = Radrootsd::new(keys, settings.metadata.clone());
 
     for relay in settings.config.relays.iter() {

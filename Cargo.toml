@@ -13,6 +13,7 @@ license = "AGPL-3.0-or-later"
 [workspace.dependencies]
 radroots-core = { path = "../../crates/crates/core" }
 radroots-events = { path = "../../crates/crates/events" }
+radroots-events-codec = { path = "../../crates/crates/events-codec" }
 radroots-runtime = { path = "../../crates/crates/runtime" }
 
 anyhow = { version = "1" }
@@ -26,3 +27,4 @@ serde_json = { version = "1", default-features = false }
 tokio = { version = "1" }
 thiserror = { version = "1" }
 tracing = { version = "0.1" }
+uuid = { version = "1.16.0" }
