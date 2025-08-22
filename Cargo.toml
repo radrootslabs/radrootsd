@@ -11,6 +11,8 @@ rust-version = "1.86.0"
 license = "AGPL-3.0-or-later"
 
 [workspace.dependencies]
+radroots-core = { path = "../../crates/crates/core" }
+radroots-events = { path = "../../crates/crates/events" }
 radroots-runtime = { path = "../../crates/crates/runtime" }
 
 anyhow = { version = "1" }
@@ -18,6 +20,7 @@ clap = { version = "4" }
 jsonrpsee = { version = "0.26" }
 nostr = { version = "0.43.0", features = ["nip04"] }
 nostr-sdk = { version = "0.43.0" }
+reqwest = { version = "0.12" }
 serde = { version = "1", default-features = false }
 serde_json = { version = "1", default-features = false }
 tokio = { version = "1" }

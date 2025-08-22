@@ -5,6 +5,7 @@ pub mod infra {
 }
 pub mod radrootsd;
 pub mod rpc;
+pub mod utils;
 
 use anyhow::Result;
 

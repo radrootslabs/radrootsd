@@ -8,6 +8,8 @@ license.workspace = true
 description = "Radroots local runtime daemon for storage, sync, and relay publishing"
 
 [dependencies]
+radroots-core = { workspace = true, features = ["std", "serde", "typeshare"] }
+radroots-events = { workspace = true, features = ["serde"] }
 radroots-runtime = { workspace = true, features = ["cli"] }
 
 anyhow = { workspace = true }
@@ -15,6 +17,7 @@ clap = { workspace = true, features = ["derive"]}
 jsonrpsee = { workspace = true, features = ["server"]  }
 nostr = { workspace = true }
 nostr-sdk = { workspace = true }
+reqwest = { workspace = true, features = ["json"]  }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
