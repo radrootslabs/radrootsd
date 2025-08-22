@@ -1,0 +1,11 @@
+[package]
+name = "radrootsd"
+description = "Radroots local runtime daemon for storage, sync, and relay publishing"
+version.workspace = true
+edition.workspace = true
+authors = ["Radroots Authors"]
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+tokio = { workspace = true, features = ["full"] }

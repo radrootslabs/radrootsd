@@ -1,0 +1,38 @@
+/target
+
+# Debug
+logs/
+
+# Local env files
+.env
+.env.*
+!.env.example
+!.env.test
+
+# OS
+.DS_Store
+Thumbs.db
+
+# secrets
+*.pem
+*.crt
+*.key
+*.pem
+
+# local
+.tmp*
+.archive*
+.local*
+.vscode
+notes*.txt
+notes*.md
+notes*.json
+tree*.txt
+git-diff*.txt
+prompt*.txt
+tree*.txt
+justfile
+
+# dev
+*dev*.toml
+*dev*.json
