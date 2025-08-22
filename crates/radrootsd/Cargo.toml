@@ -1,11 +1,22 @@
 [package]
 name = "radrootsd"
-description = "Radroots local runtime daemon for storage, sync, and relay publishing"
 version.workspace = true
 edition.workspace = true
 authors = ["Radroots Authors"]
 rust-version.workspace = true
 license.workspace = true
+description = "Radroots local runtime daemon for storage, sync, and relay publishing"
 
 [dependencies]
+radroots-runtime = { workspace = true, features = ["cli"] }
+
+anyhow = { workspace = true }
+clap = { workspace = true, features = ["derive"]}
+jsonrpsee = { workspace = true, features = ["server"]  }
+nostr = { workspace = true }
+nostr-sdk = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
+tracing = { workspace = true }

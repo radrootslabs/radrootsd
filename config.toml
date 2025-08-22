@@ -1,0 +1,17 @@
+[metadata]
+name = "radrootsd"
+# display_name = ""
+# about = ""
+# picture = ""
+# banner = ""
+# banner = ""
+# nip05 = ""
+# lud06 = ""
+# lud16 = ""
+
+[config]
+logs_dir = "logs"
+rpc_addr = "127.0.0.1:7070"
+relays = [
+  "ws://127.0.0.1:21648"
+]
