@@ -2,7 +2,6 @@ use std::time::Duration;
 
 use anyhow::Result;
 use jsonrpsee::RpcModule;
-use nostr::nips::nip19::ToBech32;
 use serde::Deserialize;
 use serde_json::{Value as JsonValue, json};
 
@@ -12,7 +11,9 @@ use crate::rpc::RpcError;
 use radroots_events::profile::models::RadrootsProfile;
 use radroots_events_codec::profile::encode::to_metadata;
 
-use nostr_sdk::prelude::EventBuilder;
+use radroots_nostr::prelude::{
+    build_metadata_event, fetch_latest_metadata_for_author, nostr_send_event, npub_string,
+};
 
 #[derive(Debug, Deserialize)]
 struct PublishProfileParams {
@@ -27,49 +28,14 @@ pub fn module(radrootsd: Radrootsd) -> Result<RpcModule<Radrootsd>> {
             return Err(RpcError::NoRelays);
         }
 
-        let ctx_pk = ctx.pubkey;
+        let me_pk = ctx.pubkey;
 
-        let filter = nostr::Filter::new()
-            .authors(vec![ctx_pk])
-            .kind(nostr::Kind::Metadata);
-
-        let stored = ctx
-            .client
-            .database()
-            .query(filter.clone())
+        let latest = fetch_latest_metadata_for_author(&ctx.client, me_pk, Duration::from_secs(10))
             .await
-            .map_err(|e| RpcError::Other(format!("database query failed: {e}")))?;
-        let fetched = ctx
-            .client
-            .fetch_events(filter, Duration::from_secs(10))
-            .await
-            .map_err(|e| RpcError::Other(format!("network fetch failed: {e}")))?;
+            .map_err(|e| RpcError::Other(format!("metadata fetch failed: {e}")))?;
 
-        let mut latest: Option<nostr::Event> = None;
-
-        let mut consider = |ev: nostr::Event| {
-            if ev.kind != nostr::Kind::Metadata {
-                return;
-            }
-            if let Some(cur) = &latest {
-                if ev.created_at > cur.created_at {
-                    latest = Some(ev);
-                }
-            } else {
-                latest = Some(ev);
-            }
-        };
-
-        for ev in stored.into_iter() {
-            consider(ev);
-        }
-        for ev in fetched.into_iter() {
-            consider(ev);
-        }
-
-        let ctx_npub = ctx_pk
-            .to_bech32()
-            .map_err(|e| RpcError::Other(format!("bech32 encode failed: {e}")))?;
+        let npub =
+            npub_string(&me_pk).ok_or_else(|| RpcError::Other("bech32 encode failed".into()))?;
 
         let row = if let Some(ev) = latest {
             let parsed: Option<serde_json::Value> = serde_json::from_str(&ev.content).ok();
@@ -77,8 +43,8 @@ pub fn module(radrootsd: Radrootsd) -> Result<RpcModule<Radrootsd>> {
                 serde_json::from_str(&ev.content).ok();
 
             json!({
-                "author_hex": ctx_pk.to_string(),
-                "author_npub": ctx_npub,
+                "author_hex": me_pk.to_string(),
+                "author_npub": npub,
                 "event_id": ev.id.to_string(),
                 "created_at": ev.created_at.as_u64(),
                 "content": ev.content,
@@ -87,8 +53,8 @@ pub fn module(radrootsd: Radrootsd) -> Result<RpcModule<Radrootsd>> {
             })
         } else {
             json!({
-                "author_hex": ctx_pk.to_string(),
-                "author_npub": ctx_npub,
+                "author_hex": me_pk.to_string(),
+                "author_npub": npub,
                 "event_id": null,
                 "created_at": null,
                 "content": null,
@@ -111,12 +77,9 @@ pub fn module(radrootsd: Radrootsd) -> Result<RpcModule<Radrootsd>> {
             .map_err(|e| RpcError::InvalidParams(e.to_string()))?;
 
         let metadata = to_metadata(&profile).map_err(|e| RpcError::InvalidParams(e.to_string()))?;
+        let builder = build_metadata_event(&metadata);
 
-        let builder = EventBuilder::metadata(&metadata);
-
-        let output = ctx
-            .client
-            .send_event_builder(builder)
+        let output = nostr_send_event(&ctx.client, builder)
             .await
             .map_err(|e| RpcError::Other(format!("failed to publish metadata: {e}")))?;
 

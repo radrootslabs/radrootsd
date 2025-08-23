@@ -3,9 +3,10 @@ use jsonrpsee::RpcModule;
 use serde::Deserialize;
 use serde_json::{Value as JsonValue, json};
 
-use crate::infra::nostr::fetch_nip11;
 use crate::radrootsd::Radrootsd;
 use crate::rpc::RpcError;
+
+use radroots_nostr::prelude::{add_relay, connect, fetch_nip11, remove_relay};
 
 #[derive(Debug, Deserialize)]
 struct AddParams {
@@ -30,8 +31,7 @@ pub fn module(radrootsd: Radrootsd) -> Result<RpcModule<Radrootsd>> {
         let AddParams { url } = params
             .parse()
             .map_err(|e| RpcError::InvalidParams(e.to_string()))?;
-        ctx.client
-            .add_relay(&url)
+        add_relay(&ctx.client, &url)
             .await
             .map_err(|e| RpcError::AddRelay(url.clone(), e.to_string()))?;
 
@@ -43,8 +43,7 @@ pub fn module(radrootsd: Radrootsd) -> Result<RpcModule<Radrootsd>> {
             .parse()
             .map_err(|e| RpcError::InvalidParams(e.to_string()))?;
 
-        ctx.client
-            .force_remove_relay(&url)
+        remove_relay(&ctx.client, &url)
             .await
             .map_err(|e| RpcError::Other(format!("failed to remove relay {url}: {e}")))?;
 
@@ -109,7 +108,7 @@ pub fn module(radrootsd: Radrootsd) -> Result<RpcModule<Radrootsd>> {
             return Err(RpcError::NoRelays);
         }
         let client = ctx.client.clone();
-        tokio::spawn(async move { client.connect().await });
+        tokio::spawn(async move { connect(&client).await });
 
         Ok::<JsonValue, RpcError>(json!({ "connecting": relays.len() }))
     })?;

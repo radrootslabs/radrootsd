@@ -1,12 +1,8 @@
 pub mod cli;
 pub mod config;
-pub mod infra {
-    pub mod nostr;
-}
 pub mod identity;
 pub mod radrootsd;
 pub mod rpc;
-pub mod utils;
 
 use anyhow::Result;
 
