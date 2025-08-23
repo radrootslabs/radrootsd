@@ -19,7 +19,22 @@ pub fn module(radrootsd: Radrootsd) -> Result<RpcModule<Radrootsd>> {
     })?;
 
     m.register_method("system.help", |_p, _ctx, _| {
-        vec!["system.ping", "system.get_info", "system.help"]
+        vec![
+            /* %% radrootsd-methods %% */
+            "system.get_info",
+            "system.help",
+            "system.ping",
+            "events.note.list",
+            "events.note.publish",
+            "events.profile.list",
+            "events.profile.publish",
+            "relays.add",
+            "relays.connect",
+            "relays.list",
+            "relays.remove",
+            "relays.status",
+            /* %% radrootsd-methods %% */
+        ]
     })?;
 
     Ok(m)
