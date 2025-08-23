@@ -22,7 +22,7 @@ clap = { version = "4" }
 jsonrpsee = { version = "0.26" }
 nostr = { version = "0.43.0", features = ["nip04"] }
 nostr-sdk = { version = "0.43.0" }
-reqwest = { version = "0.12" }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 serde = { version = "1", default-features = false }
 serde_json = { version = "1", default-features = false }
 tokio = { version = "1" }
