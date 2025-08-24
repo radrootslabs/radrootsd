@@ -12,8 +12,11 @@ use tracing::info;
 use crate::{identity::Identity, radrootsd::Radrootsd};
 
 pub async fn run_radrootsd(settings: &config::Settings, args: &cli_args) -> Result<()> {
-    let store = Identity::load_or_generate(args.identity.as_ref(), args.allow_generate_identity)?;
-    let keys = store.value.to_keys()?;
+    let identity = radroots_identity::load_or_generate::<Identity, _>(
+        args.identity.as_ref(),
+        args.allow_generate_identity,
+    )?;
+    let keys = radroots_identity::to_keys(&identity.value)?;
 
     let radrootsd = Radrootsd::new(keys, settings.metadata.clone());
 

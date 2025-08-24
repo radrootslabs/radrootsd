@@ -1780,6 +1780,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "radroots-identity"
+version = "0.1.0"
+dependencies = [
+ "nostr",
+ "radroots-runtime",
+ "serde",
+ "thiserror 1.0.69",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "radroots-nostr"
 version = "0.1.0"
 dependencies = [
@@ -1823,6 +1835,7 @@ dependencies = [
  "radroots-core",
  "radroots-events",
  "radroots-events-codec",
+ "radroots-identity",
  "radroots-nostr",
  "radroots-runtime",
  "reqwest",
@@ -2877,6 +2890,7 @@ checksum = "f33196643e165781c20a5ead5582283a7dacbb87855d867fbc2df3f81eddc1be"
 dependencies = [
  "getrandom 0.3.3",
  "js-sys",
+ "serde",
  "wasm-bindgen",
 ]
 

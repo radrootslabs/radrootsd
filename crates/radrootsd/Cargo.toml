@@ -11,6 +11,7 @@ description = "Radroots local runtime daemon for storage, sync, and relay publis
 radroots-core = { workspace = true, features = ["std", "serde", "typeshare"] }
 radroots-events = { workspace = true, features = ["serde"] }
 radroots-events-codec = { workspace = true, features = ["nostr"] }
+radroots-identity = { workspace = true }
 radroots-nostr = { workspace = true, features = ["sdk", "codec", "http"] }
 radroots-runtime = { workspace = true, features = ["cli"] }
 

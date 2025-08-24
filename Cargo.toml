@@ -14,6 +14,7 @@ license = "AGPL-3.0-or-later"
 radroots-core = { path = "../../crates/crates/core" }
 radroots-events = { path = "../../crates/crates/events" }
 radroots-events-codec = { path = "../../crates/crates/events-codec" }
+radroots-identity = { path = "../../crates/crates/identity" }
 radroots-nostr = { path = "../../crates/crates/nostr" }
 radroots-runtime = { path = "../../crates/crates/runtime" }
 radroots-trade = { path = "../../crates/crates/trade" }
