@@ -20,6 +20,7 @@ pub async fn start_rpc(radrootsd: Radrootsd, addr: SocketAddr) -> Result<ServerH
     root.merge(relays::module(radrootsd.clone())?)?;
     root.merge(events::profile::module(radrootsd.clone())?)?;
     root.merge(events::note::module(radrootsd.clone())?)?;
+    root.merge(events::listing::module(radrootsd.clone())?)?;
 
     let handle = server.start(root);
     Ok(handle)

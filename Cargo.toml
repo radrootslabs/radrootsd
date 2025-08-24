@@ -16,6 +16,7 @@ radroots-events = { path = "../../crates/crates/events" }
 radroots-events-codec = { path = "../../crates/crates/events-codec" }
 radroots-nostr = { path = "../../crates/crates/nostr" }
 radroots-runtime = { path = "../../crates/crates/runtime" }
+radroots-trade = { path = "../../crates/crates/trade" }
 
 anyhow = { version = "1" }
 clap = { version = "4" }

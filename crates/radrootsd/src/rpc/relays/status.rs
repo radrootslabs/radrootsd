@@ -27,7 +27,6 @@ pub fn register(m: &mut RpcModule<Radrootsd>) -> Result<()> {
             let status_str = format!("{}", relay.status());
             let parsed = reqwest::Url::parse(&url_str).ok();
 
-            // Build with locals; only insert present fields.
             let mut row = JsonMap::new();
             row.insert("url".into(), json!(url_str));
             row.insert("status".into(), json!(status_str));

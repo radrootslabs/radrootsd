@@ -24,6 +24,8 @@ pub fn module(radrootsd: Radrootsd) -> Result<RpcModule<Radrootsd>> {
             "system.get_info",
             "system.help",
             "system.ping",
+            "events.listing.list",
+            "events.listing.publish",
             "events.note.list",
             "events.note.publish",
             "events.profile.list",

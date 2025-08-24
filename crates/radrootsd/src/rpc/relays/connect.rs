@@ -27,7 +27,6 @@ pub fn register(m: &mut RpcModule<Radrootsd>) -> Result<()> {
             }
         }
 
-        // Idempotent: only spawn if we have anything not connected/connecting
         let need_connect = disconnected > 0;
         if need_connect {
             let client = ctx.client.clone();
