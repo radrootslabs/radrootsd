@@ -4,7 +4,10 @@ use serde_json::{Value as JsonValue, json};
 use std::time::Duration;
 
 use crate::{radrootsd::Radrootsd, rpc::RpcError};
-use radroots_nostr::prelude::{fetch_metadata_for_author, npub_string};
+use radroots_nostr::prelude::{
+    radroots_nostr_fetch_metadata_for_author,
+    radroots_nostr_npub_string,
+};
 
 pub fn register(m: &mut RpcModule<Radrootsd>) -> Result<()> {
     m.register_async_method("events.profile.list", |_params, ctx, _| async move {
@@ -14,16 +17,16 @@ pub fn register(m: &mut RpcModule<Radrootsd>) -> Result<()> {
 
         let me_pk = ctx.pubkey;
 
-        let latest = fetch_metadata_for_author(&ctx.client, me_pk, Duration::from_secs(10))
+        let latest = radroots_nostr_fetch_metadata_for_author(&ctx.client, me_pk, Duration::from_secs(10))
             .await
             .map_err(|e| RpcError::Other(format!("metadata fetch failed: {e}")))?;
 
-        let npub =
-            npub_string(&me_pk).ok_or_else(|| RpcError::Other("bech32 encode failed".into()))?;
+        let npub = radroots_nostr_npub_string(&me_pk)
+            .ok_or_else(|| RpcError::Other("bech32 encode failed".into()))?;
 
         let row = if let Some(ev) = latest {
             let parsed: Option<serde_json::Value> = serde_json::from_str(&ev.content).ok();
-            let profile: Option<radroots_events::profile::models::RadrootsProfile> =
+            let profile: Option<radroots_events::profile::RadrootsProfile> =
                 serde_json::from_str(&ev.content).ok();
 
             json!({

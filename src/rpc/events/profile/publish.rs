@@ -5,9 +5,12 @@ use serde_json::{Value as JsonValue, json};
 
 use crate::{radrootsd::Radrootsd, rpc::RpcError};
 
-use radroots_events::profile::models::RadrootsProfile;
+use radroots_events::profile::RadrootsProfile;
 use radroots_events_codec::profile::encode::to_metadata;
-use radroots_nostr::prelude::{build_metadata_event, nostr_send_event};
+use radroots_nostr::prelude::{
+    radroots_nostr_build_metadata_event,
+    radroots_nostr_send_event,
+};
 
 #[derive(Debug, Deserialize)]
 struct PublishProfileParams {
@@ -26,9 +29,9 @@ pub fn register(m: &mut RpcModule<Radrootsd>) -> Result<()> {
             .map_err(|e| RpcError::InvalidParams(e.to_string()))?;
 
         let metadata = to_metadata(&profile).map_err(|e| RpcError::InvalidParams(e.to_string()))?;
-        let builder = build_metadata_event(&metadata);
+        let builder = radroots_nostr_build_metadata_event(&metadata);
 
-        let output = nostr_send_event(&ctx.client, builder)
+        let output = radroots_nostr_send_event(&ctx.client, builder)
             .await
             .map_err(|e| RpcError::Other(format!("failed to publish metadata: {e}")))?;
 

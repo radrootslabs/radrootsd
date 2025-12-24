@@ -4,8 +4,9 @@ use serde::Deserialize;
 use serde_json::{Value as JsonValue, json};
 
 use crate::{radrootsd::Radrootsd, rpc::RpcError};
-use radroots_events::listing::models::RadrootsListing;
-use radroots_nostr::prelude::{build_nostr_event, nostr_send_event};
+use radroots_events::listing::RadrootsListing;
+use radroots_nostr::prelude::{radroots_nostr_build_event, radroots_nostr_send_event};
+use radroots_trade::listing::codec::listing_tags_build;
 
 #[derive(Debug, Deserialize)]
 struct PublishListingParams {
@@ -25,10 +26,15 @@ pub fn register(m: &mut RpcModule<Radrootsd>) -> Result<()> {
 
         let content = serde_json::to_string(&listing)
             .map_err(|e| RpcError::InvalidParams(format!("invalid listing json: {e}")))?;
-        let builder = build_nostr_event(30402, content, tags.unwrap_or_default())
+        let mut tag_slices = listing_tags_build(&listing)
+            .map_err(|e| RpcError::InvalidParams(format!("invalid listing tags: {e}")))?;
+        if let Some(extra_tags) = tags {
+            tag_slices.extend(extra_tags);
+        }
+        let builder = radroots_nostr_build_event(30402, content, tag_slices)
             .map_err(|e| RpcError::Other(format!("failed to build listing event: {e}")))?;
 
-        let out = nostr_send_event(&ctx.client, builder)
+        let out = radroots_nostr_send_event(&ctx.client, builder)
             .await
             .map_err(|e| RpcError::Other(format!("failed to publish listing: {e}")))?;
 

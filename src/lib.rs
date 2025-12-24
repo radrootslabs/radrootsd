@@ -1,6 +1,5 @@
 pub mod cli;
 pub mod config;
-pub mod identity;
 pub mod radrootsd;
 pub mod rpc;
 
@@ -9,14 +8,15 @@ use anyhow::Result;
 pub use cli::Args as cli_args;
 use tracing::info;
 
-use crate::{identity::Identity, radrootsd::Radrootsd};
+use crate::radrootsd::Radrootsd;
+use radroots_identity::RadrootsIdentity;
 
 pub async fn run_radrootsd(settings: &config::Settings, args: &cli_args) -> Result<()> {
-    let identity = radroots_identity::load_or_generate::<Identity, _>(
+    let identity = RadrootsIdentity::load_or_generate(
         args.identity.as_ref(),
         args.allow_generate_identity,
     )?;
-    let keys = radroots_identity::to_keys(&identity.value)?;
+    let keys = identity.into_keys();
 
     let radrootsd = Radrootsd::new(keys, settings.metadata.clone());
 

@@ -5,11 +5,14 @@ use serde_json::{Value as JsonValue, json};
 use std::time::Duration;
 
 use crate::{radrootsd::Radrootsd, rpc::RpcError};
-use nostr::{Kind, filter::Filter};
-use radroots_nostr::prelude::parse_pubkeys;
+use radroots_nostr::prelude::{
+    radroots_nostr_parse_pubkeys,
+    RadrootsNostrFilter,
+    RadrootsNostrKind,
+};
 
 #[derive(Debug, Default, Deserialize)]
-struct ListNotesParams {
+struct ListProfilesParams {
     #[serde(default)]
     authors: Option<Vec<String>>,
     #[serde(default)]
@@ -17,19 +20,19 @@ struct ListNotesParams {
 }
 
 pub fn register(m: &mut RpcModule<Radrootsd>) -> Result<()> {
-    m.register_async_method("events.note.list", |params, ctx, _| async move {
+    m.register_async_method("events.post.list", |params, ctx, _| async move {
         if ctx.client.relays().await.is_empty() {
             return Err(RpcError::NoRelays);
         }
 
-        let ListNotesParams { authors, limit } = params.parse().unwrap_or_default();
+        let ListProfilesParams { authors, limit } = params.parse().unwrap_or_default();
         let limit = limit.unwrap_or(50);
 
-        let mut filter = Filter::new()
-            .kind(Kind::TextNote)
+        let mut filter = RadrootsNostrFilter::new()
+            .kind(RadrootsNostrKind::TextNote)
             .limit(limit.try_into().unwrap());
         if let Some(auths) = authors {
-            let pks = parse_pubkeys(&auths)
+            let pks = radroots_nostr_parse_pubkeys(&auths)
                 .map_err(|e| RpcError::InvalidParams(format!("invalid author: {e}")))?;
             filter = filter.authors(pks);
         } else {
@@ -59,7 +62,7 @@ pub fn register(m: &mut RpcModule<Radrootsd>) -> Result<()> {
             })
             .collect();
 
-        Ok::<JsonValue, RpcError>(json!({ "notes": items }))
+        Ok::<JsonValue, RpcError>(json!({ "Profiles": items }))
     })?;
 
     Ok(())

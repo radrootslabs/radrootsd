@@ -5,8 +5,12 @@ use serde_json::{Value as JsonValue, json};
 use std::time::Duration;
 
 use crate::{radrootsd::Radrootsd, rpc::RpcError};
-use nostr::{Kind, filter::Filter};
-use radroots_nostr::prelude::parse_pubkeys;
+use radroots_nostr::prelude::{
+    radroots_nostr_parse_pubkeys,
+    RadrootsNostrFilter,
+    RadrootsNostrKind,
+};
+use radroots_trade::listing::codec::listing_from_event_parts;
 
 #[derive(Debug, Default, Deserialize)]
 struct ListListingParams {
@@ -25,17 +29,17 @@ pub fn register(m: &mut RpcModule<Radrootsd>) -> Result<()> {
         let ListListingParams { authors, limit } = params.parse().unwrap_or_default();
         let limit = limit.unwrap_or(50).min(1000);
 
-        let mut filter = Filter::new().limit((limit as u16).into());
+        let mut filter = RadrootsNostrFilter::new().limit((limit as u16).into());
 
         let kinds: Vec<u32> = vec![30402];
         let kinds_conv = kinds
             .into_iter()
-            .map(|k| Kind::Custom(k as u16))
+            .map(|k| RadrootsNostrKind::Custom(k as u16))
             .collect::<Vec<_>>();
         filter = filter.kinds(kinds_conv);
 
         if let Some(auths) = authors {
-            let pks = parse_pubkeys(&auths)
+            let pks = radroots_nostr_parse_pubkeys(&auths)
                 .map_err(|e| RpcError::InvalidParams(format!("invalid author: {e}")))?;
             filter = filter.authors(pks);
         } else {
@@ -53,10 +57,7 @@ pub fn register(m: &mut RpcModule<Radrootsd>) -> Result<()> {
             .map(|ev| {
                 let tags: Vec<Vec<String>> =
                     ev.tags.iter().map(|t| t.as_slice().to_vec()).collect();
-                let listing = serde_json::from_str::<
-                    radroots_events::listing::models::RadrootsListing,
-                >(&ev.content)
-                .ok();
+                let listing = listing_from_event_parts(&tags, &ev.content).ok();
 
                 json!({
                     "id": ev.id.to_string(),

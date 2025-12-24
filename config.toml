@@ -13,5 +13,5 @@ name = "radrootsd"
 logs_dir = "logs"
 rpc_addr = "127.0.0.1:7070"
 relays = [
-  "ws://127.0.0.1:21648"
+  "ws://127.0.0.1:8080"
 ]

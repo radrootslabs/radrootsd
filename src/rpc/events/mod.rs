@@ -1,3 +1,3 @@
 pub mod listing;
-pub mod note;
+pub mod post;
 pub mod profile;

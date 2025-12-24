@@ -1,6 +1,6 @@
 use anyhow::Result;
 use jsonrpsee::RpcModule;
-use radroots_nostr::prelude::add_relay;
+use radroots_nostr::prelude::radroots_nostr_add_relay;
 use serde::Deserialize;
 use serde_json::{Value as JsonValue, json};
 
@@ -18,7 +18,7 @@ pub fn register(m: &mut RpcModule<Radrootsd>) -> Result<()> {
             .parse()
             .map_err(|e| RpcError::InvalidParams(e.to_string()))?;
 
-        add_relay(&ctx.client, &url)
+        radroots_nostr_add_relay(&ctx.client, &url)
             .await
             .map_err(|e| RpcError::AddRelay(url.clone(), e.to_string()))?;
 

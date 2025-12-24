@@ -4,23 +4,23 @@ use serde::Deserialize;
 use serde_json::{Value as JsonValue, json};
 
 use crate::{radrootsd::Radrootsd, rpc::RpcError};
-use radroots_nostr::prelude::{build_nostr_event, nostr_send_event};
+use radroots_nostr::prelude::{radroots_nostr_build_event, radroots_nostr_send_event};
 
 #[derive(Debug, Deserialize)]
-struct PublishNoteParams {
+struct PublishProfileParams {
     content: String,
     #[serde(default)]
     tags: Option<Vec<Vec<String>>>,
 }
 
 pub fn register(m: &mut RpcModule<Radrootsd>) -> Result<()> {
-    m.register_async_method("events.note.publish", |params, ctx, _| async move {
+    m.register_async_method("events.post.publish", |params, ctx, _| async move {
         let relays = ctx.client.relays().await;
         if relays.is_empty() {
             return Err(RpcError::NoRelays);
         }
 
-        let PublishNoteParams { content, tags } = params
+        let PublishProfileParams { content, tags } = params
             .parse()
             .map_err(|e| RpcError::InvalidParams(e.to_string()))?;
 
@@ -28,10 +28,10 @@ pub fn register(m: &mut RpcModule<Radrootsd>) -> Result<()> {
             return Err(RpcError::InvalidParams("content must not be empty".into()));
         }
 
-        let builder = build_nostr_event(1, content, tags.unwrap_or_default())
+        let builder = radroots_nostr_build_event(1, content, tags.unwrap_or_default())
             .map_err(|e| RpcError::Other(format!("failed to build note: {e}")))?;
 
-        let output = nostr_send_event(&ctx.client, builder)
+        let output = radroots_nostr_send_event(&ctx.client, builder)
             .await
             .map_err(|e| RpcError::Other(format!("failed to publish note: {e}")))?;
 

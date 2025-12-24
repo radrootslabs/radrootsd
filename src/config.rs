@@ -1,3 +1,4 @@
+use radroots_nostr::prelude::RadrootsNostrMetadata;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -9,6 +10,6 @@ pub struct Configuration {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Settings {
-    pub metadata: nostr::Metadata,
+    pub metadata: RadrootsNostrMetadata,
     pub config: Configuration,
 }

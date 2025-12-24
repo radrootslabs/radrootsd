@@ -3,24 +3,22 @@ name = "radrootsd"
 version = "0.1.0"
 edition = "2024"
 authors = ["Radroots Authors"]
-rust-version = "1.86.0"
+rust-version = "1.88.0"
 license = "AGPL-3.0-or-later"
 description = "Radroots local runtime daemon for storage, sync, and relay publishing"
 
 [dependencies]
-radroots-core = { path = "../../crates/crates/core", features = ["std", "serde", "typeshare"]  }
-radroots-events = { path = "../../crates/crates/events", features = ["serde"] }
-radroots-events-codec = { path = "../../crates/crates/events-codec", features = ["nostr"] }
-radroots-identity = { path = "../../crates/crates/identity" }
-radroots-nostr = { path = "../../crates/crates/nostr", features = ["sdk", "codec", "http"] }
-radroots-runtime = { path = "../../crates/crates/runtime", features = ["cli"] }
-radroots-trade = { path = "../../crates/crates/trade" }
+radroots-core = { path = "../crates/core", features = ["std", "serde", "typeshare"]  }
+radroots-events = { path = "../crates/events", features = ["serde"] }
+radroots-events-codec = { path = "../crates/events-codec", features = ["nostr"] }
+radroots-identity = { path = "../crates/identity" }
+radroots-nostr = { path = "../crates/nostr", features = ["client", "codec", "http"] }
+radroots-runtime = { path = "../crates/runtime", features = ["cli"] }
+radroots-trade = { path = "../crates/trade" }
 
 anyhow = { version = "1" }
 clap = { version = "4", features = ["derive"] }
 jsonrpsee = { version = "0.26", features = ["server"] }
-nostr = { version = "0.43.0", features = ["nip04"] }
-nostr-sdk = { version = "0.43.0" }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 serde = { version = "1", default-features = false }
 serde_json = { version = "1", default-features = false }

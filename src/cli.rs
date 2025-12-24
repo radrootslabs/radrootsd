@@ -22,7 +22,7 @@ pub struct Args {
         long,
         value_name = "PATH",
         value_hint = ValueHint::FilePath,
-        help = "Path to the daemon identity JSON file (defaults to identity.json)",
+        help = "Path to the daemon identity file (json, txt, or raw 32-byte key; defaults to identity.json)",
     )]
     pub identity: Option<PathBuf>,
 

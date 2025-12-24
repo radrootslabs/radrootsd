@@ -1,19 +1,25 @@
-use nostr_sdk::Client;
 use std::time::Instant;
+
+use radroots_nostr::prelude::{
+    RadrootsNostrClient,
+    RadrootsNostrKeys,
+    RadrootsNostrMetadata,
+    RadrootsNostrPublicKey,
+};
 
 #[derive(Clone)]
 pub struct Radrootsd {
     pub(crate) started: Instant,
-    pub client: Client,
-    pub pubkey: nostr::PublicKey,
-    pub metadata: nostr::Metadata,
+    pub client: RadrootsNostrClient,
+    pub pubkey: RadrootsNostrPublicKey,
+    pub metadata: RadrootsNostrMetadata,
     pub info: serde_json::Value,
 }
 
 impl Radrootsd {
-    pub fn new(keys: nostr::Keys, metadata: nostr::Metadata) -> Self {
+    pub fn new(keys: RadrootsNostrKeys, metadata: RadrootsNostrMetadata) -> Self {
         let pubkey = keys.public_key();
-        let client = Client::new(keys);
+        let client = RadrootsNostrClient::new(keys);
         let info = serde_json::json!({
             "version": env!("CARGO_PKG_VERSION"),
             "build": option_env!("GIT_HASH").unwrap_or("unknown"),
