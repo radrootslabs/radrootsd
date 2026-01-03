@@ -18,32 +18,18 @@ use radroots_trade::listing::{
     dvm::{TradeListingAddress, TradeListingEnvelope},
 };
 
-use super::types::{DvmEventView, ListingEventView, NostrEventView, TradeListingOrderSummary};
+use super::types::{DvmEventView, ListingEventView, TradeListingOrderSummary};
+use crate::api::jsonrpc::nostr::{event_tags, event_view, event_view_with_tags};
+use crate::api::jsonrpc::params::MAX_LIMIT;
 use crate::api::jsonrpc::RpcError;
 
 pub(crate) const LISTING_KIND: u16 = 30402;
-
-pub(crate) fn event_tags(event: &RadrootsNostrEvent) -> Vec<Vec<String>> {
-    event.tags.iter().map(|t| t.as_slice().to_vec()).collect()
-}
-
-pub(crate) fn event_view(event: &RadrootsNostrEvent) -> NostrEventView {
-    NostrEventView {
-        id: event.id.to_string(),
-        author: event.pubkey.to_string(),
-        created_at: event.created_at.as_secs(),
-        kind: event.kind.as_u16() as u32,
-        tags: event_tags(event),
-        content: event.content.clone(),
-        sig: event.sig.to_string(),
-    }
-}
 
 pub(crate) fn listing_view(event: &RadrootsNostrEvent) -> ListingEventView {
     let tags = event_tags(event);
     let listing = listing_from_event_parts(&tags, &event.content).ok();
     ListingEventView {
-        event: event_view(event),
+        event: event_view_with_tags(event, tags),
         listing,
     }
 }
@@ -158,7 +144,7 @@ pub(crate) async fn fetch_dvm_events(
         filter = filter.until(RadrootsNostrTimestamp::from_secs(until));
     }
     if let Some(limit) = limit {
-        filter = filter.limit(limit.min(1000) as usize);
+        filter = filter.limit(limit.min(MAX_LIMIT) as usize);
     }
 
     let events = client

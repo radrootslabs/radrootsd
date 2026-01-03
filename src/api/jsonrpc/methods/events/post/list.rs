@@ -1,22 +1,25 @@
 use anyhow::Result;
 use jsonrpsee::server::RpcModule;
-use serde::Deserialize;
-use serde_json::{Value as JsonValue, json};
+use serde::Serialize;
 use std::time::Duration;
 
+use crate::api::jsonrpc::nostr::{event_view, NostrEventView};
+use crate::api::jsonrpc::params::{
+    apply_time_bounds,
+    limit_or,
+    parse_pubkeys_opt,
+    timeout_or,
+    EventListParams,
+};
 use crate::api::jsonrpc::{MethodRegistry, RpcContext, RpcError};
 use radroots_nostr::prelude::{
-    radroots_nostr_parse_pubkeys,
     RadrootsNostrFilter,
     RadrootsNostrKind,
 };
 
-#[derive(Debug, Default, Deserialize)]
-struct ListProfilesParams {
-    #[serde(default)]
-    authors: Option<Vec<String>>,
-    #[serde(default)]
-    limit: Option<u64>,
+#[derive(Clone, Debug, Serialize)]
+struct PostListResponse {
+    posts: Vec<NostrEventView>,
 }
 
 pub fn register(m: &mut RpcModule<RpcContext>, registry: &MethodRegistry) -> Result<()> {
@@ -26,45 +29,40 @@ pub fn register(m: &mut RpcModule<RpcContext>, registry: &MethodRegistry) -> Res
             return Err(RpcError::NoRelays);
         }
 
-        let ListProfilesParams { authors, limit } = params.parse().unwrap_or_default();
-        let limit = limit.unwrap_or(50);
+        let EventListParams {
+            authors,
+            limit,
+            since,
+            until,
+            timeout_secs,
+        } = params
+            .parse::<Option<EventListParams>>()
+            .map_err(|e| RpcError::InvalidParams(e.to_string()))?
+            .unwrap_or_default();
+
+        let limit = limit_or(limit);
 
         let mut filter = RadrootsNostrFilter::new()
             .kind(RadrootsNostrKind::TextNote)
-            .limit(limit.try_into().unwrap());
-        if let Some(auths) = authors {
-            let pks = radroots_nostr_parse_pubkeys(&auths)
-                .map_err(|e| RpcError::InvalidParams(format!("invalid author: {e}")))?;
-            filter = filter.authors(pks);
+            .limit(limit);
+        if let Some(authors) = parse_pubkeys_opt("author", authors)? {
+            filter = filter.authors(authors);
         } else {
             filter = filter.author(ctx.state.pubkey);
         }
+        filter = apply_time_bounds(filter, since, until);
 
         let events = ctx
             .state
             .client
-            .fetch_events(filter, Duration::from_secs(10))
+            .fetch_events(filter, Duration::from_secs(timeout_or(timeout_secs)))
             .await
             .map_err(|e| RpcError::Other(format!("fetch failed: {e}")))?;
 
-        let items: Vec<JsonValue> = events
-            .into_iter()
-            .map(|ev| {
-                let tags: Vec<Vec<String>> =
-                    ev.tags.iter().map(|t| t.as_slice().to_vec()).collect();
-                json!({
-                    "id": ev.id.to_string(),
-                    "author": ev.pubkey.to_string(),
-                    "created_at": ev.created_at.as_secs(),
-                    "kind": ev.kind.as_u16() as u32,
-                    "tags": tags,
-                    "content": ev.content,
-                    "sig": ev.sig.to_string(),
-                })
-            })
-            .collect();
+        let mut items = events.into_iter().map(|ev| event_view(&ev)).collect::<Vec<_>>();
+        items.sort_by(|a, b| b.created_at.cmp(&a.created_at));
 
-        Ok::<JsonValue, RpcError>(json!({ "Profiles": items }))
+        Ok::<PostListResponse, RpcError>(PostListResponse { posts: items })
     })?;
 
     Ok(())

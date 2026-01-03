@@ -10,6 +10,8 @@ use crate::radrootsd::Radrootsd;
 
 mod context;
 mod error;
+mod nostr;
+mod params;
 mod registry;
 mod server;
 

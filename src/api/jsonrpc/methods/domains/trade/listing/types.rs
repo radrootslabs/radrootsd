@@ -4,16 +4,7 @@ use radroots_events::listing::RadrootsListing;
 use radroots_trade::listing::dvm::TradeListingEnvelope;
 use serde::Serialize;
 
-#[derive(Clone, Debug, Serialize)]
-pub struct NostrEventView {
-    pub id: String,
-    pub author: String,
-    pub created_at: u64,
-    pub kind: u32,
-    pub tags: Vec<Vec<String>>,
-    pub content: String,
-    pub sig: String,
-}
+use crate::api::jsonrpc::nostr::NostrEventView;
 
 #[derive(Clone, Debug, Serialize)]
 pub struct ListingEventView {

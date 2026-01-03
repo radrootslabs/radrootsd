@@ -3,6 +3,7 @@
 use anyhow::Result;
 use jsonrpsee::server::RpcModule;
 use serde::{Deserialize, Serialize};
+use crate::api::jsonrpc::params::timeout_or;
 use crate::api::jsonrpc::{MethodRegistry, RpcContext, RpcError};
 use radroots_trade::listing::dvm_kinds::TRADE_LISTING_DVM_KINDS;
 
@@ -60,7 +61,7 @@ pub fn register(m: &mut RpcModule<RpcContext>, registry: &MethodRegistry) -> Res
         let include_dvm = include_dvm.unwrap_or(true);
 
         let listing = if include_listing {
-            fetch_latest_listing_event(&ctx.state.client, &addr, timeout_secs.unwrap_or(10))
+            fetch_latest_listing_event(&ctx.state.client, &addr, timeout_or(timeout_secs))
                 .await?
                 .as_ref()
                 .map(listing_view)
@@ -79,7 +80,7 @@ pub fn register(m: &mut RpcModule<RpcContext>, registry: &MethodRegistry) -> Res
                 since,
                 until,
                 limit,
-                timeout_secs.unwrap_or(10),
+                timeout_or(timeout_secs),
             )
             .await?
         } else {

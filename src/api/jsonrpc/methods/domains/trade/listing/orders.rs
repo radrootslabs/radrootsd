@@ -4,8 +4,8 @@ use anyhow::Result;
 use jsonrpsee::server::RpcModule;
 use serde::{Deserialize, Serialize};
 
+use crate::api::jsonrpc::params::{parse_pubkeys_opt, timeout_or, EventListParams};
 use crate::api::jsonrpc::{MethodRegistry, RpcContext, RpcError};
-use radroots_nostr::prelude::radroots_nostr_parse_pubkeys;
 use radroots_trade::listing::dvm_kinds::TRADE_LISTING_DVM_KINDS;
 
 use super::helpers::{fetch_dvm_events, order_summaries, parse_listing_addr};
@@ -15,19 +15,11 @@ use super::types::TradeListingOrderSummary;
 struct TradeListingOrdersParams {
     listing_addr: String,
     #[serde(default)]
-    authors: Option<Vec<String>>,
-    #[serde(default)]
     recipients: Option<Vec<String>>,
     #[serde(default)]
     kinds: Option<Vec<u16>>,
-    #[serde(default)]
-    limit: Option<u64>,
-    #[serde(default)]
-    since: Option<u64>,
-    #[serde(default)]
-    until: Option<u64>,
-    #[serde(default)]
-    timeout_secs: Option<u64>,
+    #[serde(default, flatten)]
+    query: EventListParams,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -44,33 +36,25 @@ pub fn register(m: &mut RpcModule<RpcContext>, registry: &MethodRegistry) -> Res
 
         let TradeListingOrdersParams {
             listing_addr,
-            authors,
             recipients,
             kinds,
-            limit,
-            since,
-            until,
-            timeout_secs,
+            query,
         } = params
             .parse()
             .map_err(|e| RpcError::InvalidParams(e.to_string()))?;
 
+        let EventListParams {
+            authors,
+            limit,
+            since,
+            until,
+            timeout_secs,
+        } = query;
+
         let addr = parse_listing_addr(&listing_addr)?;
         let kinds = kinds.unwrap_or_else(|| TRADE_LISTING_DVM_KINDS.to_vec());
-        let authors = match authors {
-            Some(authors) => Some(
-                radroots_nostr_parse_pubkeys(&authors)
-                    .map_err(|e| RpcError::InvalidParams(format!("invalid author: {e}")))?,
-            ),
-            None => None,
-        };
-        let recipients = match recipients {
-            Some(recipients) => Some(
-                radroots_nostr_parse_pubkeys(&recipients)
-                    .map_err(|e| RpcError::InvalidParams(format!("invalid recipient: {e}")))?,
-            ),
-            None => None,
-        };
+        let authors = parse_pubkeys_opt("author", authors)?;
+        let recipients = parse_pubkeys_opt("recipient", recipients)?;
 
         let events = fetch_dvm_events(
             &ctx.state.client,
@@ -82,7 +66,7 @@ pub fn register(m: &mut RpcModule<RpcContext>, registry: &MethodRegistry) -> Res
             since,
             until,
             limit,
-            timeout_secs.unwrap_or(10),
+            timeout_or(timeout_secs),
         )
         .await?;
 
