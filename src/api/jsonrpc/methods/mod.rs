@@ -20,6 +20,7 @@ pub fn register_all(
     root.merge(events::profile::module(ctx.clone(), registry.clone())?)?;
     root.merge(events::post::module(ctx.clone(), registry.clone())?)?;
     root.merge(events::listing::module(ctx.clone(), registry.clone())?)?;
+    root.merge(events::farm::module(ctx.clone(), registry.clone())?)?;
     root.merge(domains::trade::module(ctx, registry)?)?;
     Ok(())
 }
