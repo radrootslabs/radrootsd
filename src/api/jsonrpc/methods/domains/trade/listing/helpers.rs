@@ -213,3 +213,101 @@ pub(crate) fn order_summaries(
     summaries.sort_by(|a, b| b.last_seen_at.cmp(&a.last_seen_at));
     summaries
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{dvm_event_view, order_id_from_event, order_summaries, LISTING_KIND};
+    use radroots_nostr::prelude::RadrootsNostrEvent;
+    use radroots_trade::listing::dvm::{TradeListingEnvelope, TradeListingMessageType};
+    use serde_json::json;
+
+    fn dvm_event(
+        id: &str,
+        pubkey: &str,
+        created_at: u64,
+        kind: u16,
+        tags: Vec<Vec<String>>,
+        content: &str,
+    ) -> RadrootsNostrEvent {
+        let sig = format!("{:0128x}", 6);
+        let event_json = json!({
+            "id": id,
+            "pubkey": pubkey,
+            "created_at": created_at,
+            "kind": kind,
+            "tags": tags,
+            "content": content,
+            "sig": sig,
+        });
+        serde_json::from_value(event_json).expect("event")
+    }
+
+    #[test]
+    fn dvm_event_view_parses_envelope_and_prefers_envelope_order_id() {
+        let pubkey = "1bdebe7b23fccb167fc8843280b789839dfa296ae9fd86cc9769b4813d76d8a4";
+        let listing_addr = format!("{LISTING_KIND}:{pubkey}:listing-1");
+        let envelope = TradeListingEnvelope::new(
+            TradeListingMessageType::OrderRequest,
+            listing_addr,
+            Some("env-order".to_string()),
+            json!({}),
+        );
+        let content = serde_json::to_string(&envelope).expect("envelope");
+        let id = format!("{:064x}", 1);
+        let tags = vec![vec!["d".to_string(), "tag-order".to_string()]];
+        let event = dvm_event(&id, pubkey, 100, 5321, tags, &content);
+
+        let view = dvm_event_view(&event);
+
+        assert!(view.envelope.is_some());
+        assert!(view.envelope_error.is_none());
+        assert_eq!(order_id_from_event(&view).as_deref(), Some("env-order"));
+    }
+
+    #[test]
+    fn dvm_event_view_invalid_json_sets_error() {
+        let pubkey = "2bdebe7b23fccb167fc8843280b789839dfa296ae9fd86cc9769b4813d76d8a4";
+        let id = format!("{:064x}", 2);
+        let event = dvm_event(&id, pubkey, 120, 5321, Vec::new(), "not-json");
+
+        let view = dvm_event_view(&event);
+
+        assert!(view.envelope.is_none());
+        assert_eq!(view.envelope_error.as_deref(), Some("invalid envelope json"));
+    }
+
+    #[test]
+    fn order_summaries_counts_and_sorts() {
+        let pubkey = "3bdebe7b23fccb167fc8843280b789839dfa296ae9fd86cc9769b4813d76d8a4";
+        let listing_addr = format!("{LISTING_KIND}:{pubkey}:listing-1");
+        let order_a = vec![vec!["d".to_string(), "order-a".to_string()]];
+        let order_b = vec![vec!["d".to_string(), "order-b".to_string()]];
+
+        let id_a1 = format!("{:064x}", 3);
+        let id_a2 = format!("{:064x}", 4);
+        let id_b1 = format!("{:064x}", 5);
+
+        let ev_a1 = dvm_event(&id_a1, pubkey, 10, 5321, order_a.clone(), "");
+        let ev_a2 = dvm_event(&id_a2, pubkey, 20, 6321, order_a.clone(), "");
+        let ev_b1 = dvm_event(&id_b1, pubkey, 15, 5321, order_b, "");
+
+        let views = vec![
+            dvm_event_view(&ev_a1),
+            dvm_event_view(&ev_a2),
+            dvm_event_view(&ev_b1),
+        ];
+
+        let summaries = order_summaries(&views, &listing_addr);
+
+        assert_eq!(summaries.len(), 2);
+        assert_eq!(summaries[0].order_id, "order-a");
+        assert_eq!(summaries[0].event_count, 2);
+        assert_eq!(summaries[0].first_seen_at, 10);
+        assert_eq!(summaries[0].last_seen_at, 20);
+        assert_eq!(summaries[0].last_event_id, id_a2);
+        assert_eq!(summaries[0].last_event_kind, 6321);
+        assert_eq!(summaries[1].order_id, "order-b");
+        assert_eq!(summaries[1].event_count, 1);
+        assert_eq!(summaries[1].last_seen_at, 15);
+    }
+}
