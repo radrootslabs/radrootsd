@@ -1,0 +1,49 @@
+use anyhow::Result;
+use jsonrpsee::server::RpcModule;
+use serde::Deserialize;
+use serde_json::{Value as JsonValue, json};
+
+use crate::api::jsonrpc::{MethodRegistry, RpcContext, RpcError};
+use radroots_events::listing::RadrootsListing;
+use radroots_nostr::prelude::{radroots_nostr_build_event, radroots_nostr_send_event};
+use radroots_trade::listing::codec::listing_tags_build;
+
+#[derive(Debug, Deserialize)]
+struct PublishListingParams {
+    listing: RadrootsListing,
+    #[serde(default)]
+    tags: Option<Vec<Vec<String>>>,
+}
+
+pub fn register(m: &mut RpcModule<RpcContext>, registry: &MethodRegistry) -> Result<()> {
+    registry.track("events.listing.publish");
+    m.register_async_method("events.listing.publish", |params, ctx, _| async move {
+        if ctx.state.client.relays().await.is_empty() {
+            return Err(RpcError::NoRelays);
+        }
+
+        let PublishListingParams { listing, tags } =
+            params.parse().map_err(|e| RpcError::InvalidParams(e.to_string()))?;
+
+        let content = serde_json::to_string(&listing)
+            .map_err(|e| RpcError::InvalidParams(format!("invalid listing json: {e}")))?;
+        let mut tag_slices = listing_tags_build(&listing)
+            .map_err(|e| RpcError::InvalidParams(format!("invalid listing tags: {e}")))?;
+        if let Some(extra_tags) = tags {
+            tag_slices.extend(extra_tags);
+        }
+        let builder = radroots_nostr_build_event(30402, content, tag_slices)
+            .map_err(|e| RpcError::Other(format!("failed to build listing event: {e}")))?;
+
+        let out = radroots_nostr_send_event(&ctx.state.client, builder)
+            .await
+            .map_err(|e| RpcError::Other(format!("failed to publish listing: {e}")))?;
+
+        Ok::<JsonValue, RpcError>(json!({
+            "id": out.id().to_string(),
+            "sent": out.success.into_iter().map(|u| u.to_string()).collect::<Vec<_>>(),
+            "failed": out.failed.into_iter().map(|(u,e)| (u.to_string(), e.to_string())).collect::<Vec<_>>(),
+        }))
+    })?;
+    Ok(())
+}

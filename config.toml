@@ -11,7 +11,9 @@ name = "radrootsd"
 
 [config]
 logs_dir = "logs"
-rpc_addr = "127.0.0.1:7070"
 relays = [
   "ws://127.0.0.1:8080"
 ]
+
+[config.rpc]
+addr = "127.0.0.1:7070"

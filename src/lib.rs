@@ -1,7 +1,9 @@
+#![forbid(unsafe_code)]
+
+pub mod api;
 pub mod cli;
 pub mod config;
 pub mod radrootsd;
-pub mod rpc;
 
 use anyhow::Result;
 
@@ -10,13 +12,14 @@ use tracing::info;
 
 use crate::radrootsd::Radrootsd;
 use radroots_identity::RadrootsIdentity;
+use radroots_nostr::prelude::radroots_nostr_publish_identity_profile;
 
 pub async fn run_radrootsd(settings: &config::Settings, args: &cli_args) -> Result<()> {
     let identity = RadrootsIdentity::load_or_generate(
         args.identity.as_ref(),
         args.allow_generate_identity,
     )?;
-    let keys = identity.into_keys();
+    let keys = identity.keys().clone();
 
     let radrootsd = Radrootsd::new(keys, settings.metadata.clone());
 
@@ -27,6 +30,7 @@ pub async fn run_radrootsd(settings: &config::Settings, args: &cli_args) -> Resu
     if !settings.config.relays.is_empty() {
         let client = radrootsd.client.clone();
         let md = settings.metadata.clone();
+        let identity = identity.clone();
         let has_metadata = serde_json::to_value(&md)
             .ok()
             .and_then(|v| v.as_object().cloned())
@@ -35,7 +39,16 @@ pub async fn run_radrootsd(settings: &config::Settings, args: &cli_args) -> Resu
 
         tokio::spawn(async move {
             client.connect().await;
-            if has_metadata {
+            let profile_published =
+                match radroots_nostr_publish_identity_profile(&client, &identity).await {
+                    Ok(Some(_)) => true,
+                    Ok(None) => false,
+                    Err(e) => {
+                        tracing::warn!("Failed to publish identity profile: {e}");
+                        false
+                    }
+                };
+            if has_metadata && !profile_published {
                 if let Err(e) = client.set_metadata(&md).await {
                     tracing::warn!("Failed to publish metadata on startup: {e}");
                 } else {
@@ -45,8 +58,8 @@ pub async fn run_radrootsd(settings: &config::Settings, args: &cli_args) -> Resu
         });
     }
 
-    let addr: std::net::SocketAddr = settings.config.rpc_addr.parse()?;
-    let handle = rpc::start_rpc(radrootsd.clone(), addr).await?;
+    let addr: std::net::SocketAddr = settings.config.rpc_addr().parse()?;
+    let handle = api::jsonrpc::start_rpc(radrootsd.clone(), addr, &settings.config.rpc).await?;
     info!("JSON-RPC listening on {addr}");
 
     let stop_handle = handle.clone();

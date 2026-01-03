@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 use anyhow::{Context, Result};
 use radrootsd::{cli_args, config, run_radrootsd};
 use std::process::ExitCode;
