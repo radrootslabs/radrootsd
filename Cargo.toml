@@ -10,7 +10,7 @@ description = "Radroots local runtime daemon for storage, sync, and relay publis
 [dependencies]
 radroots-core = { path = "../crates/core", features = ["std", "serde", "typeshare"]  }
 radroots-events = { path = "../crates/events", features = ["serde"] }
-radroots-events-codec = { path = "../crates/events-codec", features = ["nostr"] }
+radroots-events-codec = { path = "../crates/events-codec", features = ["nostr", "serde_json"] }
 radroots-identity = { path = "../crates/identity" }
 radroots-nostr = { path = "../crates/nostr", features = ["client", "codec", "http"] }
 radroots-runtime = { path = "../crates/runtime", features = ["cli"] }
