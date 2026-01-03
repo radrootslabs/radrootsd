@@ -12,6 +12,7 @@ mod context;
 mod error;
 mod nostr;
 mod params;
+mod relays;
 mod registry;
 mod server;
 

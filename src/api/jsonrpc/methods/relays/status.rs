@@ -1,12 +1,12 @@
 use anyhow::Result;
 use jsonrpsee::server::RpcModule;
 use serde::Deserialize;
-use serde_json::{Map as JsonMap, Value as JsonValue, json};
 
+use crate::api::jsonrpc::relays::RelayStatusRow;
 use crate::api::jsonrpc::{MethodRegistry, RpcContext, RpcError};
 use radroots_nostr::prelude::fetch_nip11;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 struct StatusParams {
     #[serde(default)]
     include_nip11: bool,
@@ -16,8 +16,9 @@ pub fn register(m: &mut RpcModule<RpcContext>, registry: &MethodRegistry) -> Res
     registry.track("relays.status");
     m.register_async_method("relays.status", |params, ctx, _| async move {
         let StatusParams { include_nip11 } = params
-            .parse()
-            .map_err(|e| RpcError::InvalidParams(e.to_string()))?;
+            .parse::<Option<StatusParams>>()
+            .map_err(|e| RpcError::InvalidParams(e.to_string()))?
+            .unwrap_or_default();
 
         let relays = ctx.state.client.relays().await;
         let mut out = Vec::with_capacity(relays.len());
@@ -27,31 +28,37 @@ pub fn register(m: &mut RpcModule<RpcContext>, registry: &MethodRegistry) -> Res
             let status_str = format!("{}", relay.status());
             let parsed = reqwest::Url::parse(&url_str).ok();
 
-            let mut row = JsonMap::new();
-            row.insert("url".into(), json!(url_str));
-            row.insert("status".into(), json!(status_str));
+            let mut row = RelayStatusRow {
+                url: url_str.clone(),
+                status: status_str,
+                scheme: None,
+                host: None,
+                onion: None,
+                port: None,
+                nip11: None,
+            };
 
             if let Some(u) = &parsed {
-                row.insert("scheme".into(), json!(u.scheme()));
+                row.scheme = Some(u.scheme().to_string());
                 if let Some(h) = u.host_str() {
-                    row.insert("host".into(), json!(h));
-                    row.insert("onion".into(), json!(h.ends_with(".onion")));
+                    row.host = Some(h.to_string());
+                    row.onion = Some(h.ends_with(".onion"));
                 }
                 if let Some(p) = u.port() {
-                    row.insert("port".into(), json!(p));
+                    row.port = Some(p);
                 }
             }
 
             if include_nip11 {
-                if let Some(doc) = fetch_nip11(row["url"].as_str().unwrap()).await {
-                    row.insert("nip11".into(), json!(doc));
+                if let Some(doc) = fetch_nip11(&row.url).await {
+                    row.nip11 = Some(doc);
                 }
             }
 
-            out.push(JsonValue::Object(row));
+            out.push(row);
         }
 
-        Ok::<JsonValue, RpcError>(json!(out))
+        Ok::<Vec<RelayStatusRow>, RpcError>(out)
     })?;
     Ok(())
 }

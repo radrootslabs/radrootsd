@@ -2,8 +2,8 @@ use anyhow::Result;
 use jsonrpsee::server::RpcModule;
 use radroots_nostr::prelude::radroots_nostr_add_relay;
 use serde::Deserialize;
-use serde_json::{Value as JsonValue, json};
 
+use crate::api::jsonrpc::relays::RelayAddedResponse;
 use crate::api::jsonrpc::{MethodRegistry, RpcContext, RpcError};
 
 #[derive(Debug, Deserialize)]
@@ -22,7 +22,7 @@ pub fn register(m: &mut RpcModule<RpcContext>, registry: &MethodRegistry) -> Res
             .await
             .map_err(|e| RpcError::AddRelay(url.clone(), e.to_string()))?;
 
-        Ok::<JsonValue, RpcError>(json!({ "added": url }))
+        Ok::<RelayAddedResponse, RpcError>(RelayAddedResponse { added: url })
     })?;
     Ok(())
 }

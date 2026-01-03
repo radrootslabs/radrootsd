@@ -1,7 +1,7 @@
 use anyhow::Result;
 use jsonrpsee::server::RpcModule;
-use serde_json::{Value as JsonValue, json};
 
+use crate::api::jsonrpc::relays::RelayConnectResponse;
 use crate::api::jsonrpc::{MethodRegistry, RpcContext, RpcError};
 
 use radroots_nostr::prelude::{radroots_nostr_connect, RadrootsNostrRelayStatus};
@@ -32,12 +32,12 @@ pub fn register(m: &mut RpcModule<RpcContext>, registry: &MethodRegistry) -> Res
             tokio::spawn(async move { radroots_nostr_connect(&client).await });
         }
 
-        Ok::<JsonValue, RpcError>(json!({
-            "connected": connected,
-            "connecting": connecting,
-            "disconnected": disconnected,
-            "spawned_connect": need_connect
-        }))
+        Ok::<RelayConnectResponse, RpcError>(RelayConnectResponse {
+            connected,
+            connecting,
+            disconnected,
+            spawned_connect: need_connect,
+        })
     })?;
     Ok(())
 }
