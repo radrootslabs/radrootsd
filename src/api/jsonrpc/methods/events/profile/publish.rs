@@ -1,8 +1,8 @@
 use anyhow::Result;
 use jsonrpsee::server::RpcModule;
 use serde::Deserialize;
-use serde_json::{Value as JsonValue, json};
 
+use crate::api::jsonrpc::nostr::{publish_response, PublishResponse};
 use crate::api::jsonrpc::{MethodRegistry, RpcContext, RpcError};
 
 use radroots_events::profile::RadrootsProfile;
@@ -36,19 +36,7 @@ pub fn register(m: &mut RpcModule<RpcContext>, registry: &MethodRegistry) -> Res
             .await
             .map_err(|e| RpcError::Other(format!("failed to publish metadata: {e}")))?;
 
-        let id_hex = output.id().to_string();
-        let sent: Vec<String> = output.success.into_iter().map(|u| u.to_string()).collect();
-        let failed: Vec<(String, String)> = output
-            .failed
-            .into_iter()
-            .map(|(u, e)| (u.to_string(), e.to_string()))
-            .collect();
-
-        Ok::<JsonValue, RpcError>(json!({
-            "id": id_hex,
-            "sent": sent,
-            "failed": failed
-        }))
+        Ok::<PublishResponse, RpcError>(publish_response(output))
     })?;
 
     Ok(())
