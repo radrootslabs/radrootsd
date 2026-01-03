@@ -15,6 +15,7 @@ use crate::api::jsonrpc::{MethodRegistry, RpcContext, RpcError};
 use radroots_events::kinds::KIND_LISTING;
 use radroots_events::listing::RadrootsListing;
 use radroots_nostr::prelude::{
+    RadrootsNostrEvent,
     RadrootsNostrFilter,
     RadrootsNostrKind,
 };
@@ -30,6 +31,25 @@ struct ListingEventFlat {
 #[derive(Clone, Debug, Serialize)]
 struct ListingListResponse {
     listings: Vec<ListingEventFlat>,
+}
+
+fn build_listing_rows<I>(events: I) -> Vec<ListingEventFlat>
+where
+    I: IntoIterator<Item = RadrootsNostrEvent>,
+{
+    let mut items = events
+        .into_iter()
+        .map(|ev| {
+            let tags = event_tags(&ev);
+            let listing = listing_from_event_parts(&tags, &ev.content).ok();
+            ListingEventFlat {
+                event: event_view_with_tags(&ev, tags),
+                listing,
+            }
+        })
+        .collect::<Vec<_>>();
+    items.sort_by(|a, b| b.event.created_at.cmp(&a.event.created_at));
+    items
 }
 
 pub fn register(m: &mut RpcModule<RpcContext>, registry: &MethodRegistry) -> Result<()> {
@@ -70,20 +90,133 @@ pub fn register(m: &mut RpcModule<RpcContext>, registry: &MethodRegistry) -> Res
             .await
             .map_err(|e| RpcError::Other(format!("fetch failed: {e}")))?;
 
-        let mut items = events
-            .into_iter()
-            .map(|ev| {
-                let tags = event_tags(&ev);
-                let listing = listing_from_event_parts(&tags, &ev.content).ok();
-                ListingEventFlat {
-                    event: event_view_with_tags(&ev, tags),
-                    listing,
-                }
-            })
-            .collect::<Vec<_>>();
-        items.sort_by(|a, b| b.event.created_at.cmp(&a.event.created_at));
+        let items = build_listing_rows(events);
 
         Ok::<ListingListResponse, RpcError>(ListingListResponse { listings: items })
     })?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build_listing_rows;
+    use radroots_core::{
+        RadrootsCoreCurrency,
+        RadrootsCoreDecimal,
+        RadrootsCoreMoney,
+        RadrootsCoreQuantity,
+        RadrootsCoreQuantityPrice,
+        RadrootsCoreUnit,
+    };
+    use radroots_events::kinds::KIND_LISTING;
+    use radroots_events::listing::{
+        RadrootsListing,
+        RadrootsListingBin,
+        RadrootsListingFarmRef,
+        RadrootsListingProduct,
+    };
+    use radroots_nostr::prelude::RadrootsNostrEvent;
+    use radroots_trade::listing::codec::listing_tags_build;
+    use serde_json::json;
+
+    fn listing_event(
+        id: &str,
+        pubkey: &str,
+        created_at: u64,
+        tags: Vec<Vec<String>>,
+        content: &str,
+    ) -> RadrootsNostrEvent {
+        let sig = format!("{:0128x}", 5);
+        let event_json = json!({
+            "id": id,
+            "pubkey": pubkey,
+            "created_at": created_at,
+            "kind": KIND_LISTING,
+            "tags": tags,
+            "content": content,
+            "sig": sig,
+        });
+        serde_json::from_value(event_json).expect("event")
+    }
+
+    fn sample_listing(farm_pubkey: &str) -> RadrootsListing {
+        let quantity = RadrootsCoreQuantity::new(RadrootsCoreDecimal::from(1_u64), RadrootsCoreUnit::Each);
+        let price = RadrootsCoreQuantityPrice::new(
+            RadrootsCoreMoney::new(RadrootsCoreDecimal::from(10_u64), RadrootsCoreCurrency::USD),
+            quantity.clone(),
+        );
+        let bin = RadrootsListingBin {
+            bin_id: "bin-1".to_string(),
+            quantity,
+            price_per_canonical_unit: price,
+            display_amount: None,
+            display_unit: None,
+            display_label: None,
+            display_price: None,
+            display_price_unit: None,
+        };
+        RadrootsListing {
+            d_tag: "listing-1".to_string(),
+            farm: RadrootsListingFarmRef {
+                pubkey: farm_pubkey.to_string(),
+                d_tag: "farm-1".to_string(),
+            },
+            product: RadrootsListingProduct {
+                key: "coffee".to_string(),
+                title: "Coffee".to_string(),
+                category: "beverage".to_string(),
+                summary: None,
+                process: None,
+                lot: None,
+                location: None,
+                profile: None,
+                year: None,
+            },
+            primary_bin_id: "bin-1".to_string(),
+            bins: vec![bin],
+            resource_area: None,
+            plot: None,
+            discounts: None,
+            inventory_available: None,
+            availability: None,
+            delivery_method: None,
+            location: None,
+            images: None,
+        }
+    }
+
+    #[test]
+    fn listing_list_sorts_by_created_at_desc() {
+        let pubkey = "1bdebe7b23fccb167fc8843280b789839dfa296ae9fd86cc9769b4813d76d8a4";
+        let old_id = format!("{:064x}", 1);
+        let new_id = format!("{:064x}", 2);
+        let older = listing_event(&old_id, pubkey, 100, Vec::new(), "");
+        let newer = listing_event(&new_id, pubkey, 200, Vec::new(), "");
+
+        let listings = build_listing_rows(vec![older, newer]);
+
+        assert_eq!(listings.len(), 2);
+        assert_eq!(listings[0].event.id, new_id);
+        assert_eq!(listings[0].event.created_at, 200);
+        assert_eq!(listings[1].event.id, old_id);
+        assert_eq!(listings[1].event.created_at, 100);
+    }
+
+    #[test]
+    fn listing_list_builds_from_tags_when_content_empty() {
+        let pubkey = "2bdebe7b23fccb167fc8843280b789839dfa296ae9fd86cc9769b4813d76d8a4";
+        let listing = sample_listing(pubkey);
+        let tags = listing_tags_build(&listing).expect("tags");
+        let id = format!("{:064x}", 3);
+        let event = listing_event(&id, pubkey, 300, tags.clone(), "");
+
+        let listings = build_listing_rows(vec![event]);
+
+        assert_eq!(listings.len(), 1);
+        assert_eq!(listings[0].event.tags, tags);
+        let parsed = listings[0].listing.as_ref().expect("listing");
+        assert_eq!(parsed.d_tag, "listing-1");
+        assert_eq!(parsed.farm.pubkey, pubkey);
+        assert_eq!(parsed.primary_bin_id, "bin-1");
+    }
 }
