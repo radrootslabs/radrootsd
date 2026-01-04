@@ -12,7 +12,14 @@ use tracing::info;
 
 use crate::radrootsd::Radrootsd;
 use radroots_identity::RadrootsIdentity;
-use radroots_nostr::prelude::radroots_nostr_publish_identity_profile;
+use radroots_events::profile::RadrootsProfileType;
+use radroots_events_codec::profile::encode::profile_type_tags;
+use radroots_nostr::prelude::{
+    radroots_nostr_build_metadata_event,
+    radroots_nostr_publish_identity_profile_with_type,
+    RadrootsNostrTag,
+    RadrootsNostrTagKind,
+};
 
 pub async fn run_radrootsd(settings: &config::Settings, args: &cli_args) -> Result<()> {
     let identity = RadrootsIdentity::load_or_generate(
@@ -40,7 +47,13 @@ pub async fn run_radrootsd(settings: &config::Settings, args: &cli_args) -> Resu
         tokio::spawn(async move {
             client.connect().await;
             let profile_published =
-                match radroots_nostr_publish_identity_profile(&client, &identity).await {
+                match radroots_nostr_publish_identity_profile_with_type(
+                    &client,
+                    &identity,
+                    Some(RadrootsProfileType::Radrootsd),
+                )
+                .await
+                {
                     Ok(Some(_)) => true,
                     Ok(None) => false,
                     Err(e) => {
@@ -49,7 +62,19 @@ pub async fn run_radrootsd(settings: &config::Settings, args: &cli_args) -> Resu
                     }
                 };
             if has_metadata && !profile_published {
-                if let Err(e) = client.set_metadata(&md).await {
+                let mut tags = Vec::new();
+                for mut tag in profile_type_tags(RadrootsProfileType::Radrootsd) {
+                    if tag.is_empty() {
+                        continue;
+                    }
+                    let key = tag.remove(0);
+                    tags.push(RadrootsNostrTag::custom(
+                        RadrootsNostrTagKind::Custom(key.into()),
+                        tag,
+                    ));
+                }
+                let builder = radroots_nostr_build_metadata_event(&md).tags(tags);
+                if let Err(e) = client.send_event_builder(builder).await {
                     tracing::warn!("Failed to publish metadata on startup: {e}");
                 } else {
                     tracing::info!("Published metadata on startup");
