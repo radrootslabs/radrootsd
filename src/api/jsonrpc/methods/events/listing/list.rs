@@ -22,7 +22,7 @@ use radroots_nostr::prelude::{
 use radroots_trade::listing::codec::listing_from_event_parts;
 
 #[derive(Clone, Debug, Serialize)]
-struct ListingRow {
+pub(crate) struct ListingRow {
     id: String,
     author: String,
     created_at: u64,
@@ -38,7 +38,7 @@ struct ListingListResponse {
     listings: Vec<ListingRow>,
 }
 
-fn build_listing_rows<I>(events: I) -> Vec<ListingRow>
+pub(crate) fn build_listing_rows<I>(events: I) -> Vec<ListingRow>
 where
     I: IntoIterator<Item = RadrootsNostrEvent>,
 {

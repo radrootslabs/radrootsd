@@ -21,7 +21,7 @@ use radroots_nostr::prelude::{
 };
 
 #[derive(Clone, Debug, Serialize)]
-struct PostRow {
+pub(crate) struct PostRow {
     id: String,
     author: String,
     created_at: u64,
@@ -37,7 +37,7 @@ struct PostListResponse {
     posts: Vec<PostRow>,
 }
 
-fn build_post_rows<I>(events: I) -> Vec<PostRow>
+pub(crate) fn build_post_rows<I>(events: I) -> Vec<PostRow>
 where
     I: IntoIterator<Item = RadrootsNostrEvent>,
 {

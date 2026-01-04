@@ -22,7 +22,7 @@ use radroots_nostr::prelude::{
 };
 
 #[derive(Clone, Debug, Serialize)]
-struct FarmRow {
+pub(crate) struct FarmRow {
     id: String,
     author: String,
     created_at: u64,
@@ -38,7 +38,7 @@ struct FarmListResponse {
     farms: Vec<FarmRow>,
 }
 
-fn build_farm_rows<I>(events: I) -> Vec<FarmRow>
+pub(crate) fn build_farm_rows<I>(events: I) -> Vec<FarmRow>
 where
     I: IntoIterator<Item = RadrootsNostrEvent>,
 {

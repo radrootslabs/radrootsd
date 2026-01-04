@@ -23,7 +23,7 @@ use radroots_nostr::prelude::{
 };
 
 #[derive(Clone, Debug, Serialize)]
-struct ProfileListRow {
+pub(crate) struct ProfileListRow {
     author_hex: String,
     author_npub: String,
     event_id: Option<String>,
@@ -38,7 +38,7 @@ struct ProfileListResponse {
     profiles: Vec<ProfileListRow>,
 }
 
-fn build_profile_rows<I>(
+pub(crate) fn build_profile_rows<I>(
     authors: Vec<RadrootsNostrPublicKey>,
     events: I,
 ) -> Result<Vec<ProfileListRow>, RpcError>

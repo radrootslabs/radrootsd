@@ -22,7 +22,7 @@ use radroots_nostr::prelude::{
 };
 
 #[derive(Clone, Debug, Serialize)]
-struct ResourceAreaRow {
+pub(crate) struct ResourceAreaRow {
     id: String,
     author: String,
     created_at: u64,
@@ -38,7 +38,7 @@ struct ResourceAreaListResponse {
     resource_areas: Vec<ResourceAreaRow>,
 }
 
-fn build_resource_area_rows<I>(events: I) -> Vec<ResourceAreaRow>
+pub(crate) fn build_resource_area_rows<I>(events: I) -> Vec<ResourceAreaRow>
 where
     I: IntoIterator<Item = RadrootsNostrEvent>,
 {

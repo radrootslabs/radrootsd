@@ -22,7 +22,7 @@ use radroots_nostr::prelude::{
 };
 
 #[derive(Clone, Debug, Serialize)]
-struct ResourceCapRow {
+pub(crate) struct ResourceCapRow {
     id: String,
     author: String,
     created_at: u64,
@@ -38,7 +38,7 @@ struct ResourceCapListResponse {
     resource_caps: Vec<ResourceCapRow>,
 }
 
-fn build_resource_cap_rows<I>(events: I) -> Vec<ResourceCapRow>
+pub(crate) fn build_resource_cap_rows<I>(events: I) -> Vec<ResourceCapRow>
 where
     I: IntoIterator<Item = RadrootsNostrEvent>,
 {

@@ -20,7 +20,7 @@ use radroots_nostr::prelude::{
 };
 
 #[derive(Clone, Debug, Serialize)]
-struct ListSetRow {
+pub(crate) struct ListSetRow {
     id: String,
     author: String,
     created_at: u64,
@@ -76,7 +76,7 @@ fn list_set_kinds_or(kinds: Option<Vec<u32>>) -> Result<Vec<RadrootsNostrKind>, 
     Ok(out)
 }
 
-fn build_list_set_rows<I>(events: I) -> Vec<ListSetRow>
+pub(crate) fn build_list_set_rows<I>(events: I) -> Vec<ListSetRow>
 where
     I: IntoIterator<Item = RadrootsNostrEvent>,
 {

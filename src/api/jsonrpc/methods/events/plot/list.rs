@@ -22,7 +22,7 @@ use radroots_nostr::prelude::{
 };
 
 #[derive(Clone, Debug, Serialize)]
-struct PlotRow {
+pub(crate) struct PlotRow {
     id: String,
     author: String,
     created_at: u64,
@@ -38,7 +38,7 @@ struct PlotListResponse {
     plots: Vec<PlotRow>,
 }
 
-fn build_plot_rows<I>(events: I) -> Vec<PlotRow>
+pub(crate) fn build_plot_rows<I>(events: I) -> Vec<PlotRow>
 where
     I: IntoIterator<Item = RadrootsNostrEvent>,
 {
