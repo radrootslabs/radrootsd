@@ -10,6 +10,7 @@ pub mod get;
 pub mod list;
 pub mod orders;
 pub mod series;
+pub mod validate;
 
 mod helpers;
 mod types;
@@ -21,5 +22,6 @@ pub fn module(ctx: RpcContext, registry: MethodRegistry) -> Result<RpcModule<Rpc
     dvm::register(&mut m, &registry)?;
     series::register(&mut m, &registry)?;
     orders::register(&mut m, &registry)?;
+    validate::register(&mut m, &registry)?;
     Ok(m)
 }
