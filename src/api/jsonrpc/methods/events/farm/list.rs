@@ -3,7 +3,7 @@ use jsonrpsee::server::RpcModule;
 use serde::Serialize;
 use std::time::Duration;
 
-use crate::api::jsonrpc::nostr::{event_tags, event_view_with_tags, NostrEventView};
+use crate::api::jsonrpc::nostr::{event_tags, event_view_with_tags};
 use crate::api::jsonrpc::params::{
     apply_time_bounds,
     limit_or,
@@ -22,18 +22,23 @@ use radroots_nostr::prelude::{
 };
 
 #[derive(Clone, Debug, Serialize)]
-struct FarmEventFlat {
-    #[serde(flatten)]
-    event: NostrEventView,
+struct FarmRow {
+    id: String,
+    author: String,
+    created_at: u64,
+    kind: u32,
+    tags: Vec<Vec<String>>,
+    content: String,
+    sig: String,
     farm: Option<RadrootsFarm>,
 }
 
 #[derive(Clone, Debug, Serialize)]
 struct FarmListResponse {
-    farms: Vec<FarmEventFlat>,
+    farms: Vec<FarmRow>,
 }
 
-fn build_farm_rows<I>(events: I) -> Vec<FarmEventFlat>
+fn build_farm_rows<I>(events: I) -> Vec<FarmRow>
 where
     I: IntoIterator<Item = RadrootsNostrEvent>,
 {
@@ -41,16 +46,27 @@ where
         .into_iter()
         .map(|ev| {
             let tags = event_tags(&ev);
-            let kind = ev.kind.as_u16() as u32;
-            let farm = farm_from_event(kind, &tags, &ev.content).ok();
-            FarmEventFlat {
-                event: event_view_with_tags(&ev, tags),
+            let farm = parse_farm_event(&ev, &tags);
+            let event = event_view_with_tags(&ev, tags);
+            FarmRow {
+                id: event.id,
+                author: event.author,
+                created_at: event.created_at,
+                kind: event.kind,
+                tags: event.tags,
+                content: event.content,
+                sig: event.sig,
                 farm,
             }
         })
         .collect::<Vec<_>>();
-    items.sort_by(|a, b| b.event.created_at.cmp(&a.event.created_at));
+    items.sort_by(|a, b| b.created_at.cmp(&a.created_at));
     items
+}
+
+fn parse_farm_event(event: &RadrootsNostrEvent, tags: &[Vec<String>]) -> Option<RadrootsFarm> {
+    let kind = event.kind.as_u16() as u32;
+    farm_from_event(kind, tags, &event.content).ok()
 }
 
 pub fn register(m: &mut RpcModule<RpcContext>, registry: &MethodRegistry) -> Result<()> {
@@ -154,10 +170,10 @@ mod tests {
         let farms = build_farm_rows(vec![older, newer]);
 
         assert_eq!(farms.len(), 2);
-        assert_eq!(farms[0].event.id, new_id);
-        assert_eq!(farms[0].event.created_at, 200);
-        assert_eq!(farms[1].event.id, old_id);
-        assert_eq!(farms[1].event.created_at, 100);
+        assert_eq!(farms[0].id, new_id);
+        assert_eq!(farms[0].created_at, 200);
+        assert_eq!(farms[1].id, old_id);
+        assert_eq!(farms[1].created_at, 100);
     }
 
     #[test]
@@ -173,7 +189,7 @@ mod tests {
         let farms = build_farm_rows(vec![event]);
 
         assert_eq!(farms.len(), 1);
-        assert_eq!(farms[0].event.tags, tags);
+        assert_eq!(farms[0].tags, tags);
         let parsed = farms[0].farm.as_ref().expect("farm");
         assert_eq!(parsed.d_tag, "farm-1");
         assert_eq!(parsed.name, "Farm One");
