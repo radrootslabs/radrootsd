@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::time::Duration;
 
-use crate::api::jsonrpc::nostr::{event_tags, event_view_with_tags, NostrEventView};
+use crate::api::jsonrpc::nostr::{event_tags, event_view_with_tags};
 use crate::api::jsonrpc::params::{apply_time_bounds, limit_or, parse_pubkeys_opt, timeout_or};
 use crate::api::jsonrpc::{MethodRegistry, RpcContext, RpcError};
 use radroots_events::kinds::{is_nip51_list_set_kind, KIND_LIST_SET_GENERIC};
@@ -20,15 +20,20 @@ use radroots_nostr::prelude::{
 };
 
 #[derive(Clone, Debug, Serialize)]
-struct ListSetEventFlat {
-    #[serde(flatten)]
-    event: NostrEventView,
+struct ListSetRow {
+    id: String,
+    author: String,
+    created_at: u64,
+    kind: u32,
+    tags: Vec<Vec<String>>,
+    content: String,
+    sig: String,
     list_set: Option<RadrootsListSet>,
 }
 
 #[derive(Clone, Debug, Serialize)]
 struct ListSetListResponse {
-    list_sets: Vec<ListSetEventFlat>,
+    list_sets: Vec<ListSetRow>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -71,7 +76,7 @@ fn list_set_kinds_or(kinds: Option<Vec<u32>>) -> Result<Vec<RadrootsNostrKind>, 
     Ok(out)
 }
 
-fn build_list_set_rows<I>(events: I) -> Vec<ListSetEventFlat>
+fn build_list_set_rows<I>(events: I) -> Vec<ListSetRow>
 where
     I: IntoIterator<Item = RadrootsNostrEvent>,
 {
@@ -80,13 +85,20 @@ where
         .map(|ev| {
             let tags = event_tags(&ev);
             let list_set = parse_list_set_event(&ev, &tags);
-            ListSetEventFlat {
-                event: event_view_with_tags(&ev, tags),
+            let event = event_view_with_tags(&ev, tags);
+            ListSetRow {
+                id: event.id,
+                author: event.author,
+                created_at: event.created_at,
+                kind: event.kind,
+                tags: event.tags,
+                content: event.content,
+                sig: event.sig,
                 list_set,
             }
         })
         .collect::<Vec<_>>();
-    items.sort_by(|a, b| b.event.created_at.cmp(&a.event.created_at));
+    items.sort_by(|a, b| b.created_at.cmp(&a.created_at));
     items
 }
 
@@ -148,7 +160,7 @@ async fn query_list_set_events(
                 .query(filter)
                 .await
                 .map_err(|e| RpcError::Other(format!("query failed: {e}")))?;
-            Ok(events)
+            Ok(events.into_iter().collect())
         }
         None => {
             let events = client
@@ -156,7 +168,7 @@ async fn query_list_set_events(
                 .query(base_filter)
                 .await
                 .map_err(|e| RpcError::Other(format!("query failed: {e}")))?;
-            Ok(events)
+            Ok(events.into_iter().collect())
         }
     }
 }
@@ -320,10 +332,10 @@ mod tests {
         let list_sets = build_list_set_rows(vec![older, newer]);
 
         assert_eq!(list_sets.len(), 2);
-        assert_eq!(list_sets[0].event.id, new_id);
-        assert_eq!(list_sets[0].event.created_at, 200);
-        assert_eq!(list_sets[1].event.id, old_id);
-        assert_eq!(list_sets[1].event.created_at, 100);
+        assert_eq!(list_sets[0].id, new_id);
+        assert_eq!(list_sets[0].created_at, 200);
+        assert_eq!(list_sets[1].id, old_id);
+        assert_eq!(list_sets[1].created_at, 100);
     }
 
     #[test]
@@ -338,7 +350,7 @@ mod tests {
         let list_sets = build_list_set_rows(vec![event]);
 
         assert_eq!(list_sets.len(), 1);
-        assert_eq!(list_sets[0].event.tags, tags);
+        assert_eq!(list_sets[0].tags, tags);
         let parsed = list_sets[0].list_set.as_ref().expect("list set");
         assert_eq!(parsed.d_tag, "member_of.farms");
         assert_eq!(parsed.entries.len(), 1);
