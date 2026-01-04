@@ -5,16 +5,17 @@ use serde::Deserialize;
 use crate::api::jsonrpc::nostr::{publish_response, PublishResponse};
 use crate::api::jsonrpc::{MethodRegistry, RpcContext, RpcError};
 
-use radroots_events::profile::RadrootsProfile;
-use radroots_events_codec::profile::encode::to_metadata;
+use radroots_events::profile::{RadrootsProfile, RadrootsProfileType};
+use radroots_events_codec::profile::encode::to_wire_parts_with_profile_type;
 use radroots_nostr::prelude::{
-    radroots_nostr_build_metadata_event,
+    radroots_nostr_build_event,
     radroots_nostr_send_event,
 };
 
 #[derive(Debug, Deserialize)]
 struct PublishProfileParams {
     profile: RadrootsProfile,
+    profile_type: RadrootsProfileType,
 }
 
 pub fn register(m: &mut RpcModule<RpcContext>, registry: &MethodRegistry) -> Result<()> {
@@ -25,12 +26,14 @@ pub fn register(m: &mut RpcModule<RpcContext>, registry: &MethodRegistry) -> Res
             return Err(RpcError::NoRelays);
         }
 
-        let PublishProfileParams { profile } = params
+        let PublishProfileParams { profile, profile_type } = params
             .parse()
             .map_err(|e| RpcError::InvalidParams(e.to_string()))?;
 
-        let metadata = to_metadata(&profile).map_err(|e| RpcError::InvalidParams(e.to_string()))?;
-        let builder = radroots_nostr_build_metadata_event(&metadata);
+        let parts = to_wire_parts_with_profile_type(&profile, Some(profile_type))
+            .map_err(|e| RpcError::InvalidParams(e.to_string()))?;
+        let builder = radroots_nostr_build_event(parts.kind, parts.content, parts.tags)
+            .map_err(|e| RpcError::Other(format!("failed to build profile event: {e}")))?;
 
         let output = radroots_nostr_send_event(&ctx.state.client, builder)
             .await
