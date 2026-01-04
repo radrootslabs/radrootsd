@@ -10,7 +10,9 @@ use radroots_events::kinds::KIND_FARM;
 use radroots_events::listing::RadrootsListingFarmRef;
 use radroots_events::{RadrootsNostrEvent as RadrootsWireEvent, RadrootsNostrEventPtr};
 use radroots_nostr::prelude::{
+    radroots_nostr_build_event,
     radroots_nostr_parse_pubkey,
+    radroots_nostr_send_event,
     RadrootsNostrClient,
     RadrootsNostrEvent as RadrootsRawEvent,
     RadrootsNostrEventId,
@@ -18,10 +20,15 @@ use radroots_nostr::prelude::{
     RadrootsNostrKind,
 };
 use radroots_nostr::util::event_created_at_u32_saturating;
-use radroots_trade::listing::dvm::TradeListingValidateResult;
+use radroots_trade::listing::dvm::{
+    TradeListingEnvelope,
+    TradeListingMessageType,
+    TradeListingValidateRequest,
+    TradeListingValidateResult,
+};
 use radroots_trade::listing::validation::{validate_listing_event, TradeListingValidationError};
 
-use crate::api::jsonrpc::nostr::event_tags;
+use crate::api::jsonrpc::nostr::{event_tags, publish_response, PublishResponse};
 use crate::api::jsonrpc::params::timeout_or;
 use crate::api::jsonrpc::{MethodRegistry, RpcContext, RpcError};
 
@@ -34,9 +41,62 @@ struct TradeListingValidateParams {
     listing_event: Option<RadrootsNostrEventPtr>,
     #[serde(default)]
     timeout_secs: Option<u64>,
+    #[serde(default)]
+    recipient_pubkey: Option<String>,
 }
 
 pub fn register(m: &mut RpcModule<RpcContext>, registry: &MethodRegistry) -> Result<()> {
+    registry.track("trade.listing.validate.request");
+    m.register_async_method("trade.listing.validate.request", |params, ctx, _| async move {
+        if ctx.state.client.relays().await.is_empty() {
+            return Err(RpcError::NoRelays);
+        }
+
+        let TradeListingValidateRequestParams {
+            listing_addr,
+            recipient_pubkey,
+            listing_event,
+        } = params
+            .parse()
+            .map_err(|e| RpcError::InvalidParams(e.to_string()))?;
+
+        let addr = parse_listing_addr(&listing_addr)?;
+        let listing_addr = addr.as_str();
+
+        let recipient = radroots_nostr_parse_pubkey(&recipient_pubkey)
+            .map_err(|e| RpcError::InvalidParams(format!("invalid recipient_pubkey: {e}")))?;
+
+        let payload = TradeListingValidateRequest { listing_event };
+        let envelope = TradeListingEnvelope::new(
+            TradeListingMessageType::ListingValidateRequest,
+            listing_addr.clone(),
+            None,
+            payload,
+        );
+        envelope
+            .validate()
+            .map_err(|e| RpcError::InvalidParams(e.to_string()))?;
+        let content = serde_json::to_string(&envelope)
+            .map_err(|e| RpcError::Other(format!("failed to encode envelope: {e}")))?;
+        let tags = vec![
+            vec!["p".to_string(), recipient.to_string()],
+            vec!["a".to_string(), listing_addr.clone()],
+        ];
+
+        let builder = radroots_nostr_build_event(
+            TradeListingMessageType::ListingValidateRequest.kind() as u32,
+            content,
+            tags,
+        )
+        .map_err(|e| RpcError::Other(format!("failed to build validate request event: {e}")))?;
+
+        let output = radroots_nostr_send_event(&ctx.state.client, builder)
+            .await
+            .map_err(|e| RpcError::Other(format!("failed to publish validate request: {e}")))?;
+
+        Ok::<PublishResponse, RpcError>(publish_response(output))
+    })?;
+
     registry.track("trade.listing.validate");
     m.register_async_method("trade.listing.validate", |params, ctx, _| async move {
         if ctx.state.client.relays().await.is_empty() {
@@ -47,11 +107,13 @@ pub fn register(m: &mut RpcModule<RpcContext>, registry: &MethodRegistry) -> Res
             listing_addr,
             listing_event,
             timeout_secs,
+            recipient_pubkey,
         } = params
             .parse()
             .map_err(|e| RpcError::InvalidParams(e.to_string()))?;
 
         let addr = parse_listing_addr(&listing_addr)?;
+        let listing_addr = addr.as_str();
         let timeout_secs = timeout_or(timeout_secs);
 
         let listing_event = if let Some(ptr) = listing_event {
@@ -105,8 +167,69 @@ pub fn register(m: &mut RpcModule<RpcContext>, registry: &MethodRegistry) -> Res
             valid: errors.is_empty(),
             errors,
         };
+
+        if let Some(recipient_pubkey) = recipient_pubkey {
+            publish_validate_result(
+                &ctx.state.client,
+                &listing_addr,
+                &recipient_pubkey,
+                &result,
+            )
+            .await?;
+        }
         Ok::<TradeListingValidateResult, RpcError>(result)
     })?;
+    Ok(())
+}
+
+#[derive(Debug, Deserialize)]
+struct TradeListingValidateRequestParams {
+    listing_addr: String,
+    recipient_pubkey: String,
+    #[serde(default)]
+    listing_event: Option<RadrootsNostrEventPtr>,
+}
+
+async fn publish_validate_result(
+    client: &RadrootsNostrClient,
+    listing_addr: &str,
+    recipient_pubkey: &str,
+    result: &TradeListingValidateResult,
+) -> Result<(), RpcError> {
+    let recipient = radroots_nostr_parse_pubkey(recipient_pubkey)
+        .map_err(|e| RpcError::InvalidParams(format!("invalid recipient_pubkey: {e}")))?;
+    let envelope = TradeListingEnvelope::new(
+        TradeListingMessageType::ListingValidateResult,
+        listing_addr.to_string(),
+        None,
+        result.clone(),
+    );
+    envelope
+        .validate()
+        .map_err(|e| RpcError::InvalidParams(e.to_string()))?;
+    let content = serde_json::to_string(&envelope)
+        .map_err(|e| RpcError::Other(format!("failed to encode envelope: {e}")))?;
+    let tags = vec![
+        vec!["p".to_string(), recipient.to_string()],
+        vec!["a".to_string(), listing_addr.to_string()],
+    ];
+
+    let builder = radroots_nostr_build_event(
+        TradeListingMessageType::ListingValidateResult.kind() as u32,
+        content,
+        tags,
+    )
+    .map_err(|e| RpcError::Other(format!("failed to build validate result event: {e}")))?;
+
+    let output = radroots_nostr_send_event(client, builder)
+        .await
+        .map_err(|e| RpcError::Other(format!("failed to publish validate result: {e}")))?;
+    if !output.failed.is_empty() {
+        return Err(RpcError::Other(format!(
+            "validate result delivery failed: {:?}",
+            output.failed
+        )));
+    }
     Ok(())
 }
 

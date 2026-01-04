@@ -10,6 +10,7 @@ use radroots_events::job_request::RadrootsJobRequest;
 use radroots_events_codec::job::encode::canonicalize_tags;
 use radroots_events_codec::job::request::encode::to_wire_parts;
 use radroots_nostr::prelude::{radroots_nostr_build_event, radroots_nostr_send_event};
+use radroots_trade::listing::dvm_kinds::is_trade_listing_dvm_request_kind;
 
 #[derive(Debug, Deserialize)]
 struct PublishDvmRequestParams {
@@ -34,6 +35,13 @@ pub fn register(m: &mut RpcModule<RpcContext>, registry: &MethodRegistry) -> Res
         } = params
             .parse()
             .map_err(|e| RpcError::InvalidParams(e.to_string()))?;
+
+        if is_trade_listing_dvm_request_kind(request.kind) {
+            return Err(RpcError::InvalidParams(
+                "trade listing request kinds must use trade.listing.validate.request or trade.listing.order"
+                    .to_string(),
+            ));
+        }
 
         let content = content.unwrap_or_default();
         let mut parts = to_wire_parts(&request, &content)
