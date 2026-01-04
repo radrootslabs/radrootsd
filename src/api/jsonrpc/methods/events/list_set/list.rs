@@ -91,6 +91,69 @@ where
     items
 }
 
+fn merge_list_set_events(
+    stored: Vec<RadrootsNostrEvent>,
+    fetched: Vec<RadrootsNostrEvent>,
+) -> Vec<RadrootsNostrEvent> {
+    let mut seen = HashSet::new();
+    let mut combined = Vec::with_capacity(stored.len() + fetched.len());
+    for event in stored.into_iter().chain(fetched) {
+        let id = event.id.to_string();
+        if seen.insert(id) {
+            combined.push(event);
+        }
+    }
+    combined
+}
+
+async fn query_list_set_events(
+    client: &RadrootsNostrClient,
+    base_filter: RadrootsNostrFilter,
+    d_tags: Option<Vec<String>>,
+) -> Result<Vec<RadrootsNostrEvent>, RpcError> {
+    match d_tags {
+        Some(d_tags) if d_tags.len() > 1 => {
+            let mut events = Vec::new();
+            let mut seen = HashSet::new();
+            for d_tag in d_tags.into_iter().filter(|tag| !tag.trim().is_empty()) {
+                let filter = base_filter.clone().identifiers([d_tag]);
+                let items = client
+                    .database()
+                    .query(filter)
+                    .await
+                    .map_err(|e| RpcError::Other(format!("query failed: {e}")))?;
+                for item in items {
+                    let id = item.id.to_string();
+                    if seen.insert(id) {
+                        events.push(item);
+                    }
+                }
+            }
+            Ok(events)
+        }
+        Some(d_tags) => {
+            let mut filter = base_filter;
+            if let Some(d_tag) = d_tags.into_iter().find(|tag| !tag.trim().is_empty()) {
+                filter = filter.identifiers([d_tag]);
+            }
+            let events = client
+                .database()
+                .query(filter)
+                .await
+                .map_err(|e| RpcError::Other(format!("query failed: {e}")))?;
+            Ok(events)
+        }
+        None => {
+            let events = client
+                .database()
+                .query(base_filter)
+                .await
+                .map_err(|e| RpcError::Other(format!("query failed: {e}")))?;
+            Ok(events)
+        }
+    }
+}
+
 async fn fetch_list_set_events(
     client: &RadrootsNostrClient,
     base_filter: RadrootsNostrFilter,
@@ -170,7 +233,9 @@ pub fn register(m: &mut RpcModule<RpcContext>, registry: &MethodRegistry) -> Res
 
         filter = apply_time_bounds(filter, since, until);
 
-        let events = fetch_list_set_events(
+        let stored = query_list_set_events(&ctx.state.client, filter.clone(), d_tags.clone())
+            .await?;
+        let fetched = fetch_list_set_events(
             &ctx.state.client,
             filter,
             d_tags,
@@ -178,6 +243,7 @@ pub fn register(m: &mut RpcModule<RpcContext>, registry: &MethodRegistry) -> Res
         )
         .await?;
 
+        let events = merge_list_set_events(stored, fetched);
         let mut items = build_list_set_rows(events);
         if items.len() > limit {
             items.truncate(limit);
