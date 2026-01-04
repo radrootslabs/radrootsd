@@ -79,8 +79,7 @@ where
         .into_iter()
         .map(|ev| {
             let tags = event_tags(&ev);
-            let kind = ev.kind.as_u16() as u32;
-            let list_set = list_set_from_tags(kind, ev.content.clone(), &tags).ok();
+            let list_set = parse_list_set_event(&ev, &tags);
             ListSetEventFlat {
                 event: event_view_with_tags(&ev, tags),
                 list_set,
@@ -89,6 +88,14 @@ where
         .collect::<Vec<_>>();
     items.sort_by(|a, b| b.event.created_at.cmp(&a.event.created_at));
     items
+}
+
+fn parse_list_set_event(
+    event: &RadrootsNostrEvent,
+    tags: &[Vec<String>],
+) -> Option<RadrootsListSet> {
+    let kind = event.kind.as_u16() as u32;
+    list_set_from_tags(kind, event.content.clone(), tags).ok()
 }
 
 fn merge_list_set_events(
