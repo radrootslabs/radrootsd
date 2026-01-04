@@ -41,7 +41,7 @@ pub fn register(m: &mut RpcModule<RpcContext>, registry: &MethodRegistry) -> Res
             .map_err(|e| RpcError::InvalidParams(e.to_string()))?;
 
         let id = require_non_empty("id", id)?;
-        let event_id = RadrootsNostrEventId::parse(id)
+        let event_id = RadrootsNostrEventId::parse(&id)
             .map_err(|e| RpcError::InvalidParams(format!("invalid id: {e}")))?;
 
         let filter = RadrootsNostrFilter::new()
