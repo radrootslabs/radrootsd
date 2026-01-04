@@ -8,6 +8,7 @@ use crate::api::jsonrpc::{MethodRegistry, RpcContext};
 pub mod dvm;
 pub mod get;
 pub mod list;
+pub mod order;
 pub mod orders;
 pub mod series;
 pub mod validate;
@@ -21,6 +22,7 @@ pub fn module(ctx: RpcContext, registry: MethodRegistry) -> Result<RpcModule<Rpc
     list::register(&mut m, &registry)?;
     dvm::register(&mut m, &registry)?;
     series::register(&mut m, &registry)?;
+    order::register(&mut m, &registry)?;
     orders::register(&mut m, &registry)?;
     validate::register(&mut m, &registry)?;
     Ok(m)
