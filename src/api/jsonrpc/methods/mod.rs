@@ -21,6 +21,9 @@ pub fn register_all(
     root.merge(events::post::module(ctx.clone(), registry.clone())?)?;
     root.merge(events::listing::module(ctx.clone(), registry.clone())?)?;
     root.merge(events::list_set::module(ctx.clone(), registry.clone())?)?;
+    root.merge(events::dvm_request::module(ctx.clone(), registry.clone())?)?;
+    root.merge(events::dvm_result::module(ctx.clone(), registry.clone())?)?;
+    root.merge(events::dvm_feedback::module(ctx.clone(), registry.clone())?)?;
     root.merge(events::farm::module(ctx.clone(), registry.clone())?)?;
     root.merge(events::plot::module(ctx.clone(), registry.clone())?)?;
     root.merge(events::resource_area::module(ctx.clone(), registry.clone())?)?;

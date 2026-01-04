@@ -1,4 +1,7 @@
 pub mod farm;
+pub mod dvm_feedback;
+pub mod dvm_request;
+pub mod dvm_result;
 pub mod plot;
 pub mod resource_area;
 pub mod resource_cap;
