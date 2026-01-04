@@ -3,7 +3,7 @@ use jsonrpsee::server::RpcModule;
 use serde::Serialize;
 use std::time::Duration;
 
-use crate::api::jsonrpc::nostr::{event_tags, event_view_with_tags, NostrEventView};
+use crate::api::jsonrpc::nostr::{event_tags, event_view_with_tags};
 use crate::api::jsonrpc::params::{
     apply_time_bounds,
     limit_or,
@@ -22,18 +22,23 @@ use radroots_nostr::prelude::{
 };
 
 #[derive(Clone, Debug, Serialize)]
-struct ResourceCapEventFlat {
-    #[serde(flatten)]
-    event: NostrEventView,
+struct ResourceCapRow {
+    id: String,
+    author: String,
+    created_at: u64,
+    kind: u32,
+    tags: Vec<Vec<String>>,
+    content: String,
+    sig: String,
     resource_cap: Option<RadrootsResourceHarvestCap>,
 }
 
 #[derive(Clone, Debug, Serialize)]
 struct ResourceCapListResponse {
-    resource_caps: Vec<ResourceCapEventFlat>,
+    resource_caps: Vec<ResourceCapRow>,
 }
 
-fn build_resource_cap_rows<I>(events: I) -> Vec<ResourceCapEventFlat>
+fn build_resource_cap_rows<I>(events: I) -> Vec<ResourceCapRow>
 where
     I: IntoIterator<Item = RadrootsNostrEvent>,
 {
@@ -41,16 +46,30 @@ where
         .into_iter()
         .map(|ev| {
             let tags = event_tags(&ev);
-            let kind = ev.kind.as_u16() as u32;
-            let resource_cap = resource_harvest_cap_from_event(kind, &tags, &ev.content).ok();
-            ResourceCapEventFlat {
-                event: event_view_with_tags(&ev, tags),
+            let resource_cap = parse_resource_cap_event(&ev, &tags);
+            let event = event_view_with_tags(&ev, tags);
+            ResourceCapRow {
+                id: event.id,
+                author: event.author,
+                created_at: event.created_at,
+                kind: event.kind,
+                tags: event.tags,
+                content: event.content,
+                sig: event.sig,
                 resource_cap,
             }
         })
         .collect::<Vec<_>>();
-    items.sort_by(|a, b| b.event.created_at.cmp(&a.event.created_at));
+    items.sort_by(|a, b| b.created_at.cmp(&a.created_at));
     items
+}
+
+fn parse_resource_cap_event(
+    event: &RadrootsNostrEvent,
+    tags: &[Vec<String>],
+) -> Option<RadrootsResourceHarvestCap> {
+    let kind = event.kind.as_u16() as u32;
+    resource_harvest_cap_from_event(kind, tags, &event.content).ok()
 }
 
 pub fn register(m: &mut RpcModule<RpcContext>, registry: &MethodRegistry) -> Result<()> {
@@ -170,10 +189,10 @@ mod tests {
         let caps = build_resource_cap_rows(vec![older, newer]);
 
         assert_eq!(caps.len(), 2);
-        assert_eq!(caps[0].event.id, new_id);
-        assert_eq!(caps[0].event.created_at, 200);
-        assert_eq!(caps[1].event.id, old_id);
-        assert_eq!(caps[1].event.created_at, 100);
+        assert_eq!(caps[0].id, new_id);
+        assert_eq!(caps[0].created_at, 200);
+        assert_eq!(caps[1].id, old_id);
+        assert_eq!(caps[1].created_at, 100);
     }
 
     #[test]
@@ -190,7 +209,7 @@ mod tests {
         let caps = build_resource_cap_rows(vec![event]);
 
         assert_eq!(caps.len(), 1);
-        assert_eq!(caps[0].event.tags, tags);
+        assert_eq!(caps[0].tags, tags);
         let parsed = caps[0].resource_cap.as_ref().expect("cap");
         assert_eq!(parsed.d_tag, "cap-1");
         assert_eq!(parsed.resource_area.d_tag, "area-1");
