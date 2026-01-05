@@ -2,7 +2,7 @@
 
 use anyhow::Result;
 use jsonrpsee::server::RpcModule;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
 use crate::api::jsonrpc::nostr::{event_tags, event_view_with_tags};

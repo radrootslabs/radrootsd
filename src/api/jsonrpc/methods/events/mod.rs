@@ -4,6 +4,7 @@ pub mod follow;
 pub mod dvm_feedback;
 pub mod dvm_request;
 pub mod dvm_result;
+pub mod reaction;
 pub mod plot;
 pub mod resource_area;
 pub mod resource_cap;
