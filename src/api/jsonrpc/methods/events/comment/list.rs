@@ -14,6 +14,7 @@ use crate::api::jsonrpc::params::{
     EventListParams,
 };
 use crate::api::jsonrpc::{MethodRegistry, RpcContext, RpcError};
+use crate::api::jsonrpc::methods::events::helpers::require_non_empty;
 use radroots_events::comment::RadrootsComment;
 use radroots_events::kinds::KIND_COMMENT;
 use radroots_events_codec::comment::decode::comment_from_tags;
@@ -38,6 +39,16 @@ pub(crate) struct CommentRow {
 #[derive(Clone, Debug, Serialize)]
 struct CommentListResponse {
     comments: Vec<CommentRow>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct CommentListParams {
+    #[serde(flatten)]
+    base: EventListParams,
+    #[serde(default)]
+    root_id: Option<String>,
+    #[serde(default)]
+    parent_id: Option<String>,
 }
 
 pub(crate) fn build_comment_rows<I>(events: I) -> Vec<CommentRow>
@@ -71,6 +82,24 @@ fn parse_comment_event(event: &RadrootsNostrEvent, tags: &[Vec<String>]) -> Opti
     comment_from_tags(kind, tags, &event.content).ok()
 }
 
+fn comment_matches_filter(
+    comment: &RadrootsComment,
+    root_id: Option<&str>,
+    parent_id: Option<&str>,
+) -> bool {
+    if let Some(root_id) = root_id {
+        if comment.root.id != root_id {
+            return false;
+        }
+    }
+    if let Some(parent_id) = parent_id {
+        if comment.parent.id != parent_id {
+            return false;
+        }
+    }
+    true
+}
+
 pub fn register(m: &mut RpcModule<RpcContext>, registry: &MethodRegistry) -> Result<()> {
     registry.track("events.comment.list");
     m.register_async_method("events.comment.list", |params, ctx, _| async move {
@@ -78,16 +107,31 @@ pub fn register(m: &mut RpcModule<RpcContext>, registry: &MethodRegistry) -> Res
             return Err(RpcError::NoRelays);
         }
 
+        let CommentListParams {
+            base,
+            root_id,
+            parent_id,
+        } = params
+            .parse::<Option<CommentListParams>>()
+            .map_err(|e| RpcError::InvalidParams(e.to_string()))?
+            .unwrap_or_default();
+
         let EventListParams {
             authors,
             limit,
             since,
             until,
             timeout_secs,
-        } = params
-            .parse::<Option<EventListParams>>()
-            .map_err(|e| RpcError::InvalidParams(e.to_string()))?
-            .unwrap_or_default();
+        } = base;
+
+        let root_id = match root_id {
+            Some(value) => Some(require_non_empty("root_id", value)?),
+            None => None,
+        };
+        let parent_id = match parent_id {
+            Some(value) => Some(require_non_empty("parent_id", value)?),
+            None => None,
+        };
 
         let limit = limit_or(limit);
 
@@ -109,7 +153,18 @@ pub fn register(m: &mut RpcModule<RpcContext>, registry: &MethodRegistry) -> Res
             .await
             .map_err(|e| RpcError::Other(format!("fetch failed: {e}")))?;
 
-        let items = build_comment_rows(events);
+        let mut items = build_comment_rows(events);
+        if root_id.is_some() || parent_id.is_some() {
+            items.retain(|row| {
+                row.comment
+                    .as_ref()
+                    .map(|comment| comment_matches_filter(comment, root_id.as_deref(), parent_id.as_deref()))
+                    .unwrap_or(false)
+            });
+        }
+        if items.len() > limit {
+            items.truncate(limit);
+        }
 
         Ok::<CommentListResponse, RpcError>(CommentListResponse { comments: items })
     })?;
@@ -204,5 +259,17 @@ mod tests {
         assert_eq!(parsed.content, "hello");
         assert_eq!(parsed.root.id, "root-1");
         assert_eq!(parsed.parent.id, "parent-1");
+    }
+
+    #[test]
+    fn comment_filters_match_root_and_parent() {
+        let pubkey = "3bdebe7b23fccb167fc8843280b789839dfa296ae9fd86cc9769b4813d76d8a4";
+        let comment = sample_comment("root-1", "parent-1", pubkey, "hello");
+
+        assert!(super::comment_matches_filter(&comment, Some("root-1"), None));
+        assert!(super::comment_matches_filter(&comment, None, Some("parent-1")));
+        assert!(super::comment_matches_filter(&comment, Some("root-1"), Some("parent-1")));
+        assert!(!super::comment_matches_filter(&comment, Some("root-2"), None));
+        assert!(!super::comment_matches_filter(&comment, None, Some("parent-2")));
     }
 }
