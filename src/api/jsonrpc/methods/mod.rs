@@ -18,6 +18,7 @@ pub fn register_all(
     root.merge(system::module(ctx.clone(), registry.clone())?)?;
     root.merge(relays::module(ctx.clone(), registry.clone())?)?;
     root.merge(events::profile::module(ctx.clone(), registry.clone())?)?;
+    root.merge(events::follow::module(ctx.clone(), registry.clone())?)?;
     root.merge(events::post::module(ctx.clone(), registry.clone())?)?;
     root.merge(events::listing::module(ctx.clone(), registry.clone())?)?;
     root.merge(events::list_set::module(ctx.clone(), registry.clone())?)?;
