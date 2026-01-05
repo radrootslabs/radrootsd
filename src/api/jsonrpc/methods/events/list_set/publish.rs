@@ -4,13 +4,12 @@ use anyhow::Result;
 use jsonrpsee::server::RpcModule;
 use serde::Deserialize;
 
-use crate::api::jsonrpc::methods::events::helpers::send_event_with_options;
 use crate::api::jsonrpc::nostr::{publish_response, PublishResponse};
 use crate::api::jsonrpc::{MethodRegistry, RpcContext, RpcError};
 use radroots_events::kinds::{is_nip51_list_set_kind, KIND_LIST_SET_GENERIC};
 use radroots_events::list_set::RadrootsListSet;
 use radroots_events_codec::list_set::encode::list_set_build_tags;
-use radroots_nostr::prelude::radroots_nostr_build_event;
+use radroots_nostr::prelude::{radroots_nostr_build_event, radroots_nostr_send_event};
 
 #[derive(Debug, Deserialize)]
 struct PublishListSetParams {
@@ -19,10 +18,6 @@ struct PublishListSetParams {
     kind: Option<u32>,
     #[serde(default)]
     tags: Option<Vec<Vec<String>>>,
-    #[serde(default)]
-    author_secret_key: Option<String>,
-    #[serde(default)]
-    created_at: Option<u64>,
 }
 
 pub fn register(m: &mut RpcModule<RpcContext>, registry: &MethodRegistry) -> Result<()> {
@@ -37,8 +32,6 @@ pub fn register(m: &mut RpcModule<RpcContext>, registry: &MethodRegistry) -> Res
             list_set,
             kind,
             tags,
-            author_secret_key,
-            created_at,
         } = params
             .parse()
             .map_err(|e| RpcError::InvalidParams(e.to_string()))?;
@@ -60,7 +53,9 @@ pub fn register(m: &mut RpcModule<RpcContext>, registry: &MethodRegistry) -> Res
         let builder = radroots_nostr_build_event(kind, content, tag_slices)
             .map_err(|e| RpcError::Other(format!("failed to build list_set event: {e}")))?;
 
-        let output = send_event_with_options(&ctx, builder, author_secret_key, created_at).await?;
+        let output = radroots_nostr_send_event(&ctx.state.client, builder)
+            .await
+            .map_err(|e| RpcError::Other(format!("failed to publish list_set: {e}")))?;
 
         Ok::<PublishResponse, RpcError>(publish_response(output))
     })?;

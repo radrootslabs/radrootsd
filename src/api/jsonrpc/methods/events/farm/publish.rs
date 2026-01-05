@@ -2,23 +2,18 @@ use anyhow::Result;
 use jsonrpsee::server::RpcModule;
 use serde::Deserialize;
 
-use crate::api::jsonrpc::methods::events::helpers::send_event_with_options;
 use crate::api::jsonrpc::nostr::{publish_response, PublishResponse};
 use crate::api::jsonrpc::{MethodRegistry, RpcContext, RpcError};
 use radroots_events::farm::RadrootsFarm;
 use radroots_events::kinds::KIND_FARM;
 use radroots_events_codec::farm::encode::farm_build_tags;
-use radroots_nostr::prelude::radroots_nostr_build_event;
+use radroots_nostr::prelude::{radroots_nostr_build_event, radroots_nostr_send_event};
 
 #[derive(Debug, Deserialize)]
 struct PublishFarmParams {
     farm: RadrootsFarm,
     #[serde(default)]
     tags: Option<Vec<Vec<String>>>,
-    #[serde(default)]
-    author_secret_key: Option<String>,
-    #[serde(default)]
-    created_at: Option<u64>,
 }
 
 pub fn register(m: &mut RpcModule<RpcContext>, registry: &MethodRegistry) -> Result<()> {
@@ -29,12 +24,7 @@ pub fn register(m: &mut RpcModule<RpcContext>, registry: &MethodRegistry) -> Res
             return Err(RpcError::NoRelays);
         }
 
-        let PublishFarmParams {
-            farm,
-            tags,
-            author_secret_key,
-            created_at,
-        } = params
+        let PublishFarmParams { farm, tags } = params
             .parse()
             .map_err(|e| RpcError::InvalidParams(e.to_string()))?;
 
@@ -49,7 +39,9 @@ pub fn register(m: &mut RpcModule<RpcContext>, registry: &MethodRegistry) -> Res
         let builder = radroots_nostr_build_event(KIND_FARM, content, tag_slices)
             .map_err(|e| RpcError::Other(format!("failed to build farm event: {e}")))?;
 
-        let output = send_event_with_options(&ctx, builder, author_secret_key, created_at).await?;
+        let output = radroots_nostr_send_event(&ctx.state.client, builder)
+            .await
+            .map_err(|e| RpcError::Other(format!("failed to publish farm: {e}")))?;
 
         Ok::<PublishResponse, RpcError>(publish_response(output))
     })?;

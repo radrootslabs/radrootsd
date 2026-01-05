@@ -14,15 +14,10 @@ pub struct Radrootsd {
     pub pubkey: RadrootsNostrPublicKey,
     pub metadata: RadrootsNostrMetadata,
     pub info: serde_json::Value,
-    pub(crate) allow_test_events: bool,
 }
 
 impl Radrootsd {
-    pub fn new(
-        keys: RadrootsNostrKeys,
-        metadata: RadrootsNostrMetadata,
-        allow_test_events: bool,
-    ) -> Self {
+    pub fn new(keys: RadrootsNostrKeys, metadata: RadrootsNostrMetadata) -> Self {
         let pubkey = keys.public_key();
         let client = RadrootsNostrClient::new(keys);
         let info = serde_json::json!({
@@ -36,7 +31,6 @@ impl Radrootsd {
             pubkey,
             metadata,
             info,
-            allow_test_events,
         }
     }
 }
