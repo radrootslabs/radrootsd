@@ -28,7 +28,8 @@ pub async fn run_radrootsd(settings: &config::Settings, args: &cli_args) -> Resu
     )?;
     let keys = identity.keys().clone();
 
-    let radrootsd = Radrootsd::new(keys, settings.metadata.clone());
+    let allow_test_events = settings.config.rpc.allow_test_events;
+    let radrootsd = Radrootsd::new(keys, settings.metadata.clone(), allow_test_events);
 
     for relay in settings.config.relays.iter() {
         radrootsd.client.add_relay(relay).await?;
@@ -38,6 +39,7 @@ pub async fn run_radrootsd(settings: &config::Settings, args: &cli_args) -> Resu
         let client = radrootsd.client.clone();
         let md = settings.metadata.clone();
         let identity = identity.clone();
+        let allow_test_events = allow_test_events;
         let has_metadata = serde_json::to_value(&md)
             .ok()
             .and_then(|v| v.as_object().cloned())
@@ -46,6 +48,9 @@ pub async fn run_radrootsd(settings: &config::Settings, args: &cli_args) -> Resu
 
         tokio::spawn(async move {
             client.connect().await;
+            if allow_test_events {
+                return;
+            }
             let profile_published =
                 match radroots_nostr_publish_identity_profile_with_type(
                     &client,

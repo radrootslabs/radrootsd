@@ -164,7 +164,7 @@ mod tests {
         let farm_pubkey = pubkey;
         let old_id = format!("{:064x}", 1);
         let new_id = format!("{:064x}", 2);
-        let plot = sample_plot("plot-1", "Plot One", farm_pubkey, "farm-1");
+        let plot = sample_plot("AAAAAAAAAAAAAAAAAAAAAQ", "Plot One", farm_pubkey, "AAAAAAAAAAAAAAAAAAAAAA");
         let content = serde_json::to_string(&plot).expect("content");
         let tags = plot_build_tags(&plot).expect("tags");
         let older = plot_event(&old_id, pubkey, 100, tags.clone(), &content);
@@ -182,7 +182,7 @@ mod tests {
     #[test]
     fn plot_list_uses_tag_fields_when_missing_in_content() {
         let pubkey = "2bdebe7b23fccb167fc8843280b789839dfa296ae9fd86cc9769b4813d76d8a4";
-        let plot = sample_plot("plot-1", "Plot One", pubkey, "farm-1");
+        let plot = sample_plot("AAAAAAAAAAAAAAAAAAAAAQ", "Plot One", pubkey, "AAAAAAAAAAAAAAAAAAAAAA");
         let tags = plot_build_tags(&plot).expect("tags");
         let content_plot = sample_plot("", "Plot One", "", "");
         let content = serde_json::to_string(&content_plot).expect("content");
@@ -194,8 +194,8 @@ mod tests {
         assert_eq!(plots.len(), 1);
         assert_eq!(plots[0].tags, tags);
         let parsed = plots[0].plot.as_ref().expect("plot");
-        assert_eq!(parsed.d_tag, "plot-1");
+        assert_eq!(parsed.d_tag, "AAAAAAAAAAAAAAAAAAAAAQ");
         assert_eq!(parsed.farm.pubkey, pubkey);
-        assert_eq!(parsed.farm.d_tag, "farm-1");
+        assert_eq!(parsed.farm.d_tag, "AAAAAAAAAAAAAAAAAAAAAA");
     }
 }

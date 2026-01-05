@@ -172,10 +172,10 @@ mod tests {
             display_price_unit: None,
         };
         RadrootsListing {
-            d_tag: "listing-1".to_string(),
+            d_tag: "AAAAAAAAAAAAAAAAAAAAAg".to_string(),
             farm: RadrootsListingFarmRef {
                 pubkey: farm_pubkey.to_string(),
-                d_tag: "farm-1".to_string(),
+                d_tag: "AAAAAAAAAAAAAAAAAAAAAA".to_string(),
             },
             product: RadrootsListingProduct {
                 key: "coffee".to_string(),
@@ -231,7 +231,7 @@ mod tests {
         assert_eq!(listings.len(), 1);
         assert_eq!(listings[0].tags, tags);
         let parsed = listings[0].listing.as_ref().expect("listing");
-        assert_eq!(parsed.d_tag, "listing-1");
+        assert_eq!(parsed.d_tag, "AAAAAAAAAAAAAAAAAAAAAg");
         assert_eq!(parsed.farm.pubkey, pubkey);
         assert_eq!(parsed.primary_bin_id, "bin-1");
     }

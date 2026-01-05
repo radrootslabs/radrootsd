@@ -354,7 +354,7 @@ mod tests {
     fn tag_has_value_matches_exact() {
         let tags = vec![
             vec!["t".to_string(), "radroots:type:farm".to_string()],
-            vec!["d".to_string(), "listing-1".to_string()],
+            vec!["d".to_string(), "AAAAAAAAAAAAAAAAAAAAAg".to_string()],
         ];
         assert!(tag_has_value(&tags, "t", "radroots:type:farm"));
         assert!(!tag_has_value(&tags, "t", "radroots:type:individual"));

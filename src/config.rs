@@ -40,6 +40,8 @@ pub struct RpcConfig {
     #[serde(default = "default_message_buffer_capacity")]
     pub message_buffer_capacity: u32,
     #[serde(default)]
+    pub allow_test_events: bool,
+    #[serde(default)]
     pub batch_request_limit: Option<u32>,
 }
 
@@ -52,6 +54,7 @@ impl Default for RpcConfig {
             max_connections: default_max_connections(),
             max_subscriptions_per_connection: default_max_subscriptions_per_connection(),
             message_buffer_capacity: default_message_buffer_capacity(),
+            allow_test_events: false,
             batch_request_limit: None,
         }
     }

@@ -3,12 +3,18 @@
 use std::time::Duration;
 
 use crate::api::jsonrpc::params::{parse_pubkeys, timeout_or};
-use crate::api::jsonrpc::RpcError;
+use crate::api::jsonrpc::{RpcContext, RpcError};
 use radroots_nostr::prelude::{
+    radroots_nostr_send_event,
     RadrootsNostrClient,
     RadrootsNostrEvent,
+    RadrootsNostrEventBuilder,
+    RadrootsNostrEventId,
     RadrootsNostrFilter,
+    RadrootsNostrKeys,
+    RadrootsNostrOutput,
     RadrootsNostrPublicKey,
+    RadrootsNostrTimestamp,
 };
 
 pub(crate) fn parse_author_or_default(
@@ -32,6 +38,68 @@ pub(crate) fn require_non_empty(label: &str, value: String) -> Result<String, Rp
         Err(RpcError::InvalidParams(format!("{label} cannot be empty")))
     } else {
         Ok(value)
+    }
+}
+
+pub(crate) fn validate_test_event_options(
+    allow_test_events: bool,
+    author_secret_key: Option<String>,
+    created_at: Option<u64>,
+) -> Result<(Option<String>, Option<u64>), RpcError> {
+    let has_test_options = author_secret_key.is_some() || created_at.is_some();
+    if has_test_options && !allow_test_events {
+        return Err(RpcError::InvalidParams(
+            "test event overrides require config.rpc.allow_test_events = true".to_string(),
+        ));
+    }
+    let author_secret_key = match author_secret_key {
+        Some(value) => {
+            let value = value.trim().to_string();
+            if value.is_empty() {
+                return Err(RpcError::InvalidParams(
+                    "author_secret_key cannot be empty".to_string(),
+                ));
+            }
+            Some(value)
+        }
+        None => None,
+    };
+    Ok((author_secret_key, created_at))
+}
+
+pub(crate) async fn send_event_with_options(
+    ctx: &RpcContext,
+    builder: RadrootsNostrEventBuilder,
+    author_secret_key: Option<String>,
+    created_at: Option<u64>,
+) -> Result<RadrootsNostrOutput<RadrootsNostrEventId>, RpcError> {
+    let (author_secret_key, created_at) = validate_test_event_options(
+        ctx.state.allow_test_events,
+        author_secret_key,
+        created_at,
+    )?;
+    let builder = match created_at {
+        Some(created_at) => {
+            builder.custom_created_at(RadrootsNostrTimestamp::from_secs(created_at))
+        }
+        None => builder,
+    };
+
+    if let Some(author_secret_key) = author_secret_key {
+        let keys = RadrootsNostrKeys::parse(&author_secret_key)
+            .map_err(|e| RpcError::InvalidParams(format!("invalid author_secret_key: {e}")))?;
+        let event = builder
+            .sign_with_keys(&keys)
+            .map_err(|e| RpcError::Other(format!("failed to sign event: {e}")))?;
+        ctx.state
+            .client
+            .send_event(&event)
+            .await
+            .map_err(|e| RpcError::Other(format!("failed to publish event: {e}")))
+    } else {
+        radroots_nostr_send_event(&ctx.state.client, builder)
+            .await
+            .map_err(|e| RpcError::Other(format!("failed to publish event: {e}")))
     }
 }
 
@@ -73,7 +141,8 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::select_latest_event;
+    use super::{select_latest_event, validate_test_event_options};
+    use crate::api::jsonrpc::RpcError;
     use radroots_nostr::prelude::RadrootsNostrEvent;
     use serde_json::json;
 
@@ -100,5 +169,37 @@ mod tests {
         let latest = select_latest_event(vec![older, newer]).expect("latest");
         assert_eq!(latest.id.to_string(), newer_id);
         assert_eq!(latest.created_at.as_secs(), 200);
+    }
+
+    #[test]
+    fn test_event_options_require_flag() {
+        let err =
+            validate_test_event_options(false, Some("deadbeef".to_string()), None).unwrap_err();
+        match err {
+            RpcError::InvalidParams(message) => {
+                assert!(message.contains("allow_test_events"));
+            }
+            _ => panic!("unexpected error type"),
+        }
+    }
+
+    #[test]
+    fn test_event_options_reject_empty_secret() {
+        let err = validate_test_event_options(true, Some("  ".to_string()), None).unwrap_err();
+        match err {
+            RpcError::InvalidParams(message) => {
+                assert!(message.contains("author_secret_key"));
+            }
+            _ => panic!("unexpected error type"),
+        }
+    }
+
+    #[test]
+    fn test_event_options_pass_through() {
+        let (secret_key, created_at) =
+            validate_test_event_options(true, Some("deadbeef".to_string()), Some(42))
+                .expect("options");
+        assert_eq!(secret_key, Some("deadbeef".to_string()));
+        assert_eq!(created_at, Some(42));
     }
 }

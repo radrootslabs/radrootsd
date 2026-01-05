@@ -2,20 +2,22 @@ use anyhow::Result;
 use jsonrpsee::server::RpcModule;
 use serde::Deserialize;
 
+use crate::api::jsonrpc::methods::events::helpers::send_event_with_options;
 use crate::api::jsonrpc::nostr::{publish_response, PublishResponse};
 use crate::api::jsonrpc::{MethodRegistry, RpcContext, RpcError};
 
 use radroots_events::profile::{RadrootsProfile, RadrootsProfileType};
 use radroots_events_codec::profile::encode::to_wire_parts_with_profile_type;
-use radroots_nostr::prelude::{
-    radroots_nostr_build_event,
-    radroots_nostr_send_event,
-};
+use radroots_nostr::prelude::radroots_nostr_build_event;
 
 #[derive(Debug, Deserialize)]
 struct PublishProfileParams {
     profile: RadrootsProfile,
     profile_type: RadrootsProfileType,
+    #[serde(default)]
+    author_secret_key: Option<String>,
+    #[serde(default)]
+    created_at: Option<u64>,
 }
 
 pub fn register(m: &mut RpcModule<RpcContext>, registry: &MethodRegistry) -> Result<()> {
@@ -26,7 +28,12 @@ pub fn register(m: &mut RpcModule<RpcContext>, registry: &MethodRegistry) -> Res
             return Err(RpcError::NoRelays);
         }
 
-        let PublishProfileParams { profile, profile_type } = params
+        let PublishProfileParams {
+            profile,
+            profile_type,
+            author_secret_key,
+            created_at,
+        } = params
             .parse()
             .map_err(|e| RpcError::InvalidParams(e.to_string()))?;
 
@@ -35,9 +42,7 @@ pub fn register(m: &mut RpcModule<RpcContext>, registry: &MethodRegistry) -> Res
         let builder = radroots_nostr_build_event(parts.kind, parts.content, parts.tags)
             .map_err(|e| RpcError::Other(format!("failed to build profile event: {e}")))?;
 
-        let output = radroots_nostr_send_event(&ctx.state.client, builder)
-            .await
-            .map_err(|e| RpcError::Other(format!("failed to publish metadata: {e}")))?;
+        let output = send_event_with_options(&ctx, builder, author_secret_key, created_at).await?;
 
         Ok::<PublishResponse, RpcError>(publish_response(output))
     })?;

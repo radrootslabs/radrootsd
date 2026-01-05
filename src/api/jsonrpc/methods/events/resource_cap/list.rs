@@ -180,7 +180,7 @@ mod tests {
         let pubkey = "1bdebe7b23fccb167fc8843280b789839dfa296ae9fd86cc9769b4813d76d8a4";
         let old_id = format!("{:064x}", 1);
         let new_id = format!("{:064x}", 2);
-        let cap = sample_cap("cap-1", pubkey, "area-1");
+        let cap = sample_cap("CAAAAAAAAAAAAAAAAAAAAA", pubkey, "AAAAAAAAAAAAAAAAAAAAAw");
         let content = serde_json::to_string(&cap).expect("content");
         let tags = resource_harvest_cap_build_tags(&cap).expect("tags");
         let older = resource_cap_event(&old_id, pubkey, 100, tags.clone(), &content);
@@ -198,9 +198,9 @@ mod tests {
     #[test]
     fn resource_cap_list_uses_tag_d_when_missing_in_content() {
         let pubkey = "2bdebe7b23fccb167fc8843280b789839dfa296ae9fd86cc9769b4813d76d8a4";
-        let cap = sample_cap("cap-1", pubkey, "area-1");
+        let cap = sample_cap("CAAAAAAAAAAAAAAAAAAAAA", pubkey, "AAAAAAAAAAAAAAAAAAAAAw");
         let tags = resource_harvest_cap_build_tags(&cap).expect("tags");
-        let mut content_cap = sample_cap("", pubkey, "area-1");
+        let mut content_cap = sample_cap("", pubkey, "AAAAAAAAAAAAAAAAAAAAAw");
         content_cap.display_label = Some("display".to_string());
         let content = serde_json::to_string(&content_cap).expect("content");
         let id = format!("{:064x}", 3);
@@ -211,8 +211,8 @@ mod tests {
         assert_eq!(caps.len(), 1);
         assert_eq!(caps[0].tags, tags);
         let parsed = caps[0].resource_cap.as_ref().expect("cap");
-        assert_eq!(parsed.d_tag, "cap-1");
-        assert_eq!(parsed.resource_area.d_tag, "area-1");
+        assert_eq!(parsed.d_tag, "CAAAAAAAAAAAAAAAAAAAAA");
+        assert_eq!(parsed.resource_area.d_tag, "AAAAAAAAAAAAAAAAAAAAAw");
         assert_eq!(parsed.product.key, "coffee");
     }
 }

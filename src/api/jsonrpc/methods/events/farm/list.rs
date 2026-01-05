@@ -161,7 +161,7 @@ mod tests {
         let pubkey = "1bdebe7b23fccb167fc8843280b789839dfa296ae9fd86cc9769b4813d76d8a4";
         let old_id = format!("{:064x}", 1);
         let new_id = format!("{:064x}", 2);
-        let farm = sample_farm("farm-1", "Farm One");
+        let farm = sample_farm("AAAAAAAAAAAAAAAAAAAAAA", "Farm One");
         let content = serde_json::to_string(&farm).expect("content");
         let tags = farm_build_tags(&farm).expect("tags");
         let older = farm_event(&old_id, pubkey, 100, tags.clone(), &content);
@@ -179,7 +179,7 @@ mod tests {
     #[test]
     fn farm_list_uses_tag_d_when_missing_in_content() {
         let pubkey = "2bdebe7b23fccb167fc8843280b789839dfa296ae9fd86cc9769b4813d76d8a4";
-        let farm = sample_farm("farm-1", "Farm One");
+        let farm = sample_farm("AAAAAAAAAAAAAAAAAAAAAA", "Farm One");
         let tags = farm_build_tags(&farm).expect("tags");
         let content_farm = sample_farm("", "Farm One");
         let content = serde_json::to_string(&content_farm).expect("content");
@@ -191,7 +191,7 @@ mod tests {
         assert_eq!(farms.len(), 1);
         assert_eq!(farms[0].tags, tags);
         let parsed = farms[0].farm.as_ref().expect("farm");
-        assert_eq!(parsed.d_tag, "farm-1");
+        assert_eq!(parsed.d_tag, "AAAAAAAAAAAAAAAAAAAAAA");
         assert_eq!(parsed.name, "Farm One");
     }
 }

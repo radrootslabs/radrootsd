@@ -245,7 +245,7 @@ mod tests {
     #[test]
     fn dvm_event_view_parses_envelope_and_prefers_envelope_order_id() {
         let pubkey = "1bdebe7b23fccb167fc8843280b789839dfa296ae9fd86cc9769b4813d76d8a4";
-        let listing_addr = format!("{LISTING_KIND}:{pubkey}:listing-1");
+        let listing_addr = format!("{LISTING_KIND}:{pubkey}:AAAAAAAAAAAAAAAAAAAAAg");
         let envelope = TradeListingEnvelope::new(
             TradeListingMessageType::OrderRequest,
             listing_addr,
@@ -279,7 +279,7 @@ mod tests {
     #[test]
     fn order_summaries_counts_and_sorts() {
         let pubkey = "3bdebe7b23fccb167fc8843280b789839dfa296ae9fd86cc9769b4813d76d8a4";
-        let listing_addr = format!("{LISTING_KIND}:{pubkey}:listing-1");
+        let listing_addr = format!("{LISTING_KIND}:{pubkey}:AAAAAAAAAAAAAAAAAAAAAg");
         let order_a = vec![vec!["d".to_string(), "order-a".to_string()]];
         let order_b = vec![vec!["d".to_string(), "order-b".to_string()]];
 
