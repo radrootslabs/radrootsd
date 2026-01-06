@@ -7,10 +7,12 @@ use crate::api::jsonrpc::{MethodRegistry, RpcContext};
 
 pub mod status;
 pub mod connect;
+pub mod get_public_key;
 
 pub fn module(ctx: RpcContext, registry: MethodRegistry) -> Result<RpcModule<RpcContext>> {
     let mut m = RpcModule::new(ctx);
     status::register(&mut m, &registry)?;
     connect::register(&mut m, &registry)?;
+    get_public_key::register(&mut m, &registry)?;
     Ok(m)
 }
