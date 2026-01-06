@@ -13,6 +13,7 @@ use nostr::JsonUtil;
 use tokio::sync::broadcast;
 use tracing::{info, warn};
 
+use crate::core::nip46::session::Nip46Session;
 use crate::core::state::Radrootsd;
 use radroots_nostr::prelude::{
     radroots_nostr_filter_tag,
@@ -96,7 +97,7 @@ async fn run_nip46_listener(radrootsd: Radrootsd) -> Result<()> {
                 continue;
             }
         };
-        let response = handle_request(&radrootsd, request);
+        let response = handle_request(&radrootsd, &event.pubkey, request).await;
         let response_message = NostrConnectMessage::response(request_id, response);
         let response_event = RadrootsNostrEventBuilder::nostr_connect(
             &radrootsd.keys,
@@ -108,7 +109,11 @@ async fn run_nip46_listener(radrootsd: Radrootsd) -> Result<()> {
     }
 }
 
-fn handle_request(radrootsd: &Radrootsd, request: NostrConnectRequest) -> NostrConnectResponse {
+async fn handle_request(
+    radrootsd: &Radrootsd,
+    client_pubkey: &radroots_nostr::prelude::RadrootsNostrPublicKey,
+    request: NostrConnectRequest,
+) -> NostrConnectResponse {
     match request {
         NostrConnectRequest::Connect {
             remote_signer_public_key,
@@ -117,12 +122,34 @@ fn handle_request(radrootsd: &Radrootsd, request: NostrConnectRequest) -> NostrC
             if remote_signer_public_key != radrootsd.pubkey {
                 return NostrConnectResponse::with_error("remote signer pubkey mismatch");
             }
+            let session_id = client_pubkey.to_hex();
+            let session = Nip46Session {
+                id: session_id,
+                client: radrootsd.client.clone(),
+                client_keys: radrootsd.keys.clone(),
+                client_pubkey: client_pubkey.clone(),
+                remote_signer_pubkey: radrootsd.pubkey,
+                user_pubkey: Some(radrootsd.pubkey),
+                relays: Vec::new(),
+                perms: default_perms(),
+                name: None,
+                url: None,
+                image: None,
+            };
+            radrootsd.nip46_sessions.insert(session).await;
             NostrConnectResponse::with_result(ResponseResult::Ack)
         }
         NostrConnectRequest::GetPublicKey => {
             NostrConnectResponse::with_result(ResponseResult::GetPublicKey(radrootsd.pubkey))
         }
         NostrConnectRequest::SignEvent(unsigned) => {
+            let session = match session_for_client(radrootsd, client_pubkey).await {
+                Ok(session) => session,
+                Err(response) => return response,
+            };
+            if !has_permission(&session, "sign_event") {
+                return NostrConnectResponse::with_error("unauthorized sign_event");
+            }
             if unsigned.pubkey != radrootsd.pubkey {
                 return NostrConnectResponse::with_error("pubkey mismatch");
             }
@@ -132,6 +159,13 @@ fn handle_request(radrootsd: &Radrootsd, request: NostrConnectRequest) -> NostrC
             }
         }
         NostrConnectRequest::Nip04Encrypt { public_key, text } => {
+            let session = match session_for_client(radrootsd, client_pubkey).await {
+                Ok(session) => session,
+                Err(response) => return response,
+            };
+            if !has_permission(&session, "nip04_encrypt") {
+                return NostrConnectResponse::with_error("unauthorized nip04_encrypt");
+            }
             match nip04::encrypt(radrootsd.keys.secret_key(), &public_key, text) {
                 Ok(ciphertext) => {
                     NostrConnectResponse::with_result(ResponseResult::Nip04Encrypt { ciphertext })
@@ -140,6 +174,13 @@ fn handle_request(radrootsd: &Radrootsd, request: NostrConnectRequest) -> NostrC
             }
         }
         NostrConnectRequest::Nip04Decrypt { public_key, ciphertext } => {
+            let session = match session_for_client(radrootsd, client_pubkey).await {
+                Ok(session) => session,
+                Err(response) => return response,
+            };
+            if !has_permission(&session, "nip04_decrypt") {
+                return NostrConnectResponse::with_error("unauthorized nip04_decrypt");
+            }
             match nip04::decrypt(radrootsd.keys.secret_key(), &public_key, ciphertext) {
                 Ok(plaintext) => {
                     NostrConnectResponse::with_result(ResponseResult::Nip04Decrypt { plaintext })
@@ -148,6 +189,13 @@ fn handle_request(radrootsd: &Radrootsd, request: NostrConnectRequest) -> NostrC
             }
         }
         NostrConnectRequest::Nip44Encrypt { public_key, text } => {
+            let session = match session_for_client(radrootsd, client_pubkey).await {
+                Ok(session) => session,
+                Err(response) => return response,
+            };
+            if !has_permission(&session, "nip44_encrypt") {
+                return NostrConnectResponse::with_error("unauthorized nip44_encrypt");
+            }
             match nip44::encrypt(radrootsd.keys.secret_key(), &public_key, text, nip44::Version::V2)
             {
                 Ok(ciphertext) => {
@@ -157,6 +205,13 @@ fn handle_request(radrootsd: &Radrootsd, request: NostrConnectRequest) -> NostrC
             }
         }
         NostrConnectRequest::Nip44Decrypt { public_key, ciphertext } => {
+            let session = match session_for_client(radrootsd, client_pubkey).await {
+                Ok(session) => session,
+                Err(response) => return response,
+            };
+            if !has_permission(&session, "nip44_decrypt") {
+                return NostrConnectResponse::with_error("unauthorized nip44_decrypt");
+            }
             match nip44::decrypt(radrootsd.keys.secret_key(), &public_key, ciphertext) {
                 Ok(plaintext) => {
                     NostrConnectResponse::with_result(ResponseResult::Nip44Decrypt { plaintext })
@@ -167,4 +222,29 @@ fn handle_request(radrootsd: &Radrootsd, request: NostrConnectRequest) -> NostrC
         NostrConnectRequest::Ping => NostrConnectResponse::with_result(ResponseResult::Pong),
         _ => NostrConnectResponse::with_error("unsupported request"),
     }
+}
+
+async fn session_for_client(
+    radrootsd: &Radrootsd,
+    client_pubkey: &radroots_nostr::prelude::RadrootsNostrPublicKey,
+) -> Result<Nip46Session, NostrConnectResponse> {
+    let session_id = client_pubkey.to_hex();
+    match radrootsd.nip46_sessions.get(&session_id).await {
+        Some(session) => Ok(session),
+        None => Err(NostrConnectResponse::with_error("unauthorized")),
+    }
+}
+
+fn has_permission(session: &Nip46Session, perm: &str) -> bool {
+    session.perms.iter().any(|entry| entry == perm)
+}
+
+fn default_perms() -> Vec<String> {
+    vec![
+        "sign_event".to_string(),
+        "nip04_encrypt".to_string(),
+        "nip04_decrypt".to_string(),
+        "nip44_encrypt".to_string(),
+        "nip44_decrypt".to_string(),
+    ]
 }
