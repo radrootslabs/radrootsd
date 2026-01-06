@@ -2,7 +2,12 @@ use std::time::Duration;
 
 use anyhow::{anyhow, Result};
 use nostr::nips::nip44;
-use nostr::nips::nip46::{NostrConnectMessage, NostrConnectRequest, NostrConnectResponse, ResponseResult};
+use nostr::nips::nip46::{
+    NostrConnectMessage,
+    NostrConnectRequest,
+    NostrConnectResponse,
+    ResponseResult,
+};
 use nostr::JsonUtil;
 use tokio::sync::broadcast;
 use tracing::{info, warn};
@@ -115,6 +120,15 @@ fn handle_request(radrootsd: &Radrootsd, request: NostrConnectRequest) -> NostrC
         }
         NostrConnectRequest::GetPublicKey => {
             NostrConnectResponse::with_result(ResponseResult::GetPublicKey(radrootsd.pubkey))
+        }
+        NostrConnectRequest::SignEvent(unsigned) => {
+            if unsigned.pubkey != radrootsd.pubkey {
+                return NostrConnectResponse::with_error("pubkey mismatch");
+            }
+            match unsigned.sign_with_keys(&radrootsd.keys) {
+                Ok(event) => NostrConnectResponse::with_result(ResponseResult::SignEvent(Box::new(event))),
+                Err(err) => NostrConnectResponse::with_error(format!("sign_event failed: {err}")),
+            }
         }
         NostrConnectRequest::Ping => NostrConnectResponse::with_result(ResponseResult::Pong),
         _ => NostrConnectResponse::with_error("unsupported request"),
