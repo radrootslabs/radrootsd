@@ -1,12 +1,16 @@
 use std::time::Duration;
 
 use anyhow::{anyhow, Result};
+use nostr::nips::nip44;
+use nostr::nips::nip46::{NostrConnectMessage, NostrConnectRequest, NostrConnectResponse, ResponseResult};
+use nostr::JsonUtil;
 use tokio::sync::broadcast;
 use tracing::{info, warn};
 
 use crate::core::state::Radrootsd;
 use radroots_nostr::prelude::{
     radroots_nostr_filter_tag,
+    RadrootsNostrEventBuilder,
     RadrootsNostrFilter,
     RadrootsNostrKind,
     RadrootsNostrRelayPoolNotification,
@@ -55,6 +59,64 @@ async fn run_nip46_listener(radrootsd: Radrootsd) -> Result<()> {
         if event.kind != RadrootsNostrKind::NostrConnect {
             continue;
         }
-        info!("NIP-46 request received: {}", event.id);
+
+        let decrypted = match nip44::decrypt(
+            radrootsd.keys.secret_key(),
+            &event.pubkey,
+            &event.content,
+        ) {
+            Ok(value) => value,
+            Err(err) => {
+                warn!("NIP-46 decrypt failed: {err}");
+                continue;
+            }
+        };
+        let message = match NostrConnectMessage::from_json(&decrypted) {
+            Ok(value) => value,
+            Err(err) => {
+                warn!("NIP-46 parse failed: {err}");
+                continue;
+            }
+        };
+        if !message.is_request() {
+            continue;
+        }
+
+        let request_id = message.id().to_string();
+        let request = match message.to_request() {
+            Ok(value) => value,
+            Err(err) => {
+                warn!("NIP-46 request invalid: {err}");
+                continue;
+            }
+        };
+        let response = handle_request(&radrootsd, request);
+        let response_message = NostrConnectMessage::response(request_id, response);
+        let response_event = RadrootsNostrEventBuilder::nostr_connect(
+            &radrootsd.keys,
+            event.pubkey,
+            response_message,
+        )
+        .map_err(|err| anyhow!("nip46 response build failed: {err}"))?;
+        let _ = radrootsd.client.send_event_builder(response_event).await;
+    }
+}
+
+fn handle_request(radrootsd: &Radrootsd, request: NostrConnectRequest) -> NostrConnectResponse {
+    match request {
+        NostrConnectRequest::Connect {
+            remote_signer_public_key,
+            ..
+        } => {
+            if remote_signer_public_key != radrootsd.pubkey {
+                return NostrConnectResponse::with_error("remote signer pubkey mismatch");
+            }
+            NostrConnectResponse::with_result(ResponseResult::Ack)
+        }
+        NostrConnectRequest::GetPublicKey => {
+            NostrConnectResponse::with_result(ResponseResult::GetPublicKey(radrootsd.pubkey))
+        }
+        NostrConnectRequest::Ping => NostrConnectResponse::with_result(ResponseResult::Pong),
+        _ => NostrConnectResponse::with_error("unsupported request"),
     }
 }
