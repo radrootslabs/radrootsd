@@ -6,9 +6,11 @@ use jsonrpsee::server::RpcModule;
 use crate::api::jsonrpc::{MethodRegistry, RpcContext};
 
 pub mod status;
+pub mod connect;
 
 pub fn module(ctx: RpcContext, registry: MethodRegistry) -> Result<RpcModule<RpcContext>> {
     let mut m = RpcModule::new(ctx);
     status::register(&mut m, &registry)?;
+    connect::register(&mut m, &registry)?;
     Ok(m)
 }

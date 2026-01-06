@@ -4,7 +4,7 @@ use serde::Serialize;
 
 use crate::api::jsonrpc::{MethodRegistry, RpcContext, RpcError};
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 struct Nip46StatusResponse {
     ready: bool,
 }
