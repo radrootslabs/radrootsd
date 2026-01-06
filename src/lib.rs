@@ -1,9 +1,13 @@
 #![forbid(unsafe_code)]
 
 pub mod api;
+pub mod build;
 pub mod cli;
 pub mod config;
+pub mod events;
+pub mod nip46;
 pub mod radrootsd;
+pub mod validate;
 
 use anyhow::Result;
 
