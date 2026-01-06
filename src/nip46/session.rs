@@ -44,6 +44,11 @@ impl Nip46SessionStore {
         sessions.get(session_id).cloned()
     }
 
+    pub async fn remove(&self, session_id: &str) -> bool {
+        let mut sessions = self.inner.lock().await;
+        sessions.remove(session_id).is_some()
+    }
+
     pub async fn set_user_pubkey(
         &self,
         session_id: &str,
