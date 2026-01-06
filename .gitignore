@@ -20,17 +20,9 @@ Thumbs.db
 *.pem
 
 # local
-.tmp*
-.archive*
 .local*
 .vscode
 notes*.txt
-notes*.md
-notes*.json
-tree*.txt
-git-diff*.txt
-prompt*.txt
-tree*.txt
 justfile
 
 # dev
