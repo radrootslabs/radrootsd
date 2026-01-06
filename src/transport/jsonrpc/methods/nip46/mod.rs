@@ -8,6 +8,7 @@ use crate::transport::jsonrpc::{MethodRegistry, RpcContext};
 pub mod connect;
 pub mod get_public_key;
 pub mod nip04;
+pub mod nip44;
 pub mod ping;
 pub mod sign_event;
 pub mod session_close;
@@ -21,6 +22,7 @@ pub fn module(ctx: RpcContext, registry: MethodRegistry) -> Result<RpcModule<Rpc
     ping::register(&mut m, &registry)?;
     get_public_key::register(&mut m, &registry)?;
     nip04::register(&mut m, &registry)?;
+    nip44::register(&mut m, &registry)?;
     sign_event::register(&mut m, &registry)?;
     session_status::register(&mut m, &registry)?;
     session_close::register(&mut m, &registry)?;
