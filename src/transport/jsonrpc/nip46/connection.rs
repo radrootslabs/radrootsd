@@ -24,8 +24,15 @@ pub struct Nip46ConnectInfo {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum RelayParam {
+    One(String),
+    Many(Vec<String>),
+}
+
+#[derive(Debug, Deserialize)]
 struct Nip46ConnectQuery {
-    relay: Option<Vec<String>>,
+    relay: Option<RelayParam>,
     secret: Option<String>,
     perms: Option<String>,
     name: Option<String>,
@@ -47,7 +54,7 @@ fn parse_bunker_url(url: &Url) -> Result<Nip46ConnectInfo, RpcError> {
     let query: Nip46ConnectQuery =
         serde_qs::from_str(url.query().unwrap_or_default())
             .map_err(|e| RpcError::InvalidParams(e.to_string()))?;
-    let relays = query.relay.unwrap_or_default();
+    let relays = relay_list(query.relay);
     let perms = parse_perms(query.perms);
 
     Ok(Nip46ConnectInfo {
@@ -73,7 +80,7 @@ fn parse_nostrconnect_url(url: &Url) -> Result<Nip46ConnectInfo, RpcError> {
     let query: Nip46ConnectQuery =
         serde_qs::from_str(url.query().unwrap_or_default())
             .map_err(|e| RpcError::InvalidParams(e.to_string()))?;
-    let relays = query.relay.unwrap_or_default();
+    let relays = relay_list(query.relay);
     let perms = parse_perms(query.perms);
 
     Ok(Nip46ConnectInfo {
@@ -95,5 +102,18 @@ fn parse_perms(perms: Option<String>) -> Vec<String> {
         .split(',')
         .map(|entry| entry.trim().to_string())
         .filter(|entry| !entry.is_empty())
+        .collect()
+}
+
+fn relay_list(relay: Option<RelayParam>) -> Vec<String> {
+    let relays = match relay {
+        Some(RelayParam::One(value)) => vec![value],
+        Some(RelayParam::Many(values)) => values,
+        None => Vec::new(),
+    };
+    relays
+        .into_iter()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
         .collect()
 }
