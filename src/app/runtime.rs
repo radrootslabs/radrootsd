@@ -31,7 +31,11 @@ pub async fn run() -> Result<()> {
         args.allow_generate_identity,
     )?;
     let keys = identity.keys().clone();
-    let radrootsd = Radrootsd::new(keys, settings.metadata.clone());
+    let radrootsd = Radrootsd::new(
+        keys,
+        settings.metadata.clone(),
+        settings.config.nip46.clone(),
+    );
 
     for relay in settings.config.relays.iter() {
         radrootsd.client.add_relay(relay).await?;

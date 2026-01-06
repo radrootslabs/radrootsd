@@ -17,3 +17,7 @@ relays = [
 
 [config.rpc]
 addr = "127.0.0.1:7070"
+
+[config.nip46]
+session_ttl_secs = 900
+perms = []

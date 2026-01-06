@@ -7,7 +7,7 @@ use tokio::sync::broadcast;
 use tokio::time::sleep;
 use uuid::Uuid;
 
-use crate::core::nip46::session::Nip46Session;
+use crate::core::nip46::session::{filter_perms, session_expires_at, Nip46Session};
 use crate::transport::jsonrpc::nip46::connection::{
     parse_connect_url,
     Nip46ConnectInfo,
@@ -118,6 +118,9 @@ async fn connect_bunker(
 
     validate_connect_response(&response, info.secret.as_deref())?;
 
+    let perms = filter_perms(&info.perms, &ctx.state.nip46_config.perms);
+    let expires_at = session_expires_at(ctx.state.nip46_config.session_ttl_secs);
+
     let session_id = Uuid::new_v4().to_string();
     let session = Nip46Session {
         id: session_id.clone(),
@@ -127,10 +130,11 @@ async fn connect_bunker(
         remote_signer_pubkey,
         user_pubkey: None,
         relays: info.relays.clone(),
-        perms: info.perms.clone(),
+        perms,
         name: info.name.clone(),
         url: info.url.clone(),
         image: info.image.clone(),
+        expires_at,
     };
     ctx.state.nip46_sessions.insert(session).await;
 
@@ -190,6 +194,9 @@ async fn connect_nostrconnect(
     .await?;
     validate_nostrconnect_response(&response, secret)?;
 
+    let perms = filter_perms(&info.perms, &ctx.state.nip46_config.perms);
+    let expires_at = session_expires_at(ctx.state.nip46_config.session_ttl_secs);
+
     let session_id = Uuid::new_v4().to_string();
     let session = Nip46Session {
         id: session_id.clone(),
@@ -199,10 +206,11 @@ async fn connect_nostrconnect(
         remote_signer_pubkey,
         user_pubkey: None,
         relays: info.relays.clone(),
-        perms: info.perms.clone(),
+        perms,
         name: info.name.clone(),
         url: info.url.clone(),
         image: info.image.clone(),
+        expires_at,
     };
     ctx.state.nip46_sessions.insert(session).await;
 

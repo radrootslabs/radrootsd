@@ -13,7 +13,7 @@ use nostr::JsonUtil;
 use tokio::sync::broadcast;
 use tracing::{info, warn};
 
-use crate::core::nip46::session::Nip46Session;
+use crate::core::nip46::session::{session_expires_at, Nip46Session};
 use crate::core::state::Radrootsd;
 use radroots_nostr::prelude::{
     radroots_nostr_filter_tag,
@@ -123,6 +123,8 @@ async fn handle_request(
                 return NostrConnectResponse::with_error("remote signer pubkey mismatch");
             }
             let session_id = client_pubkey.to_hex();
+            let expires_at =
+                session_expires_at(radrootsd.nip46_config.session_ttl_secs);
             let session = Nip46Session {
                 id: session_id,
                 client: radrootsd.client.clone(),
@@ -131,10 +133,11 @@ async fn handle_request(
                 remote_signer_pubkey: radrootsd.pubkey,
                 user_pubkey: Some(radrootsd.pubkey),
                 relays: Vec::new(),
-                perms: default_perms(),
+                perms: radrootsd.nip46_config.perms.clone(),
                 name: None,
                 url: None,
                 image: None,
+                expires_at,
             };
             radrootsd.nip46_sessions.insert(session).await;
             NostrConnectResponse::with_result(ResponseResult::Ack)
@@ -220,7 +223,6 @@ async fn handle_request(
             }
         }
         NostrConnectRequest::Ping => NostrConnectResponse::with_result(ResponseResult::Pong),
-        _ => NostrConnectResponse::with_error("unsupported request"),
     }
 }
 
@@ -237,14 +239,4 @@ async fn session_for_client(
 
 fn has_permission(session: &Nip46Session, perm: &str) -> bool {
     session.perms.iter().any(|entry| entry == perm)
-}
-
-fn default_perms() -> Vec<String> {
-    vec![
-        "sign_event".to_string(),
-        "nip04_encrypt".to_string(),
-        "nip04_decrypt".to_string(),
-        "nip44_encrypt".to_string(),
-        "nip44_decrypt".to_string(),
-    ]
 }

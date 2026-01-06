@@ -25,6 +25,31 @@ fn default_message_buffer_capacity() -> u32 {
     1024
 }
 
+fn default_nip46_session_ttl_secs() -> u64 {
+    900
+}
+
+fn default_nip46_perms() -> Vec<String> {
+    Vec::new()
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct Nip46Config {
+    #[serde(default = "default_nip46_session_ttl_secs")]
+    pub session_ttl_secs: u64,
+    #[serde(default = "default_nip46_perms")]
+    pub perms: Vec<String>,
+}
+
+impl Default for Nip46Config {
+    fn default() -> Self {
+        Self {
+            session_ttl_secs: default_nip46_session_ttl_secs(),
+            perms: default_nip46_perms(),
+        }
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct RpcConfig {
     #[serde(default = "default_rpc_addr")]
@@ -66,6 +91,8 @@ pub struct Configuration {
     pub rpc_addr: Option<String>,
     #[serde(default)]
     pub relays: Vec<String>,
+    #[serde(default)]
+    pub nip46: Nip46Config,
 }
 
 impl Configuration {
