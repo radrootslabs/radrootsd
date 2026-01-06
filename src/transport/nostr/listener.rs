@@ -147,6 +147,23 @@ fn handle_request(radrootsd: &Radrootsd, request: NostrConnectRequest) -> NostrC
                 Err(err) => NostrConnectResponse::with_error(format!("nip04_decrypt failed: {err}")),
             }
         }
+        NostrConnectRequest::Nip44Encrypt { public_key, text } => {
+            match nip44::encrypt(radrootsd.keys.secret_key(), &public_key, text, nip44::Version::V2)
+            {
+                Ok(ciphertext) => {
+                    NostrConnectResponse::with_result(ResponseResult::Nip44Encrypt { ciphertext })
+                }
+                Err(err) => NostrConnectResponse::with_error(format!("nip44_encrypt failed: {err}")),
+            }
+        }
+        NostrConnectRequest::Nip44Decrypt { public_key, ciphertext } => {
+            match nip44::decrypt(radrootsd.keys.secret_key(), &public_key, ciphertext) {
+                Ok(plaintext) => {
+                    NostrConnectResponse::with_result(ResponseResult::Nip44Decrypt { plaintext })
+                }
+                Err(err) => NostrConnectResponse::with_error(format!("nip44_decrypt failed: {err}")),
+            }
+        }
         NostrConnectRequest::Ping => NostrConnectResponse::with_result(ResponseResult::Pong),
         _ => NostrConnectResponse::with_error("unsupported request"),
     }
