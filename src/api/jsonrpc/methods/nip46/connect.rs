@@ -256,3 +256,42 @@ fn validate_connect_response(
         "nip46 connect unexpected result: {result}"
     )))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::validate_connect_response;
+    use nostr::nips::nip46::{NostrConnectMessage, NostrConnectResponse, ResponseResult};
+
+    #[test]
+    fn validate_connect_response_accepts_ack() {
+        let message = NostrConnectMessage::response(
+            "1",
+            NostrConnectResponse::with_result(ResponseResult::Ack),
+        );
+        validate_connect_response(&message, None).expect("ack");
+    }
+
+    #[test]
+    fn validate_connect_response_accepts_secret_match() {
+        let message = NostrConnectMessage::Response {
+            id: "1".to_string(),
+            result: Some("secret".to_string()),
+            error: None,
+        };
+        validate_connect_response(&message, Some("secret")).expect("secret");
+
+        let err = validate_connect_response(&message, Some("other")).expect_err("mismatch");
+        let msg = format!("{err}");
+        assert!(msg.contains("unexpected result"));
+    }
+
+    #[test]
+    #[ignore = "auth_url handling not implemented"]
+    fn validate_connect_response_accepts_auth_url() {
+        let message = NostrConnectMessage::response(
+            "1",
+            NostrConnectResponse::with_result(ResponseResult::AuthUrl),
+        );
+        validate_connect_response(&message, None).expect("auth_url");
+    }
+}

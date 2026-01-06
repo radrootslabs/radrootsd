@@ -184,4 +184,28 @@ mod tests {
         assert_eq!(info.secret.as_deref(), Some("token"));
         assert_eq!(info.perms.len(), 2);
     }
+
+    #[test]
+    fn parse_bunker_with_metadata() {
+        let url = format!("bunker://{HEX_PUBKEY}?relay=wss%3A%2F%2Frelay.example.com&name=Radroots&url=https%3A%2F%2Fradroots.org&image=https%3A%2F%2Fradroots.org%2Flogo.png");
+        let info = parse_connect_url(&url).expect("info");
+        assert_eq!(info.mode, Nip46ConnectMode::Bunker);
+        assert_eq!(info.remote_signer_pubkey.as_deref(), Some(HEX_PUBKEY));
+        assert_eq!(info.relays, vec!["wss://relay.example.com"]);
+        assert_eq!(info.name.as_deref(), Some("Radroots"));
+        assert_eq!(info.url.as_deref(), Some("https://radroots.org"));
+        assert_eq!(info.image.as_deref(), Some("https://radroots.org/logo.png"));
+    }
+
+    #[test]
+    fn parse_nostrconnect_with_metadata() {
+        let url = format!("nostrconnect://{HEX_PUBKEY}?relay=wss%3A%2F%2Frelay.example.com&secret=token&name=Radroots&url=https%3A%2F%2Fradroots.org");
+        let info = parse_connect_url(&url).expect("info");
+        assert_eq!(info.mode, Nip46ConnectMode::Nostrconnect);
+        assert_eq!(info.client_pubkey.as_deref(), Some(HEX_PUBKEY));
+        assert_eq!(info.relays, vec!["wss://relay.example.com"]);
+        assert_eq!(info.secret.as_deref(), Some("token"));
+        assert_eq!(info.name.as_deref(), Some("Radroots"));
+        assert_eq!(info.url.as_deref(), Some("https://radroots.org"));
+    }
 }
