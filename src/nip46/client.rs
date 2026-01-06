@@ -9,6 +9,8 @@ use radroots_nostr::prelude::{
     RadrootsNostrEventBuilder,
     RadrootsNostrFilter,
     RadrootsNostrKind,
+    RadrootsNostrRelayPoolNotification,
+    RadrootsNostrTimestamp,
 };
 use nostr::nips::{
     nip44,
@@ -16,6 +18,8 @@ use nostr::nips::{
 };
 use nostr::JsonUtil;
 use nostr::UnsignedEvent;
+use tokio::sync::broadcast;
+use tokio::time::sleep;
 
 pub async fn sign_event(
     session: &Nip46Session,
@@ -68,6 +72,10 @@ async fn send_request(
     label: &str,
 ) -> Result<String, RpcError> {
     session.client.connect().await;
+    session
+        .client
+        .wait_for_connection(Duration::from_secs(DEFAULT_TIMEOUT_SECS))
+        .await;
 
     let message = NostrConnectMessage::request(&request);
     let request_id = message.id().to_string();
@@ -94,31 +102,55 @@ async fn wait_for_response(
 ) -> Result<NostrConnectMessage, RpcError> {
     let filter = RadrootsNostrFilter::new()
         .kind(RadrootsNostrKind::NostrConnect)
-        .author(session.remote_signer_pubkey.clone());
+        .author(session.remote_signer_pubkey.clone())
+        .since(RadrootsNostrTimestamp::now());
     let filter = radroots_nostr_filter_tag(filter, "p", vec![session.client_pubkey.to_hex()])
         .map_err(|e| RpcError::Other(format!("nip46 {label} failed: {e}")))?;
-
-    let events = session
+    let mut notifications = session.client.notifications();
+    let subscription = session
         .client
-        .fetch_events(filter, Duration::from_secs(DEFAULT_TIMEOUT_SECS))
+        .subscribe(filter, None)
         .await
         .map_err(|e| RpcError::Other(format!("nip46 {label} failed: {e}")))?;
+    let timeout = sleep(Duration::from_secs(DEFAULT_TIMEOUT_SECS));
+    tokio::pin!(timeout);
 
-    for event in events {
-        let decrypted = nip44::decrypt(
-            session.client_keys.secret_key(),
-            &session.remote_signer_pubkey,
-            &event.content,
-        )
-        .map_err(|e| RpcError::Other(format!("nip46 {label} failed: {e}")))?;
-        let message = NostrConnectMessage::from_json(&decrypted)
-            .map_err(|e| RpcError::Other(format!("nip46 {label} failed: {e}")))?;
-        if message.is_response() && message.id() == request_id {
-            return Ok(message);
+    loop {
+        tokio::select! {
+            _ = &mut timeout => {
+                session.client.unsubscribe(&subscription.val).await;
+                return Err(RpcError::Other(format!("nip46 {label} response not found")));
+            }
+            msg = notifications.recv() => {
+                let notification = match msg {
+                    Ok(notification) => notification,
+                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::RecvError::Closed) => {
+                        return Err(RpcError::Other(format!("nip46 {label} notification closed")));
+                    }
+                };
+                let RadrootsNostrRelayPoolNotification::Event { event, .. } = notification else {
+                    continue;
+                };
+                let event = (*event).clone();
+                if event.kind != RadrootsNostrKind::NostrConnect
+                    || event.pubkey != session.remote_signer_pubkey
+                {
+                    continue;
+                }
+                let decrypted = nip44::decrypt(
+                    session.client_keys.secret_key(),
+                    &session.remote_signer_pubkey,
+                    &event.content,
+                )
+                .map_err(|e| RpcError::Other(format!("nip46 {label} failed: {e}")))?;
+                let message = NostrConnectMessage::from_json(&decrypted)
+                    .map_err(|e| RpcError::Other(format!("nip46 {label} failed: {e}")))?;
+                if message.is_response() && message.id() == request_id {
+                    session.client.unsubscribe(&subscription.val).await;
+                    return Ok(message);
+                }
+            }
         }
     }
-
-    Err(RpcError::Other(format!(
-        "nip46 {label} response not found"
-    )))
 }
