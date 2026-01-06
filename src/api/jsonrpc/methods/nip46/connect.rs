@@ -105,6 +105,7 @@ async fn connect_bunker(
         client_keys,
         client_pubkey,
         remote_signer_pubkey,
+        user_pubkey: None,
         relays: info.relays.clone(),
     };
     ctx.state.nip46_sessions.insert(session).await;

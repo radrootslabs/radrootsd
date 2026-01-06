@@ -21,6 +21,7 @@ pub mod methods;
 pub use context::RpcContext;
 pub use error::RpcError;
 pub use registry::MethodRegistry;
+pub(crate) use params::DEFAULT_TIMEOUT_SECS;
 
 pub async fn start_rpc(
     state: Radrootsd,

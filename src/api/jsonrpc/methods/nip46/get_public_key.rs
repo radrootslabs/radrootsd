@@ -1,24 +1,12 @@
-use std::time::Duration;
-
 use anyhow::Result;
 use jsonrpsee::server::RpcModule;
 use serde::{Deserialize, Serialize};
 
-use crate::api::jsonrpc::params::DEFAULT_TIMEOUT_SECS;
 use crate::api::jsonrpc::{MethodRegistry, RpcContext, RpcError};
 use crate::nip46::session::Nip46Session;
-use radroots_nostr::prelude::{
-    radroots_nostr_filter_tag,
-    RadrootsNostrEventBuilder,
-    RadrootsNostrFilter,
-    RadrootsNostrKind,
-    RadrootsNostrPublicKey,
-};
-use nostr::nips::{
-    nip44,
-    nip46::{NostrConnectMessage, NostrConnectMethod, NostrConnectRequest, ResponseResult},
-};
-use nostr::JsonUtil;
+use crate::nip46::client;
+use radroots_nostr::prelude::RadrootsNostrPublicKey;
+use nostr::nips::nip46::{NostrConnectMethod, NostrConnectRequest, ResponseResult};
 
 #[derive(Debug, Deserialize)]
 struct Nip46GetPublicKeyParams {
@@ -43,6 +31,14 @@ pub fn register(m: &mut RpcModule<RpcContext>, registry: &MethodRegistry) -> Res
             .await
             .ok_or_else(|| RpcError::InvalidParams("unknown session".to_string()))?;
         let pubkey = request_public_key(&session).await?;
+        let updated = ctx
+            .state
+            .nip46_sessions
+            .set_user_pubkey(&session_id, pubkey.clone())
+            .await;
+        if !updated {
+            return Err(RpcError::Other("nip46 session update failed".to_string()));
+        }
         Ok::<Nip46GetPublicKeyResponse, RpcError>(Nip46GetPublicKeyResponse {
             pubkey: pubkey.to_hex(),
         })
@@ -53,25 +49,8 @@ pub fn register(m: &mut RpcModule<RpcContext>, registry: &MethodRegistry) -> Res
 async fn request_public_key(
     session: &Nip46Session,
 ) -> Result<RadrootsNostrPublicKey, RpcError> {
-    session.client.connect().await;
-
     let request = NostrConnectRequest::GetPublicKey;
-    let message = NostrConnectMessage::request(&request);
-    let request_id = message.id().to_string();
-    let event = RadrootsNostrEventBuilder::nostr_connect(
-        &session.client_keys,
-        session.remote_signer_pubkey.clone(),
-        message,
-    )
-    .map_err(|e| RpcError::Other(format!("nip46 get_public_key failed: {e}")))?;
-
-    session
-        .client
-        .send_event_builder(event)
-        .await
-        .map_err(|e| RpcError::Other(format!("nip46 get_public_key failed: {e}")))?;
-
-    let response = wait_for_response(session, &request_id).await?;
+    let response = client::request(session, request, "get_public_key").await?;
     let response = response
         .to_response(NostrConnectMethod::GetPublicKey)
         .map_err(|e| RpcError::Other(format!("nip46 get_public_key failed: {e}")))?;
@@ -89,39 +68,4 @@ async fn request_public_key(
             "nip46 get_public_key missing response".to_string(),
         )),
     }
-}
-
-async fn wait_for_response(
-    session: &Nip46Session,
-    request_id: &str,
-) -> Result<NostrConnectMessage, RpcError> {
-    let filter = RadrootsNostrFilter::new()
-        .kind(RadrootsNostrKind::NostrConnect)
-        .author(session.remote_signer_pubkey.clone());
-    let filter = radroots_nostr_filter_tag(filter, "p", vec![session.client_pubkey.to_hex()])
-        .map_err(|e| RpcError::Other(format!("nip46 get_public_key failed: {e}")))?;
-
-    let events = session
-        .client
-        .fetch_events(filter, Duration::from_secs(DEFAULT_TIMEOUT_SECS))
-        .await
-        .map_err(|e| RpcError::Other(format!("nip46 get_public_key failed: {e}")))?;
-
-    for event in events {
-        let decrypted = nip44::decrypt(
-            session.client_keys.secret_key(),
-            &session.remote_signer_pubkey,
-            &event.content,
-        )
-        .map_err(|e| RpcError::Other(format!("nip46 get_public_key failed: {e}")))?;
-        let message = NostrConnectMessage::from_json(&decrypted)
-            .map_err(|e| RpcError::Other(format!("nip46 get_public_key failed: {e}")))?;
-        if message.is_response() && message.id() == request_id {
-            return Ok(message);
-        }
-    }
-
-    Err(RpcError::Other(
-        "nip46 get_public_key response not found".to_string(),
-    ))
 }

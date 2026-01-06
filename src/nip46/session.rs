@@ -23,6 +23,7 @@ pub struct Nip46Session {
     pub client_keys: RadrootsNostrKeys,
     pub client_pubkey: RadrootsNostrPublicKey,
     pub remote_signer_pubkey: RadrootsNostrPublicKey,
+    pub user_pubkey: Option<RadrootsNostrPublicKey>,
     pub relays: Vec<String>,
 }
 
@@ -41,5 +42,20 @@ impl Nip46SessionStore {
     pub async fn get(&self, session_id: &str) -> Option<Nip46Session> {
         let sessions = self.inner.lock().await;
         sessions.get(session_id).cloned()
+    }
+
+    pub async fn set_user_pubkey(
+        &self,
+        session_id: &str,
+        pubkey: RadrootsNostrPublicKey,
+    ) -> bool {
+        let mut sessions = self.inner.lock().await;
+        match sessions.get_mut(session_id) {
+            Some(session) => {
+                session.user_pubkey = Some(pubkey);
+                true
+            }
+            None => false,
+        }
     }
 }
