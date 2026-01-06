@@ -7,7 +7,6 @@ use crate::api::jsonrpc::{MethodRegistry, RpcContext, RpcError};
 use crate::nip46::client;
 use crate::nip46::session::Nip46Session;
 use radroots_nostr::prelude::{RadrootsNostrKind, RadrootsNostrTag, RadrootsNostrTimestamp};
-use nostr::nips::nip46::{NostrConnectMethod, NostrConnectRequest, ResponseResult};
 use nostr::UnsignedEvent;
 
 #[derive(Debug, Deserialize)]
@@ -65,35 +64,7 @@ async fn sign_event(
         input.content,
     );
 
-    let request = NostrConnectRequest::SignEvent(unsigned);
-    let response = client::request(session, request, "sign_event").await?;
-    let response = response
-        .to_response(NostrConnectMethod::SignEvent)
-        .map_err(|e| RpcError::Other(format!("nip46 sign_event failed: {e}")))?;
-
-    if let Some(error) = response.error {
-        return Err(RpcError::Other(format!("nip46 sign_event error: {error}")));
-    }
-
-    let event = match response.result {
-        Some(ResponseResult::SignEvent(event)) => *event,
-        Some(_) => {
-            return Err(RpcError::Other(
-                "nip46 sign_event unexpected response".to_string(),
-            ))
-        }
-        None => {
-            return Err(RpcError::Other(
-                "nip46 sign_event missing response".to_string(),
-            ))
-        }
-    };
-
-    event
-        .verify()
-        .map_err(|e| RpcError::Other(format!("nip46 sign_event invalid event: {e}")))?;
-
-    Ok(event)
+    client::sign_event(session, unsigned, "sign_event").await
 }
 
 fn parse_tags(tags: Vec<Vec<String>>) -> Result<Vec<RadrootsNostrTag>, RpcError> {

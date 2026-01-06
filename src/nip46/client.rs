@@ -10,8 +10,48 @@ use radroots_nostr::prelude::{
     RadrootsNostrFilter,
     RadrootsNostrKind,
 };
-use nostr::nips::{nip44, nip46::NostrConnectMessage, nip46::NostrConnectRequest};
+use nostr::nips::{
+    nip44,
+    nip46::{NostrConnectMessage, NostrConnectMethod, NostrConnectRequest, ResponseResult},
+};
 use nostr::JsonUtil;
+use nostr::UnsignedEvent;
+
+pub async fn sign_event(
+    session: &Nip46Session,
+    unsigned: UnsignedEvent,
+    label: &str,
+) -> Result<nostr::Event, RpcError> {
+    let req = NostrConnectRequest::SignEvent(unsigned);
+    let response = request(session, req, label).await?;
+    let response = response
+        .to_response(NostrConnectMethod::SignEvent)
+        .map_err(|e| RpcError::Other(format!("nip46 {label} failed: {e}")))?;
+
+    if let Some(error) = response.error {
+        return Err(RpcError::Other(format!("nip46 {label} error: {error}")));
+    }
+
+    let event = match response.result {
+        Some(ResponseResult::SignEvent(event)) => *event,
+        Some(_) => {
+            return Err(RpcError::Other(format!(
+                "nip46 {label} unexpected response"
+            )))
+        }
+        None => {
+            return Err(RpcError::Other(format!(
+                "nip46 {label} missing response"
+            )))
+        }
+    };
+
+    event
+        .verify()
+        .map_err(|e| RpcError::Other(format!("nip46 {label} invalid event: {e}")))?;
+
+    Ok(event)
+}
 
 pub async fn request(
     session: &Nip46Session,
