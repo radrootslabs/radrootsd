@@ -15,6 +15,7 @@ radroots-identity = { path = "../crates/identity" }
 radroots-nostr = { path = "../crates/nostr", features = ["client", "codec", "http"] }
 radroots-runtime = { path = "../crates/runtime", features = ["cli"] }
 radroots-trade = { path = "../crates/trade" }
+nostr = { path = "../refs/rust-nostr/crates/nostr", version = "0.44.1", features = ["nip46", "os-rng"] }
 
 anyhow = { version = "1" }
 clap = { version = "4", features = ["derive"] }

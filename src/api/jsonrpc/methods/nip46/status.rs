@@ -12,7 +12,7 @@ struct Nip46StatusResponse {
 pub fn register(m: &mut RpcModule<RpcContext>, registry: &MethodRegistry) -> Result<()> {
     registry.track("nip46.status");
     m.register_method("nip46.status", |_p, _ctx, _| {
-        Ok::<Nip46StatusResponse, RpcError>(Nip46StatusResponse { ready: false })
+        Ok::<Nip46StatusResponse, RpcError>(Nip46StatusResponse { ready: true })
     })?;
     Ok(())
 }
