@@ -6,6 +6,14 @@ use crate::app::{cli, config};
 use crate::core::Radrootsd;
 use crate::transport::jsonrpc;
 use crate::transport::nostr::listener::spawn_nip46_listener;
+use radroots_events::profile::RadrootsProfileType;
+use radroots_events_codec::profile::encode::profile_type_tags;
+use radroots_nostr::prelude::{
+    radroots_nostr_build_metadata_event,
+    radroots_nostr_publish_identity_profile_with_type,
+    RadrootsNostrTag,
+    RadrootsNostrTagKind,
+};
 
 pub async fn run() -> Result<()> {
     let (args, settings): (cli::Args, config::Settings) =
@@ -30,6 +38,53 @@ pub async fn run() -> Result<()> {
     }
 
     if !settings.config.relays.is_empty() {
+        let client = radrootsd.client.clone();
+        let md = settings.metadata.clone();
+        let identity = identity.clone();
+        let has_metadata = serde_json::to_value(&md)
+            .ok()
+            .and_then(|v| v.as_object().cloned())
+            .map(|o| !o.is_empty())
+            .unwrap_or(false);
+
+        tokio::spawn(async move {
+            client.connect().await;
+            let profile_published =
+                match radroots_nostr_publish_identity_profile_with_type(
+                    &client,
+                    &identity,
+                    Some(RadrootsProfileType::Radrootsd),
+                )
+                .await
+                {
+                    Ok(Some(_)) => true,
+                    Ok(None) => false,
+                    Err(e) => {
+                        tracing::warn!("Failed to publish identity profile: {e}");
+                        false
+                    }
+                };
+            if has_metadata && !profile_published {
+                let mut tags = Vec::new();
+                for mut tag in profile_type_tags(RadrootsProfileType::Radrootsd) {
+                    if tag.is_empty() {
+                        continue;
+                    }
+                    let key = tag.remove(0);
+                    tags.push(RadrootsNostrTag::custom(
+                        RadrootsNostrTagKind::Custom(key.into()),
+                        tag,
+                    ));
+                }
+                let builder = radroots_nostr_build_metadata_event(&md).tags(tags);
+                if let Err(e) = client.send_event_builder(builder).await {
+                    tracing::warn!("Failed to publish metadata on startup: {e}");
+                } else {
+                    tracing::info!("Published metadata on startup");
+                }
+            }
+        });
+
         spawn_nip46_listener(radrootsd.clone());
     }
 

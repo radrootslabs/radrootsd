@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use anyhow::{anyhow, Result};
+use nostr::nips::nip04;
 use nostr::nips::nip44;
 use nostr::nips::nip46::{
     NostrConnectMessage,
@@ -128,6 +129,22 @@ fn handle_request(radrootsd: &Radrootsd, request: NostrConnectRequest) -> NostrC
             match unsigned.sign_with_keys(&radrootsd.keys) {
                 Ok(event) => NostrConnectResponse::with_result(ResponseResult::SignEvent(Box::new(event))),
                 Err(err) => NostrConnectResponse::with_error(format!("sign_event failed: {err}")),
+            }
+        }
+        NostrConnectRequest::Nip04Encrypt { public_key, text } => {
+            match nip04::encrypt(radrootsd.keys.secret_key(), &public_key, text) {
+                Ok(ciphertext) => {
+                    NostrConnectResponse::with_result(ResponseResult::Nip04Encrypt { ciphertext })
+                }
+                Err(err) => NostrConnectResponse::with_error(format!("nip04_encrypt failed: {err}")),
+            }
+        }
+        NostrConnectRequest::Nip04Decrypt { public_key, ciphertext } => {
+            match nip04::decrypt(radrootsd.keys.secret_key(), &public_key, ciphertext) {
+                Ok(plaintext) => {
+                    NostrConnectResponse::with_result(ResponseResult::Nip04Decrypt { plaintext })
+                }
+                Err(err) => NostrConnectResponse::with_error(format!("nip04_decrypt failed: {err}")),
             }
         }
         NostrConnectRequest::Ping => NostrConnectResponse::with_result(ResponseResult::Pong),
