@@ -13,7 +13,7 @@ use nostr::JsonUtil;
 use tokio::sync::broadcast;
 use tracing::{info, warn};
 
-use crate::core::nip46::session::{session_expires_at, Nip46Session};
+use crate::core::nip46::session::{session_expires_at, sign_event_allowed, Nip46Session};
 use crate::core::state::Radrootsd;
 use radroots_nostr::prelude::{
     radroots_nostr_filter_tag,
@@ -150,7 +150,7 @@ async fn handle_request(
                 Ok(session) => session,
                 Err(response) => return response,
             };
-            if !has_permission(&session, "sign_event") {
+            if !has_sign_event_permission(&session, u32::from(unsigned.kind.as_u16())) {
                 return NostrConnectResponse::with_error("unauthorized sign_event");
             }
             if unsigned.pubkey != radrootsd.pubkey {
@@ -239,4 +239,8 @@ async fn session_for_client(
 
 fn has_permission(session: &Nip46Session, perm: &str) -> bool {
     session.perms.iter().any(|entry| entry == perm)
+}
+
+fn has_sign_event_permission(session: &Nip46Session, kind: u32) -> bool {
+    sign_event_allowed(&session.perms, kind)
 }

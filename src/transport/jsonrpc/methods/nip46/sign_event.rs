@@ -24,7 +24,10 @@ pub fn register(m: &mut RpcModule<RpcContext>, registry: &MethodRegistry) -> Res
             .parse()
             .map_err(|e| RpcError::InvalidParams(e.to_string()))?;
         let session = session::get_session(ctx.as_ref(), &session_id).await?;
-        session::require_permission(&session, "sign_event")?;
+        session::require_sign_event_permission(
+            &session,
+            u32::from(event.kind.as_u16()),
+        )?;
         if event.pubkey != session.remote_signer_pubkey {
             return Err(RpcError::InvalidParams(
                 "event pubkey does not match remote signer".to_string(),

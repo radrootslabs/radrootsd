@@ -1,4 +1,4 @@
-use crate::core::nip46::session::Nip46Session;
+use crate::core::nip46::session::{sign_event_allowed, Nip46Session};
 use crate::transport::jsonrpc::{RpcContext, RpcError};
 
 pub async fn get_session(
@@ -17,5 +17,16 @@ pub fn require_permission(session: &Nip46Session, perm: &str) -> Result<(), RpcE
         Ok(())
     } else {
         Err(RpcError::Other(format!("unauthorized {perm}")))
+    }
+}
+
+pub fn require_sign_event_permission(
+    session: &Nip46Session,
+    kind: u32,
+) -> Result<(), RpcError> {
+    if sign_event_allowed(&session.perms, kind) {
+        Ok(())
+    } else {
+        Err(RpcError::Other(format!("unauthorized sign_event:{kind}")))
     }
 }

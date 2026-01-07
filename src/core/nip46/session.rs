@@ -103,11 +103,27 @@ pub fn filter_perms(requested: &[String], allowed: &[String]) -> Vec<String> {
     if allowed.is_empty() {
         return Vec::new();
     }
+    let allows_sign_event = allowed.iter().any(|entry| entry == "sign_event");
     requested
         .iter()
-        .filter(|perm| allowed.iter().any(|allow| allow == *perm))
-        .cloned()
+        .filter_map(|perm| {
+            if allowed.iter().any(|allow| allow == perm) {
+                return Some(perm.clone());
+            }
+            if allows_sign_event && perm.starts_with("sign_event:") {
+                return Some(perm.clone());
+            }
+            None
+        })
         .collect()
+}
+
+pub fn sign_event_allowed(perms: &[String], kind: u32) -> bool {
+    if perms.iter().any(|entry| entry == "sign_event") {
+        return true;
+    }
+    let entry = format!("sign_event:{kind}");
+    perms.iter().any(|perm| perm == &entry)
 }
 
 pub fn session_expires_at(ttl_secs: u64) -> Option<Instant> {
@@ -186,5 +202,31 @@ mod tests {
         let listed = store.list().await;
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].id, "active");
+    }
+
+    #[test]
+    fn filter_perms_allows_sign_event_kinds() {
+        let requested = vec![
+            "sign_event:1".to_string(),
+            "sign_event:4".to_string(),
+            "nip04_encrypt".to_string(),
+        ];
+        let allowed = vec!["sign_event".to_string(), "nip04_encrypt".to_string()];
+        let filtered = filter_perms(&requested, &allowed);
+        assert_eq!(
+            filtered,
+            vec![
+                "sign_event:1".to_string(),
+                "sign_event:4".to_string(),
+                "nip04_encrypt".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn sign_event_allowed_respects_kinds() {
+        let perms = vec!["sign_event:1".to_string()];
+        assert!(sign_event_allowed(&perms, 1));
+        assert!(!sign_event_allowed(&perms, 3));
     }
 }
