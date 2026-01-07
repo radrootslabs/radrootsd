@@ -2,6 +2,7 @@ use anyhow::Result;
 use jsonrpsee::server::RpcModule;
 use serde::{Deserialize, Serialize};
 
+use crate::transport::jsonrpc::nip46::session;
 use crate::transport::jsonrpc::{MethodRegistry, RpcContext, RpcError};
 
 #[derive(Debug, Deserialize)]
@@ -28,12 +29,7 @@ pub fn register(m: &mut RpcModule<RpcContext>, registry: &MethodRegistry) -> Res
         let Nip46SessionStatusParams { session_id } = params
             .parse()
             .map_err(|e| RpcError::InvalidParams(e.to_string()))?;
-        let session = ctx
-            .state
-            .nip46_sessions
-            .get(&session_id)
-            .await
-            .ok_or_else(|| RpcError::InvalidParams("unknown session".to_string()))?;
+        let session = session::get_session(ctx.as_ref(), &session_id).await?;
         Ok::<Nip46SessionStatusResponse, RpcError>(Nip46SessionStatusResponse {
             session_id,
             client_pubkey: session.client_pubkey.to_hex(),

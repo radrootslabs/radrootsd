@@ -2,8 +2,7 @@ use anyhow::Result;
 use jsonrpsee::server::RpcModule;
 use serde::{Deserialize, Serialize};
 
-use crate::core::nip46::session::Nip46Session;
-use crate::transport::jsonrpc::nip46::client;
+use crate::transport::jsonrpc::nip46::{client, session};
 use crate::transport::jsonrpc::{MethodRegistry, RpcContext, RpcError};
 use nostr::UnsignedEvent;
 
@@ -24,15 +23,8 @@ pub fn register(m: &mut RpcModule<RpcContext>, registry: &MethodRegistry) -> Res
         let Nip46SignEventParams { session_id, event } = params
             .parse()
             .map_err(|e| RpcError::InvalidParams(e.to_string()))?;
-        let session = ctx
-            .state
-            .nip46_sessions
-            .get(&session_id)
-            .await
-            .ok_or_else(|| RpcError::InvalidParams("unknown session".to_string()))?;
-        if !has_permission(&session, "sign_event") {
-            return Err(RpcError::Other("unauthorized sign_event".to_string()));
-        }
+        let session = session::get_session(ctx.as_ref(), &session_id).await?;
+        session::require_permission(&session, "sign_event")?;
         if event.pubkey != session.remote_signer_pubkey {
             return Err(RpcError::InvalidParams(
                 "event pubkey does not match remote signer".to_string(),
@@ -42,8 +34,4 @@ pub fn register(m: &mut RpcModule<RpcContext>, registry: &MethodRegistry) -> Res
         Ok::<Nip46SignEventResponse, RpcError>(Nip46SignEventResponse { event })
     })?;
     Ok(())
-}
-
-fn has_permission(session: &Nip46Session, perm: &str) -> bool {
-    session.perms.iter().any(|entry| entry == perm)
 }
