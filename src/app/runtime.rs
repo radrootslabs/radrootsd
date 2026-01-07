@@ -6,13 +6,13 @@ use crate::app::{cli, config};
 use crate::core::Radrootsd;
 use crate::transport::jsonrpc;
 use crate::transport::nostr::listener::spawn_nip46_listener;
-use radroots_events::kinds::KIND_APPLICATION_HANDLER;
 use radroots_events::profile::RadrootsProfileType;
 use radroots_events_codec::profile::encode::profile_type_tags;
 use radroots_nostr::prelude::{
-    radroots_nostr_build_event,
     radroots_nostr_build_metadata_event,
+    radroots_nostr_publish_application_handler,
     radroots_nostr_publish_identity_profile_with_type,
+    RadrootsNostrApplicationHandlerSpec,
     RadrootsNostrKind,
     RadrootsNostrTag,
     RadrootsNostrTagKind,
@@ -91,29 +91,17 @@ pub async fn run() -> Result<()> {
                 }
             }
 
-            let nip46_kind = RadrootsNostrKind::NostrConnect.as_u16().to_string();
-            let nip89_content = if has_metadata {
-                serde_json::to_string(&md).unwrap_or_default()
-            } else {
-                String::new()
+            let nip46_kind = RadrootsNostrKind::NostrConnect.as_u16() as u32;
+            let handler_spec = RadrootsNostrApplicationHandlerSpec {
+                kinds: vec![nip46_kind],
+                identifier: None,
+                metadata: Some(md.clone()),
+                extra_tags: Vec::new(),
             };
-            let nip89_tags = vec![
-                vec!["d".to_string(), nip46_kind.clone()],
-                vec!["k".to_string(), nip46_kind],
-            ];
-            let nip89_builder =
-                radroots_nostr_build_event(KIND_APPLICATION_HANDLER, nip89_content, nip89_tags);
-            match nip89_builder {
-                Ok(builder) => {
-                    if let Err(e) = client.send_event_builder(builder).await {
-                        tracing::warn!("Failed to publish NIP-89 announcement: {e}");
-                    } else {
-                        tracing::info!("Published NIP-89 announcement");
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!("Failed to build NIP-89 announcement: {e}");
-                }
+            if let Err(e) = radroots_nostr_publish_application_handler(&client, &handler_spec).await {
+                tracing::warn!("Failed to publish NIP-89 announcement: {e}");
+            } else {
+                tracing::info!("Published NIP-89 announcement");
             }
         });
 

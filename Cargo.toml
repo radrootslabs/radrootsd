@@ -12,7 +12,7 @@ radroots-core = { path = "../crates/core", features = ["std", "serde", "typeshar
 radroots-events = { path = "../crates/events", features = ["serde"] }
 radroots-events-codec = { path = "../crates/events-codec", features = ["nostr", "serde_json"] }
 radroots-identity = { path = "../crates/identity" }
-radroots-nostr = { path = "../crates/nostr", features = ["client", "codec", "http"] }
+radroots-nostr = { path = "../crates/nostr", features = ["client", "codec", "events", "http"] }
 radroots-runtime = { path = "../crates/runtime", features = ["cli"] }
 radroots-trade = { path = "../crates/trade" }
 nostr = { path = "../refs/rust-nostr/crates/nostr", version = "0.44.1", features = ["nip46", "os-rng"] }
