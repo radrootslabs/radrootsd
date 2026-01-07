@@ -48,6 +48,8 @@ pub async fn run() -> Result<()> {
         let client = radrootsd.client.clone();
         let md = settings.metadata.clone();
         let identity = identity.clone();
+        let nip46_config = settings.config.nip46.clone();
+        let relays = settings.config.relays.clone();
         let has_metadata = serde_json::to_value(&md)
             .ok()
             .and_then(|v| v.as_object().cloned())
@@ -97,6 +99,8 @@ pub async fn run() -> Result<()> {
                 identifier: None,
                 metadata: Some(md.clone()),
                 extra_tags: Vec::new(),
+                relays,
+                nostrconnect_url: nip46_config.nostrconnect_url.clone(),
             };
             if let Err(e) = radroots_nostr_publish_application_handler(&client, &handler_spec).await {
                 tracing::warn!("Failed to publish NIP-89 announcement: {e}");

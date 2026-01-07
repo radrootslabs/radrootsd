@@ -39,6 +39,8 @@ pub struct Nip46Config {
     pub session_ttl_secs: u64,
     #[serde(default = "default_nip46_perms")]
     pub perms: Vec<String>,
+    #[serde(default)]
+    pub nostrconnect_url: Option<String>,
 }
 
 impl Default for Nip46Config {
@@ -46,6 +48,7 @@ impl Default for Nip46Config {
         Self {
             session_ttl_secs: default_nip46_session_ttl_secs(),
             perms: default_nip46_perms(),
+            nostrconnect_url: None,
         }
     }
 }
