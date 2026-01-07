@@ -12,6 +12,7 @@ pub mod nip44;
 pub mod ping;
 pub mod sign_event;
 pub mod session_close;
+pub mod session_list;
 pub mod session_status;
 pub mod status;
 
@@ -26,5 +27,6 @@ pub fn module(ctx: RpcContext, registry: MethodRegistry) -> Result<RpcModule<Rpc
     sign_event::register(&mut m, &registry)?;
     session_status::register(&mut m, &registry)?;
     session_close::register(&mut m, &registry)?;
+    session_list::register(&mut m, &registry)?;
     Ok(m)
 }

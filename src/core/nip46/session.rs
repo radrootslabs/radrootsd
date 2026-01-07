@@ -81,6 +81,14 @@ impl Nip46SessionStore {
             None => false,
         }
     }
+
+    pub async fn list(&self) -> Vec<Nip46Session> {
+        let mut sessions = self.inner.lock().await;
+        sessions.retain(|_, session| !session.is_expired());
+        let mut listed: Vec<Nip46Session> = sessions.values().cloned().collect();
+        listed.sort_by(|left, right| left.id.cmp(&right.id));
+        listed
+    }
 }
 
 impl Nip46Session {
@@ -158,5 +166,25 @@ mod tests {
         store.insert(session).await;
         let found = store.get("active").await;
         assert!(found.is_some());
+    }
+
+    #[tokio::test]
+    async fn session_store_list_filters_expired() {
+        let store = Nip46SessionStore::new();
+        store
+            .insert(build_session(
+                "expired",
+                Some(Instant::now() - Duration::from_secs(1)),
+            ))
+            .await;
+        store
+            .insert(build_session(
+                "active",
+                Some(Instant::now() + Duration::from_secs(10)),
+            ))
+            .await;
+        let listed = store.list().await;
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, "active");
     }
 }
