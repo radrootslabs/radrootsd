@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 use std::sync::Arc;
 
@@ -16,6 +16,7 @@ use nostr::nips::nip46::NostrConnectRequest;
 #[derive(Clone)]
 pub struct Nip46SessionStore {
     inner: Arc<Mutex<HashMap<String, Nip46Session>>>,
+    used_secrets: Arc<Mutex<HashSet<String>>>,
 }
 
 #[derive(Clone)]
@@ -53,6 +54,7 @@ impl Nip46SessionStore {
     pub fn new() -> Self {
         Self {
             inner: Arc::new(Mutex::new(HashMap::new())),
+            used_secrets: Arc::new(Mutex::new(HashSet::new())),
         }
     }
 
@@ -158,6 +160,15 @@ impl Nip46SessionStore {
         let mut listed: Vec<Nip46Session> = sessions.values().cloned().collect();
         listed.sort_by(|left, right| left.id.cmp(&right.id));
         listed
+    }
+
+    pub async fn claim_secret(&self, secret: &str) -> bool {
+        let mut secrets = self.used_secrets.lock().await;
+        if secrets.contains(secret) {
+            return false;
+        }
+        secrets.insert(secret.to_string());
+        true
     }
 }
 
@@ -302,5 +313,12 @@ mod tests {
         let perms = vec!["sign_event:1".to_string()];
         assert!(sign_event_allowed(&perms, 1));
         assert!(!sign_event_allowed(&perms, 3));
+    }
+
+    #[tokio::test]
+    async fn claim_secret_rejects_reuse() {
+        let store = Nip46SessionStore::new();
+        assert!(store.claim_secret("secret").await);
+        assert!(!store.claim_secret("secret").await);
     }
 }

@@ -117,6 +117,7 @@ async fn connect_bunker(
     .await?;
 
     validate_connect_response(&response, info.secret.as_deref())?;
+    claim_secret(&ctx, info.secret.as_deref()).await?;
 
     let perms = filter_perms(&info.perms, &ctx.state.nip46_config.perms);
     let expires_at = session_expires_at(ctx.state.nip46_config.session_ttl_secs);
@@ -197,6 +198,7 @@ async fn connect_nostrconnect(
     )
     .await?;
     validate_nostrconnect_response(&response, secret)?;
+    claim_secret(&ctx, info.secret.as_deref()).await?;
 
     let perms = filter_perms(&info.perms, &ctx.state.nip46_config.perms);
     let expires_at = session_expires_at(ctx.state.nip46_config.session_ttl_secs);
@@ -239,6 +241,21 @@ async fn add_relays(client: &RadrootsNostrClient, relays: &[String]) -> Result<(
             .map_err(|e| RpcError::Other(format!("nip46 relay add failed: {e}")))?;
     }
     Ok(())
+}
+
+async fn claim_secret(ctx: &RpcContext, secret: Option<&str>) -> Result<(), RpcError> {
+    let Some(secret) = secret else {
+        return Ok(());
+    };
+    let trimmed = secret.trim();
+    if trimmed.is_empty() {
+        return Err(RpcError::InvalidParams("secret is empty".to_string()));
+    }
+    if ctx.state.nip46_sessions.claim_secret(trimmed).await {
+        Ok(())
+    } else {
+        Err(RpcError::InvalidParams("secret already used".to_string()))
+    }
 }
 
 async fn send_connect_request(

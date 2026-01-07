@@ -6,11 +6,14 @@ use crate::app::{cli, config};
 use crate::core::Radrootsd;
 use crate::transport::jsonrpc;
 use crate::transport::nostr::listener::spawn_nip46_listener;
+use radroots_events::kinds::KIND_APPLICATION_HANDLER;
 use radroots_events::profile::RadrootsProfileType;
 use radroots_events_codec::profile::encode::profile_type_tags;
 use radroots_nostr::prelude::{
+    radroots_nostr_build_event,
     radroots_nostr_build_metadata_event,
     radroots_nostr_publish_identity_profile_with_type,
+    RadrootsNostrKind,
     RadrootsNostrTag,
     RadrootsNostrTagKind,
 };
@@ -85,6 +88,31 @@ pub async fn run() -> Result<()> {
                     tracing::warn!("Failed to publish metadata on startup: {e}");
                 } else {
                     tracing::info!("Published metadata on startup");
+                }
+            }
+
+            let nip46_kind = RadrootsNostrKind::NostrConnect.as_u16().to_string();
+            let nip89_content = if has_metadata {
+                serde_json::to_string(&md).unwrap_or_default()
+            } else {
+                String::new()
+            };
+            let nip89_tags = vec![
+                vec!["d".to_string(), nip46_kind.clone()],
+                vec!["k".to_string(), nip46_kind],
+            ];
+            let nip89_builder =
+                radroots_nostr_build_event(KIND_APPLICATION_HANDLER, nip89_content, nip89_tags);
+            match nip89_builder {
+                Ok(builder) => {
+                    if let Err(e) = client.send_event_builder(builder).await {
+                        tracing::warn!("Failed to publish NIP-89 announcement: {e}");
+                    } else {
+                        tracing::info!("Published NIP-89 announcement");
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to build NIP-89 announcement: {e}");
                 }
             }
         });

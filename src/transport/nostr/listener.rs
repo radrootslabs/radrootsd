@@ -124,10 +124,19 @@ pub(crate) async fn handle_request(
     match request {
         NostrConnectRequest::Connect {
             remote_signer_public_key,
-            ..
+            secret,
         } => {
             if remote_signer_public_key != radrootsd.pubkey {
                 return NostrConnectResponse::with_error("remote signer pubkey mismatch");
+            }
+            if let Some(secret) = secret.as_deref() {
+                let trimmed = secret.trim();
+                if trimmed.is_empty() {
+                    return NostrConnectResponse::with_error("secret is empty");
+                }
+                if !radrootsd.nip46_sessions.claim_secret(trimmed).await {
+                    return NostrConnectResponse::with_error("connect secret already used");
+                }
             }
             let session_id = client_pubkey.to_hex();
             let expires_at =
