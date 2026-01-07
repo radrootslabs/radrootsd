@@ -11,10 +11,22 @@ use radroots_nostr::prelude::{
     RadrootsNostrKeys,
     RadrootsNostrPublicKey,
 };
+use nostr::nips::nip46::NostrConnectRequest;
 
 #[derive(Clone)]
 pub struct Nip46SessionStore {
     inner: Arc<Mutex<HashMap<String, Nip46Session>>>,
+}
+
+#[derive(Clone)]
+pub struct PendingNostrRequest {
+    pub request_id: String,
+    pub client_pubkey: RadrootsNostrPublicKey,
+    pub request: NostrConnectRequest,
+}
+
+pub struct Nip46AuthorizeOutcome {
+    pub pending: Option<PendingNostrRequest>,
 }
 
 #[derive(Clone)]
@@ -31,6 +43,10 @@ pub struct Nip46Session {
     pub url: Option<String>,
     pub image: Option<String>,
     pub expires_at: Option<Instant>,
+    pub auth_required: bool,
+    pub authorized: bool,
+    pub auth_url: Option<String>,
+    pub pending_request: Option<PendingNostrRequest>,
 }
 
 impl Nip46SessionStore {
@@ -76,6 +92,60 @@ impl Nip46SessionStore {
                     return false;
                 }
                 session.user_pubkey = Some(pubkey);
+                true
+            }
+            None => false,
+        }
+    }
+
+    pub async fn require_auth(&self, session_id: &str, auth_url: String) -> bool {
+        let mut sessions = self.inner.lock().await;
+        match sessions.get_mut(session_id) {
+            Some(session) => {
+                if session.is_expired() {
+                    sessions.remove(session_id);
+                    return false;
+                }
+                session.auth_required = true;
+                session.authorized = false;
+                session.auth_url = Some(auth_url);
+                session.pending_request = None;
+                true
+            }
+            None => false,
+        }
+    }
+
+    pub async fn authorize(&self, session_id: &str) -> Option<Nip46AuthorizeOutcome> {
+        let mut sessions = self.inner.lock().await;
+        match sessions.get_mut(session_id) {
+            Some(session) => {
+                if session.is_expired() {
+                    sessions.remove(session_id);
+                    return None;
+                }
+                session.authorized = true;
+                Some(Nip46AuthorizeOutcome {
+                    pending: session.pending_request.take(),
+                })
+            }
+            None => None,
+        }
+    }
+
+    pub async fn set_pending_request(
+        &self,
+        session_id: &str,
+        pending: PendingNostrRequest,
+    ) -> bool {
+        let mut sessions = self.inner.lock().await;
+        match sessions.get_mut(session_id) {
+            Some(session) => {
+                if session.is_expired() {
+                    sessions.remove(session_id);
+                    return false;
+                }
+                session.pending_request = Some(pending);
                 true
             }
             None => false,
@@ -155,6 +225,10 @@ mod tests {
             url: None,
             image: None,
             expires_at,
+            auth_required: false,
+            authorized: true,
+            auth_url: None,
+            pending_request: None,
         }
     }
 

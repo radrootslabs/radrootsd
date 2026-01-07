@@ -13,6 +13,9 @@ pub async fn get_session(
 }
 
 pub fn require_permission(session: &Nip46Session, perm: &str) -> Result<(), RpcError> {
+    if session.auth_required && !session.authorized {
+        return Err(auth_required_error(session));
+    }
     if session.perms.iter().any(|entry| entry == perm) {
         Ok(())
     } else {
@@ -24,9 +27,20 @@ pub fn require_sign_event_permission(
     session: &Nip46Session,
     kind: u32,
 ) -> Result<(), RpcError> {
+    if session.auth_required && !session.authorized {
+        return Err(auth_required_error(session));
+    }
     if sign_event_allowed(&session.perms, kind) {
         Ok(())
     } else {
         Err(RpcError::Other(format!("unauthorized sign_event:{kind}")))
     }
+}
+
+fn auth_required_error(session: &Nip46Session) -> RpcError {
+    let url = session
+        .auth_url
+        .as_deref()
+        .unwrap_or("auth required");
+    RpcError::Other(format!("auth_url:{url}"))
 }

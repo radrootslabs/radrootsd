@@ -135,6 +135,10 @@ async fn connect_bunker(
         url: info.url.clone(),
         image: info.image.clone(),
         expires_at,
+        auth_required: false,
+        authorized: true,
+        auth_url: None,
+        pending_request: None,
     };
     ctx.state.nip46_sessions.insert(session).await;
 
@@ -211,6 +215,10 @@ async fn connect_nostrconnect(
         url: info.url.clone(),
         image: info.image.clone(),
         expires_at,
+        auth_required: false,
+        authorized: true,
+        auth_url: None,
+        pending_request: None,
     };
     ctx.state.nip46_sessions.insert(session).await;
 
