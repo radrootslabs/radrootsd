@@ -1,4 +1,5 @@
 use radroots_nostr::prelude::RadrootsNostrMetadata;
+use radroots_runtime::RadrootsNostrServiceConfig;
 use serde::{Deserialize, Serialize};
 
 fn default_rpc_addr() -> String {
@@ -33,10 +34,6 @@ fn default_nip46_perms() -> Vec<String> {
     Vec::new()
 }
 
-fn default_nip46_nip89_extra_tags() -> Vec<Vec<String>> {
-    Vec::new()
-}
-
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Nip46Config {
     #[serde(default = "default_nip46_session_ttl_secs")]
@@ -45,10 +42,6 @@ pub struct Nip46Config {
     pub perms: Vec<String>,
     #[serde(default)]
     pub nostrconnect_url: Option<String>,
-    #[serde(default)]
-    pub nip89_identifier: Option<String>,
-    #[serde(default = "default_nip46_nip89_extra_tags")]
-    pub nip89_extra_tags: Vec<Vec<String>>,
 }
 
 impl Default for Nip46Config {
@@ -57,8 +50,6 @@ impl Default for Nip46Config {
             session_ttl_secs: default_nip46_session_ttl_secs(),
             perms: default_nip46_perms(),
             nostrconnect_url: None,
-            nip89_identifier: None,
-            nip89_extra_tags: default_nip46_nip89_extra_tags(),
         }
     }
 }
@@ -97,22 +88,19 @@ impl Default for RpcConfig {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Configuration {
-    pub logs_dir: String,
+    #[serde(flatten)]
+    pub service: RadrootsNostrServiceConfig,
     #[serde(default)]
     pub rpc: RpcConfig,
     #[serde(default)]
     pub rpc_addr: Option<String>,
-    #[serde(default)]
-    pub relays: Vec<String>,
     #[serde(default)]
     pub nip46: Nip46Config,
 }
 
 impl Configuration {
     pub fn rpc_addr(&self) -> &str {
-        self.rpc_addr
-            .as_deref()
-            .unwrap_or(self.rpc.addr.as_str())
+        self.rpc_addr.as_deref().unwrap_or(self.rpc.addr.as_str())
     }
 }
 

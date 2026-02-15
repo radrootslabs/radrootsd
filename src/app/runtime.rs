@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use radroots_identity::RadrootsIdentity;
+use std::time::Duration;
 use tracing::info;
 
 use crate::app::{cli, config};
@@ -7,22 +8,16 @@ use crate::core::Radrootsd;
 use crate::transport::jsonrpc;
 use crate::transport::nostr::listener::spawn_nip46_listener;
 use radroots_events::profile::RadrootsProfileType;
-use radroots_events_codec::profile::encode::profile_type_tags;
 use radroots_nostr::prelude::{
-    radroots_nostr_build_metadata_event,
-    radroots_nostr_publish_application_handler,
-    radroots_nostr_publish_identity_profile_with_type,
-    RadrootsNostrApplicationHandlerSpec,
-    RadrootsNostrKind,
-    RadrootsNostrTag,
-    RadrootsNostrTagKind,
+    RadrootsNostrApplicationHandlerSpec, RadrootsNostrKind,
+    radroots_nostr_bootstrap_service_presence,
 };
 
 pub async fn run() -> Result<()> {
     let (args, settings): (cli::Args, config::Settings) =
         radroots_runtime::parse_and_load_path_with_init(
-            |a: &cli::Args| Some(a.config.as_path()),
-            |cfg: &config::Settings| cfg.config.logs_dir.as_str(),
+            |a: &cli::Args| Some(a.service.config.as_path()),
+            |cfg: &config::Settings| cfg.config.service.logs_dir.as_str(),
             None,
         )
         .context("load configuration")?;
@@ -30,8 +25,8 @@ pub async fn run() -> Result<()> {
     info!("Starting radrootsd");
 
     let identity = RadrootsIdentity::load_or_generate(
-        args.identity.as_ref(),
-        args.allow_generate_identity,
+        args.service.identity.as_ref(),
+        args.service.allow_generate_identity,
     )?;
     let keys = identity.keys().clone();
     let radrootsd = Radrootsd::new(
@@ -40,72 +35,40 @@ pub async fn run() -> Result<()> {
         settings.config.nip46.clone(),
     );
 
-    for relay in settings.config.relays.iter() {
+    for relay in settings.config.service.relays.iter() {
         radrootsd.client.add_relay(relay).await?;
     }
 
-    if !settings.config.relays.is_empty() {
+    if !settings.config.service.relays.is_empty() {
         let client = radrootsd.client.clone();
         let md = settings.metadata.clone();
         let identity = identity.clone();
         let nip46_config = settings.config.nip46.clone();
-        let relays = settings.config.relays.clone();
-        let has_metadata = serde_json::to_value(&md)
-            .ok()
-            .and_then(|v| v.as_object().cloned())
-            .map(|o| !o.is_empty())
-            .unwrap_or(false);
+        let service_cfg = settings.config.service.clone();
 
         tokio::spawn(async move {
-            client.connect().await;
-            let profile_published =
-                match radroots_nostr_publish_identity_profile_with_type(
-                    &client,
-                    &identity,
-                    Some(RadrootsProfileType::Radrootsd),
-                )
-                .await
-                {
-                    Ok(Some(_)) => true,
-                    Ok(None) => false,
-                    Err(e) => {
-                        tracing::warn!("Failed to publish identity profile: {e}");
-                        false
-                    }
-                };
-            if has_metadata && !profile_published {
-                let mut tags = Vec::new();
-                for mut tag in profile_type_tags(RadrootsProfileType::Radrootsd) {
-                    if tag.is_empty() {
-                        continue;
-                    }
-                    let key = tag.remove(0);
-                    tags.push(RadrootsNostrTag::custom(
-                        RadrootsNostrTagKind::Custom(key.into()),
-                        tag,
-                    ));
-                }
-                let builder = radroots_nostr_build_metadata_event(&md).tags(tags);
-                if let Err(e) = client.send_event_builder(builder).await {
-                    tracing::warn!("Failed to publish metadata on startup: {e}");
-                } else {
-                    tracing::info!("Published metadata on startup");
-                }
-            }
-
             let nip46_kind = RadrootsNostrKind::NostrConnect.as_u16() as u32;
             let handler_spec = RadrootsNostrApplicationHandlerSpec {
                 kinds: vec![nip46_kind],
-                identifier: nip46_config.nip89_identifier.clone(),
+                identifier: service_cfg.nip89_identifier.clone(),
                 metadata: Some(md.clone()),
-                extra_tags: nip46_config.nip89_extra_tags.clone(),
-                relays,
+                extra_tags: service_cfg.nip89_extra_tags.clone(),
+                relays: service_cfg.relays.clone(),
                 nostrconnect_url: nip46_config.nostrconnect_url.clone(),
             };
-            if let Err(e) = radroots_nostr_publish_application_handler(&client, &handler_spec).await {
-                tracing::warn!("Failed to publish NIP-89 announcement: {e}");
+            if let Err(e) = radroots_nostr_bootstrap_service_presence(
+                &client,
+                &identity,
+                Some(RadrootsProfileType::Radrootsd),
+                &md,
+                &handler_spec,
+                Duration::from_secs(5),
+            )
+            .await
+            {
+                tracing::warn!("Failed to publish service presence on startup: {e}");
             } else {
-                tracing::info!("Published NIP-89 announcement");
+                tracing::info!("Published service presence on startup");
             }
         });
 
