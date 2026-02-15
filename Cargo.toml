@@ -11,13 +11,13 @@ description = "Radroots local runtime daemon for storage, sync, and relay publis
 resolver = "2"
 
 [workspace.dependencies]
-radroots-core = { path = "../../../../vendor/radroots/rs/crates/core" }
-radroots-events = { path = "../../../../vendor/radroots/rs/crates/events" }
-radroots-events-codec = { path = "../../../../vendor/radroots/rs/crates/events-codec" }
-radroots-identity = { path = "../../../../vendor/radroots/rs/crates/identity" }
-radroots-nostr = { path = "../../../../vendor/radroots/rs/crates/nostr" }
-radroots-runtime = { path = "../../../../vendor/radroots/rs/crates/runtime" }
-radroots-trade = { path = "../../../../vendor/radroots/rs/crates/trade" }
+radroots-core = { path = "../../../../foundation/oss/rs/crates/core" }
+radroots-events = { path = "../../../../foundation/oss/rs/crates/events" }
+radroots-events-codec = { path = "../../../../foundation/oss/rs/crates/events-codec" }
+radroots-identity = { path = "../../../../foundation/oss/rs/crates/identity" }
+radroots-nostr = { path = "../../../../foundation/oss/rs/crates/nostr" }
+radroots-runtime = { path = "../../../../foundation/oss/rs/crates/runtime" }
+radroots-trade = { path = "../../../../foundation/oss/rs/crates/trade" }
 
 [dependencies]
 radroots-core = { workspace = true, features = ["std", "serde", "typeshare"]  }
