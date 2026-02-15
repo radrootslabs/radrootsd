@@ -7,14 +7,26 @@ rust-version = "1.88.0"
 license = "AGPL-3.0-or-later"
 description = "Radroots local runtime daemon for storage, sync, and relay publishing"
 
-[dependencies]
-radroots-core = { path = "../../../../vendor/radroots/rs/crates/core", features = ["std", "serde", "typeshare"]  }
-radroots-events = { path = "../../../../vendor/radroots/rs/crates/events", features = ["serde"] }
-radroots-events-codec = { path = "../../../../vendor/radroots/rs/crates/events-codec", features = ["nostr", "serde_json"] }
+[workspace]
+resolver = "2"
+
+[workspace.dependencies]
+radroots-core = { path = "../../../../vendor/radroots/rs/crates/core" }
+radroots-events = { path = "../../../../vendor/radroots/rs/crates/events" }
+radroots-events-codec = { path = "../../../../vendor/radroots/rs/crates/events-codec" }
 radroots-identity = { path = "../../../../vendor/radroots/rs/crates/identity" }
-radroots-nostr = { path = "../../../../vendor/radroots/rs/crates/nostr", features = ["client", "codec", "events", "http"] }
-radroots-runtime = { path = "../../../../vendor/radroots/rs/crates/runtime", features = ["cli"] }
+radroots-nostr = { path = "../../../../vendor/radroots/rs/crates/nostr" }
+radroots-runtime = { path = "../../../../vendor/radroots/rs/crates/runtime" }
 radroots-trade = { path = "../../../../vendor/radroots/rs/crates/trade" }
+
+[dependencies]
+radroots-core = { workspace = true, features = ["std", "serde", "typeshare"]  }
+radroots-events = { workspace = true, features = ["serde"] }
+radroots-events-codec = { workspace = true, features = ["nostr", "serde_json"] }
+radroots-identity = { workspace = true }
+radroots-nostr = { workspace = true, features = ["client", "codec", "events", "http"] }
+radroots-runtime = { workspace = true, features = ["cli"] }
+radroots-trade = { workspace = true }
 nostr = { version = "0.44.2", features = ["nip46"] }
 
 anyhow = { version = "1" }
