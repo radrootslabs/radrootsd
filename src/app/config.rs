@@ -33,6 +33,10 @@ fn default_nip46_perms() -> Vec<String> {
     Vec::new()
 }
 
+fn default_nip46_nip89_extra_tags() -> Vec<Vec<String>> {
+    Vec::new()
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Nip46Config {
     #[serde(default = "default_nip46_session_ttl_secs")]
@@ -41,6 +45,10 @@ pub struct Nip46Config {
     pub perms: Vec<String>,
     #[serde(default)]
     pub nostrconnect_url: Option<String>,
+    #[serde(default)]
+    pub nip89_identifier: Option<String>,
+    #[serde(default = "default_nip46_nip89_extra_tags")]
+    pub nip89_extra_tags: Vec<Vec<String>>,
 }
 
 impl Default for Nip46Config {
@@ -49,6 +57,8 @@ impl Default for Nip46Config {
             session_ttl_secs: default_nip46_session_ttl_secs(),
             perms: default_nip46_perms(),
             nostrconnect_url: None,
+            nip89_identifier: None,
+            nip89_extra_tags: default_nip46_nip89_extra_tags(),
         }
     }
 }

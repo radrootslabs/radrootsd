@@ -96,9 +96,9 @@ pub async fn run() -> Result<()> {
             let nip46_kind = RadrootsNostrKind::NostrConnect.as_u16() as u32;
             let handler_spec = RadrootsNostrApplicationHandlerSpec {
                 kinds: vec![nip46_kind],
-                identifier: None,
+                identifier: nip46_config.nip89_identifier.clone(),
                 metadata: Some(md.clone()),
-                extra_tags: Vec::new(),
+                extra_tags: nip46_config.nip89_extra_tags.clone(),
                 relays,
                 nostrconnect_url: nip46_config.nostrconnect_url.clone(),
             };
