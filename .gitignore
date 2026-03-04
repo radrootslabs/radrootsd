@@ -22,6 +22,9 @@ Thumbs.db
 # local
 .local*
 .vscode
+identity.json
+identity.*.json
+!identity.example.json
 notes*.txt
 justfile
 

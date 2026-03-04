@@ -1,0 +1,4 @@
+{
+  "secret_key": "replace-with-local-secret-key",
+  "public_key": "replace-with-local-public-key"
+}
