@@ -216,6 +216,7 @@ pub fn session_expires_at(ttl_secs: u64) -> Option<Instant> {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
 
@@ -320,5 +321,231 @@ mod tests {
         let store = Nip46SessionStore::new();
         assert!(store.claim_secret("secret").await);
         assert!(!store.claim_secret("secret").await);
+    }
+
+    #[tokio::test]
+    async fn session_store_remove_reports_presence() {
+        let store = Nip46SessionStore::new();
+        store.insert(build_session("remove", None)).await;
+        assert!(store.remove("remove").await);
+        assert!(!store.remove("remove").await);
+    }
+
+    #[test]
+    fn session_expires_at_handles_zero_and_positive() {
+        assert!(session_expires_at(0).is_none());
+        assert!(session_expires_at(10).is_some());
+    }
+
+    #[test]
+    fn session_is_expired_respects_future_and_none() {
+        let session = build_session("active", Some(Instant::now() + Duration::from_secs(1)));
+        assert!(!session.is_expired());
+        let session = build_session("never", None);
+        assert!(!session.is_expired());
+    }
+
+    #[test]
+    fn session_is_expired_for_past_deadline() {
+        let session = build_session("expired", Some(Instant::now() - Duration::from_secs(1)));
+        assert!(session.is_expired());
+    }
+
+    #[tokio::test]
+    async fn session_store_set_user_pubkey_handles_missing_and_expired() {
+        let store = Nip46SessionStore::new();
+        let keys = RadrootsNostrKeys::generate();
+        assert!(!store.set_user_pubkey("missing", keys.public_key()).await);
+
+        let session = build_session(
+            "expired-user",
+            Some(Instant::now() - Duration::from_secs(1)),
+        );
+        store.insert(session).await;
+        assert!(!store.set_user_pubkey("expired-user", keys.public_key()).await);
+    }
+
+    #[tokio::test]
+    async fn session_store_set_user_pubkey_sets_value_for_active_session() {
+        let store = Nip46SessionStore::new();
+        let session = build_session(
+            "active-user",
+            Some(Instant::now() + Duration::from_secs(30)),
+        );
+        let keys = RadrootsNostrKeys::generate();
+        let pubkey = keys.public_key();
+        store.insert(session).await;
+        assert!(store.set_user_pubkey("active-user", pubkey).await);
+        let found = store.get("active-user").await.expect("session");
+        assert_eq!(found.user_pubkey, Some(pubkey));
+    }
+
+    #[tokio::test]
+    async fn session_store_require_auth_sets_flags_and_clears_pending() {
+        let store = Nip46SessionStore::new();
+        let mut session = build_session(
+            "auth",
+            Some(Instant::now() + Duration::from_secs(30)),
+        );
+        let keys = RadrootsNostrKeys::generate();
+        session.pending_request = Some(PendingNostrRequest {
+            request_id: "req-1".to_string(),
+            client_pubkey: keys.public_key(),
+            request: NostrConnectRequest::Ping,
+        });
+        store.insert(session).await;
+
+        assert!(store.require_auth("auth", "https://auth".to_string()).await);
+        let found = store.get("auth").await.expect("session");
+        assert!(found.auth_required);
+        assert!(!found.authorized);
+        assert_eq!(found.auth_url, Some("https://auth".to_string()));
+        assert!(found.pending_request.is_none());
+    }
+
+    #[tokio::test]
+    async fn session_store_require_auth_handles_missing_and_expired() {
+        let store = Nip46SessionStore::new();
+        assert!(!store.require_auth("missing", "https://auth".to_string()).await);
+
+        store
+            .insert(build_session(
+                "expired-auth",
+                Some(Instant::now() - Duration::from_secs(1)),
+            ))
+            .await;
+        assert!(
+            !store
+                .require_auth("expired-auth", "https://auth".to_string())
+                .await
+        );
+    }
+
+    #[tokio::test]
+    async fn session_store_authorize_returns_pending() {
+        let store = Nip46SessionStore::new();
+        let mut session = build_session(
+            "authorize",
+            Some(Instant::now() + Duration::from_secs(30)),
+        );
+        let keys = RadrootsNostrKeys::generate();
+        session.pending_request = Some(PendingNostrRequest {
+            request_id: "req-2".to_string(),
+            client_pubkey: keys.public_key(),
+            request: NostrConnectRequest::GetPublicKey,
+        });
+        store.insert(session).await;
+
+        let outcome = store.authorize("authorize").await.expect("outcome");
+        assert!(outcome.pending.is_some());
+        let found = store.get("authorize").await.expect("session");
+        assert!(found.authorized);
+    }
+
+    #[tokio::test]
+    async fn session_store_authorize_handles_missing_and_expired() {
+        let store = Nip46SessionStore::new();
+        assert!(store.authorize("missing").await.is_none());
+
+        store
+            .insert(build_session(
+                "expired-authorize",
+                Some(Instant::now() - Duration::from_secs(1)),
+            ))
+            .await;
+        assert!(store.authorize("expired-authorize").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn session_store_set_pending_request_handles_missing_and_expired() {
+        let store = Nip46SessionStore::new();
+        let keys = RadrootsNostrKeys::generate();
+        let pending = PendingNostrRequest {
+            request_id: "req-3".to_string(),
+            client_pubkey: keys.public_key(),
+            request: NostrConnectRequest::Ping,
+        };
+        assert!(!store.set_pending_request("missing", pending.clone()).await);
+
+        let session = build_session(
+            "expired-pending",
+            Some(Instant::now() - Duration::from_secs(1)),
+        );
+        store.insert(session).await;
+        assert!(!store.set_pending_request("expired-pending", pending).await);
+    }
+
+    #[tokio::test]
+    async fn session_store_set_pending_request_succeeds_for_active_session() {
+        let store = Nip46SessionStore::new();
+        store
+            .insert(build_session(
+                "pending",
+                Some(Instant::now() + Duration::from_secs(30)),
+            ))
+            .await;
+        let keys = RadrootsNostrKeys::generate();
+        let pending = PendingNostrRequest {
+            request_id: "req-active".to_string(),
+            client_pubkey: keys.public_key(),
+            request: NostrConnectRequest::Ping,
+        };
+        assert!(store.set_pending_request("pending", pending).await);
+        let found = store.get("pending").await.expect("session");
+        assert!(found.pending_request.is_some());
+    }
+
+    #[tokio::test]
+    async fn session_store_list_sorts_ids() {
+        let store = Nip46SessionStore::new();
+        store
+            .insert(build_session(
+                "b",
+                Some(Instant::now() + Duration::from_secs(10)),
+            ))
+            .await;
+        store
+            .insert(build_session(
+                "a",
+                Some(Instant::now() + Duration::from_secs(10)),
+            ))
+            .await;
+        let listed = store.list().await;
+        assert_eq!(listed.len(), 2);
+        assert_eq!(listed[0].id, "a");
+        assert_eq!(listed[1].id, "b");
+    }
+
+    #[test]
+    fn filter_perms_empty_allowed_returns_empty() {
+        let requested = vec!["nip04_encrypt".to_string()];
+        let filtered = filter_perms(&requested, &[]);
+        assert!(filtered.is_empty());
+    }
+
+    #[test]
+    fn filter_perms_exact_match_and_rejects_unlisted() {
+        let requested = vec![
+            "nip04_encrypt".to_string(),
+            "nip44_encrypt".to_string(),
+            "sign_event:1".to_string(),
+        ];
+        let allowed = vec!["nip04_encrypt".to_string()];
+        let filtered = filter_perms(&requested, &allowed);
+        assert_eq!(filtered, vec!["nip04_encrypt".to_string()]);
+    }
+
+    #[test]
+    fn filter_perms_sign_event_global_does_not_allow_unrelated_perm() {
+        let requested = vec!["nip44_encrypt".to_string()];
+        let allowed = vec!["sign_event".to_string()];
+        let filtered = filter_perms(&requested, &allowed);
+        assert!(filtered.is_empty());
+    }
+
+    #[test]
+    fn sign_event_allowed_accepts_global_permission() {
+        let perms = vec!["sign_event".to_string()];
+        assert!(sign_event_allowed(&perms, 4));
     }
 }

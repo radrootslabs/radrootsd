@@ -109,3 +109,54 @@ pub struct Settings {
     pub metadata: RadrootsNostrMetadata,
     pub config: Configuration,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{Configuration, Nip46Config, RpcConfig};
+    use radroots_runtime::RadrootsNostrServiceConfig;
+
+    fn service_config() -> RadrootsNostrServiceConfig {
+        RadrootsNostrServiceConfig {
+            logs_dir: "logs".to_string(),
+            relays: Vec::new(),
+            nip89_identifier: Some("radrootsd".to_string()),
+            nip89_extra_tags: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn nip46_defaults_are_expected() {
+        let cfg = Nip46Config::default();
+        assert_eq!(cfg.session_ttl_secs, 900);
+        assert!(cfg.perms.is_empty());
+        assert!(cfg.nostrconnect_url.is_none());
+    }
+
+    #[test]
+    fn rpc_defaults_are_expected() {
+        let cfg = RpcConfig::default();
+        assert_eq!(cfg.addr, "127.0.0.1:7070");
+        assert_eq!(cfg.max_request_body_size, 10 * 1024 * 1024);
+        assert_eq!(cfg.max_response_body_size, 10 * 1024 * 1024);
+        assert_eq!(cfg.max_connections, 100);
+        assert_eq!(cfg.max_subscriptions_per_connection, 1024);
+        assert_eq!(cfg.message_buffer_capacity, 1024);
+        assert!(cfg.batch_request_limit.is_none());
+    }
+
+    #[test]
+    fn rpc_addr_prefers_override() {
+        let mut cfg = Configuration {
+            service: service_config(),
+            rpc: RpcConfig {
+                addr: "127.0.0.1:1111".to_string(),
+                ..RpcConfig::default()
+            },
+            rpc_addr: None,
+            nip46: Nip46Config::default(),
+        };
+        assert_eq!(cfg.rpc_addr(), "127.0.0.1:1111");
+        cfg.rpc_addr = Some("127.0.0.1:2222".to_string());
+        assert_eq!(cfg.rpc_addr(), "127.0.0.1:2222");
+    }
+}
