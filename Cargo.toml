@@ -19,6 +19,9 @@ radroots-nostr = { path = "../../../../foundation/oss/rs/radroots/crates/nostr" 
 radroots-runtime = { path = "../../../../foundation/oss/rs/radroots/crates/runtime" }
 radroots-trade = { path = "../../../../foundation/oss/rs/radroots/crates/trade" }
 
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage_nightly)'] }
+
 [dependencies]
 radroots-core = { workspace = true, features = ["std", "serde", "typeshare"]  }
 radroots-events = { workspace = true, features = ["serde"] }

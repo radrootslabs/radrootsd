@@ -1,0 +1,7 @@
+# required source files that must appear in coverage summary output
+src/app/config.rs
+src/app/runtime.rs
+src/core/nip46/session.rs
+src/core/state.rs
+src/lib.rs
+src/main.rs
