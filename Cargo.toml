@@ -42,5 +42,5 @@ serde_qs = { version = "0.12" }
 tokio = { version = "1", features = ["full"] }
 thiserror = { version = "1" }
 tracing = { version = "0.1" }
-uuid = { version = "1.16.0", features = ["v4"] }
-url = { version = "2.5.4" }
+uuid = { version = "1.22.0", features = ["v4"] }
+url = { version = "2.5.8" }
