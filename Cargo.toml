@@ -11,13 +11,13 @@ description = "Radroots local runtime daemon for storage, sync, and relay publis
 resolver = "2"
 
 [workspace.dependencies]
-radroots-core = { path = "../../../../foundation/oss/rs/radroots/crates/core" }
-radroots-events = { path = "../../../../foundation/oss/rs/radroots/crates/events" }
-radroots-events-codec = { path = "../../../../foundation/oss/rs/radroots/crates/events-codec" }
-radroots-identity = { path = "../../../../foundation/oss/rs/radroots/crates/identity" }
-radroots-nostr = { path = "../../../../foundation/oss/rs/radroots/crates/nostr" }
-radroots-runtime = { path = "../../../../foundation/oss/rs/radroots/crates/runtime" }
-radroots-trade = { path = "../../../../foundation/oss/rs/radroots/crates/trade" }
+radroots-core = { path = "../lib/crates/core" }
+radroots-events = { path = "../lib/crates/events" }
+radroots-events-codec = { path = "../lib/crates/events-codec" }
+radroots-identity = { path = "../lib/crates/identity" }
+radroots-nostr = { path = "../lib/crates/nostr" }
+radroots-runtime = { path = "../lib/crates/runtime" }
+radroots-trade = { path = "../lib/crates/trade" }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage_nightly)'] }
