@@ -26,6 +26,7 @@ use radroots_nostr::prelude::{
     RadrootsNostrPublicKey,
     RadrootsNostrSecretKey,
     RadrootsNostrRelayPoolNotification,
+    RadrootsNostrSubscriptionId,
     RadrootsNostrTimestamp,
 };
 use nostr::nips::{nip44, nip46::NostrConnectMessage, nip46::NostrConnectRequest};
@@ -99,20 +100,37 @@ async fn connect_bunker(
         .wait_for_connection(Duration::from_secs(DEFAULT_TIMEOUT_SECS))
         .await;
 
-    let request_id = send_connect_request(
-        &client,
-        &client_keys,
+    let request = NostrConnectRequest::Connect {
+        remote_signer_public_key: remote_signer_pubkey.clone(),
+        secret: info.secret.clone(),
+    };
+    let message = NostrConnectMessage::request(&request);
+    let request_id = message.id().to_string();
+    let filter = connect_response_filter(
         &remote_signer_pubkey,
-        info.secret.as_deref(),
-    )
-    .await?;
+        &client_pubkey,
+        RadrootsNostrTimestamp::now(),
+    )?;
+    let notifications = client.notifications();
+    let subscription = client
+        .subscribe(filter, None)
+        .await
+        .map_err(|e| RpcError::Other(format!("nip46 connect failed: {e}")))?;
+
+    if let Err(error) = send_connect_request(&client, &client_keys, &remote_signer_pubkey, message)
+        .await
+    {
+        client.unsubscribe(&subscription.val).await;
+        return Err(error);
+    }
 
     let response = wait_for_connect_response(
         &client,
         &client_keys,
         &remote_signer_pubkey,
-        &client_pubkey,
         &request_id,
+        notifications,
+        &subscription.val,
     )
     .await?;
 
@@ -262,14 +280,8 @@ async fn send_connect_request(
     client: &RadrootsNostrClient,
     client_keys: &RadrootsNostrKeys,
     remote_signer_pubkey: &RadrootsNostrPublicKey,
-    secret: Option<&str>,
-) -> Result<String, RpcError> {
-    let req = NostrConnectRequest::Connect {
-        remote_signer_public_key: remote_signer_pubkey.clone(),
-        secret: secret.map(|value| value.to_string()),
-    };
-    let message = NostrConnectMessage::request(&req);
-    let request_id = message.id().to_string();
+    message: NostrConnectMessage,
+) -> Result<(), RpcError> {
     let event = RadrootsNostrEventBuilder::nostr_connect(
         client_keys,
         remote_signer_pubkey.clone(),
@@ -280,34 +292,37 @@ async fn send_connect_request(
         .send_event_builder(event)
         .await
         .map_err(|e| RpcError::Other(format!("nip46 connect request failed: {e}")))?;
-    Ok(request_id)
+    Ok(())
+}
+
+fn connect_response_filter(
+    remote_signer_pubkey: &RadrootsNostrPublicKey,
+    client_pubkey: &RadrootsNostrPublicKey,
+    since: RadrootsNostrTimestamp,
+) -> Result<RadrootsNostrFilter, RpcError> {
+    let filter = RadrootsNostrFilter::new()
+        .kind(RadrootsNostrKind::NostrConnect)
+        .author(remote_signer_pubkey.clone())
+        .since(since);
+    radroots_nostr_filter_tag(filter, "p", vec![client_pubkey.to_hex()])
+        .map_err(|e| RpcError::Other(format!("nip46 connect filter failed: {e}")))
 }
 
 async fn wait_for_connect_response(
     client: &RadrootsNostrClient,
     client_keys: &RadrootsNostrKeys,
     remote_signer_pubkey: &RadrootsNostrPublicKey,
-    client_pubkey: &RadrootsNostrPublicKey,
     request_id: &str,
+    mut notifications: broadcast::Receiver<RadrootsNostrRelayPoolNotification>,
+    subscription_id: &RadrootsNostrSubscriptionId,
 ) -> Result<NostrConnectMessage, RpcError> {
-    let filter = RadrootsNostrFilter::new()
-        .kind(RadrootsNostrKind::NostrConnect)
-        .author(remote_signer_pubkey.clone())
-        .since(RadrootsNostrTimestamp::now());
-    let filter = radroots_nostr_filter_tag(filter, "p", vec![client_pubkey.to_hex()])
-        .map_err(|e| RpcError::Other(format!("nip46 connect filter failed: {e}")))?;
-    let mut notifications = client.notifications();
-    let subscription = client
-        .subscribe(filter, None)
-        .await
-        .map_err(|e| RpcError::Other(format!("nip46 connect failed: {e}")))?;
     let timeout = sleep(Duration::from_secs(DEFAULT_TIMEOUT_SECS));
     tokio::pin!(timeout);
 
     loop {
         tokio::select! {
             _ = &mut timeout => {
-                client.unsubscribe(&subscription.val).await;
+                client.unsubscribe(subscription_id).await;
                 return Err(RpcError::Other("nip46 connect response not found".to_string()));
             }
             msg = notifications.recv() => {
@@ -315,6 +330,7 @@ async fn wait_for_connect_response(
                     Ok(notification) => notification,
                     Err(broadcast::error::RecvError::Lagged(_)) => continue,
                     Err(broadcast::error::RecvError::Closed) => {
+                        client.unsubscribe(subscription_id).await;
                         return Err(RpcError::Other("nip46 connect notification closed".to_string()));
                     }
                 };
@@ -336,7 +352,7 @@ async fn wait_for_connect_response(
                 let message = NostrConnectMessage::from_json(&decrypted)
                     .map_err(|e| RpcError::Other(format!("nip46 connect response parse failed: {e}")))?;
                 if message.is_response() && message.id() == request_id {
-                    client.unsubscribe(&subscription.val).await;
+                    client.unsubscribe(subscription_id).await;
                     return Ok(message);
                 }
             }

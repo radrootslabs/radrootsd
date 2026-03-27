@@ -10,6 +10,7 @@ use radroots_nostr::prelude::{
     RadrootsNostrFilter,
     RadrootsNostrKind,
     RadrootsNostrRelayPoolNotification,
+    RadrootsNostrSubscriptionId,
     RadrootsNostrTimestamp,
 };
 use nostr::nips::{
@@ -62,15 +63,6 @@ pub async fn request(
     request: NostrConnectRequest,
     label: &str,
 ) -> Result<NostrConnectMessage, RpcError> {
-    let request_id = send_request(session, request, label).await?;
-    wait_for_response(session, &request_id, label).await
-}
-
-async fn send_request(
-    session: &Nip46Session,
-    request: NostrConnectRequest,
-    label: &str,
-) -> Result<String, RpcError> {
     session.client.connect().await;
     session
         .client
@@ -79,6 +71,13 @@ async fn send_request(
 
     let message = NostrConnectMessage::request(&request);
     let request_id = message.id().to_string();
+    let filter = response_filter(session, RadrootsNostrTimestamp::now(), label)?;
+    let notifications = session.client.notifications();
+    let subscription = session
+        .client
+        .subscribe(filter, None)
+        .await
+        .map_err(|e| RpcError::Other(format!("nip46 {label} failed: {e}")))?;
     let event = RadrootsNostrEventBuilder::nostr_connect(
         &session.client_keys,
         session.remote_signer_pubkey.clone(),
@@ -86,39 +85,46 @@ async fn send_request(
     )
     .map_err(|e| RpcError::Other(format!("nip46 {label} failed: {e}")))?;
 
-    session
+    if let Err(error) = session
         .client
         .send_event_builder(event)
         .await
-        .map_err(|e| RpcError::Other(format!("nip46 {label} failed: {e}")))?;
+        .map_err(|e| RpcError::Other(format!("nip46 {label} failed: {e}")))
+    {
+        session.client.unsubscribe(&subscription.val).await;
+        return Err(error);
+    }
 
-    Ok(request_id)
+    wait_for_response(session, &request_id, label, notifications, &subscription.val).await
+}
+
+fn response_filter(
+    session: &Nip46Session,
+    since: RadrootsNostrTimestamp,
+    label: &str,
+) -> Result<RadrootsNostrFilter, RpcError> {
+    let filter = RadrootsNostrFilter::new()
+        .kind(RadrootsNostrKind::NostrConnect)
+        .author(session.remote_signer_pubkey.clone())
+        .since(since);
+    radroots_nostr_filter_tag(filter, "p", vec![session.client_pubkey.to_hex()])
+        .map_err(|e| RpcError::Other(format!("nip46 {label} failed: {e}")))
 }
 
 async fn wait_for_response(
     session: &Nip46Session,
     request_id: &str,
     label: &str,
+    mut notifications: broadcast::Receiver<RadrootsNostrRelayPoolNotification>,
+    subscription_id: &RadrootsNostrSubscriptionId,
 ) -> Result<NostrConnectMessage, RpcError> {
-    let filter = RadrootsNostrFilter::new()
-        .kind(RadrootsNostrKind::NostrConnect)
-        .author(session.remote_signer_pubkey.clone())
-        .since(RadrootsNostrTimestamp::now());
-    let filter = radroots_nostr_filter_tag(filter, "p", vec![session.client_pubkey.to_hex()])
-        .map_err(|e| RpcError::Other(format!("nip46 {label} failed: {e}")))?;
-    let mut notifications = session.client.notifications();
-    let subscription = session
-        .client
-        .subscribe(filter, None)
-        .await
-        .map_err(|e| RpcError::Other(format!("nip46 {label} failed: {e}")))?;
     let timeout = sleep(Duration::from_secs(DEFAULT_TIMEOUT_SECS));
     tokio::pin!(timeout);
 
     loop {
         tokio::select! {
             _ = &mut timeout => {
-                session.client.unsubscribe(&subscription.val).await;
+                session.client.unsubscribe(subscription_id).await;
                 return Err(RpcError::Other(format!("nip46 {label} response not found")));
             }
             msg = notifications.recv() => {
@@ -126,6 +132,7 @@ async fn wait_for_response(
                     Ok(notification) => notification,
                     Err(broadcast::error::RecvError::Lagged(_)) => continue,
                     Err(broadcast::error::RecvError::Closed) => {
+                        session.client.unsubscribe(subscription_id).await;
                         return Err(RpcError::Other(format!("nip46 {label} notification closed")));
                     }
                 };
@@ -147,7 +154,7 @@ async fn wait_for_response(
                 let message = NostrConnectMessage::from_json(&decrypted)
                     .map_err(|e| RpcError::Other(format!("nip46 {label} failed: {e}")))?;
                 if message.is_response() && message.id() == request_id {
-                    session.client.unsubscribe(&subscription.val).await;
+                    session.client.unsubscribe(subscription_id).await;
                     return Ok(message);
                 }
             }
