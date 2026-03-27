@@ -3,6 +3,7 @@ use jsonrpsee::server::RpcModule;
 use serde::Deserialize;
 
 use crate::core::bridge::store::BridgeJobRecord;
+use crate::transport::jsonrpc::auth::require_bridge_auth;
 use crate::transport::jsonrpc::{MethodRegistry, RpcContext, RpcError};
 
 #[derive(Debug, Deserialize)]
@@ -12,7 +13,8 @@ struct BridgeJobStatusParams {
 
 pub fn register(m: &mut RpcModule<RpcContext>, registry: &MethodRegistry) -> Result<()> {
     registry.track("bridge.job.status");
-    m.register_async_method("bridge.job.status", |params, ctx, _| async move {
+    m.register_async_method("bridge.job.status", |params, ctx, extensions| async move {
+        require_bridge_auth(&extensions)?;
         let params: BridgeJobStatusParams = params
             .parse()
             .map_err(|e| RpcError::InvalidParams(e.to_string()))?;

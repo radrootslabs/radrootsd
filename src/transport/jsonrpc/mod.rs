@@ -8,6 +8,7 @@ use jsonrpsee::server::{RpcModule, ServerHandle};
 use crate::app::config::RpcConfig;
 use crate::core::Radrootsd;
 
+mod auth;
 mod context;
 mod error;
 mod params;
@@ -26,13 +27,14 @@ pub async fn start_rpc(
     addr: SocketAddr,
     rpc_cfg: &RpcConfig,
 ) -> Result<ServerHandle> {
+    state.bridge_config.validate()?;
     let registry = MethodRegistry::default();
     let ctx = RpcContext::new(state, registry.clone());
-    let server = server::build_server(addr, rpc_cfg).await?;
+    let bridge_config = ctx.state.bridge_config.clone();
 
     let mut root = RpcModule::new(ctx.clone());
     methods::register_all(&mut root, ctx, registry)?;
 
-    let handle = server.start(root);
+    let handle = server::start_server(addr, rpc_cfg, &bridge_config, root).await?;
     Ok(handle)
 }

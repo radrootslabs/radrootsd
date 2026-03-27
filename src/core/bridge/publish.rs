@@ -410,6 +410,7 @@ mod tests {
     fn publish_settings_from_config_copies_values() {
         let config = BridgeConfig {
             enabled: true,
+            bearer_token: Some("secret".to_string()),
             connect_timeout_secs: 15,
             delivery_policy: BridgeDeliveryPolicy::Quorum,
             delivery_quorum: Some(2),

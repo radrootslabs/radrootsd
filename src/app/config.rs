@@ -1,3 +1,4 @@
+use anyhow::{Result, bail};
 use radroots_nostr::prelude::RadrootsNostrMetadata;
 use radroots_runtime::RadrootsNostrServiceConfig;
 use serde::{Deserialize, Serialize};
@@ -34,6 +35,10 @@ fn default_nip46_perms() -> Vec<String> {
     Vec::new()
 }
 
+fn default_nip46_public_jsonrpc_enabled() -> bool {
+    false
+}
+
 fn default_bridge_enabled() -> bool {
     false
 }
@@ -68,6 +73,8 @@ pub struct Nip46Config {
     pub session_ttl_secs: u64,
     #[serde(default = "default_nip46_perms")]
     pub perms: Vec<String>,
+    #[serde(default = "default_nip46_public_jsonrpc_enabled")]
+    pub public_jsonrpc_enabled: bool,
     #[serde(default)]
     pub nostrconnect_url: Option<String>,
 }
@@ -77,6 +84,7 @@ impl Default for Nip46Config {
         Self {
             session_ttl_secs: default_nip46_session_ttl_secs(),
             perms: default_nip46_perms(),
+            public_jsonrpc_enabled: default_nip46_public_jsonrpc_enabled(),
             nostrconnect_url: None,
         }
     }
@@ -104,6 +112,8 @@ impl BridgeDeliveryPolicy {
 pub struct BridgeConfig {
     #[serde(default = "default_bridge_enabled")]
     pub enabled: bool,
+    #[serde(default)]
+    pub bearer_token: Option<String>,
     #[serde(default = "default_bridge_connect_timeout_secs")]
     pub connect_timeout_secs: u64,
     #[serde(default = "default_bridge_delivery_policy")]
@@ -124,6 +134,7 @@ impl Default for BridgeConfig {
     fn default() -> Self {
         Self {
             enabled: default_bridge_enabled(),
+            bearer_token: None,
             connect_timeout_secs: default_bridge_connect_timeout_secs(),
             delivery_policy: default_bridge_delivery_policy(),
             delivery_quorum: None,
@@ -132,6 +143,22 @@ impl Default for BridgeConfig {
             publish_max_backoff_millis: default_bridge_publish_max_backoff_millis(),
             job_status_retention: default_bridge_job_status_retention(),
         }
+    }
+}
+
+impl BridgeConfig {
+    pub fn bearer_token(&self) -> Option<&str> {
+        self.bearer_token
+            .as_deref()
+            .map(str::trim)
+            .filter(|token| !token.is_empty())
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        if self.enabled && self.bearer_token().is_none() {
+            bail!("bridge bearer_token is required when bridge ingress is enabled");
+        }
+        Ok(())
     }
 }
 
@@ -185,6 +212,11 @@ impl Configuration {
     pub fn rpc_addr(&self) -> &str {
         self.rpc_addr.as_deref().unwrap_or(self.rpc.addr.as_str())
     }
+
+    pub fn validate(&self) -> Result<()> {
+        self.bridge.validate()?;
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -212,6 +244,7 @@ mod tests {
         let cfg = Nip46Config::default();
         assert_eq!(cfg.session_ttl_secs, 900);
         assert!(cfg.perms.is_empty());
+        assert!(!cfg.public_jsonrpc_enabled);
         assert!(cfg.nostrconnect_url.is_none());
     }
 
@@ -231,6 +264,7 @@ mod tests {
     fn bridge_defaults_are_expected() {
         let cfg = BridgeConfig::default();
         assert!(!cfg.enabled);
+        assert!(cfg.bearer_token.is_none());
         assert_eq!(cfg.connect_timeout_secs, 10);
         assert_eq!(cfg.delivery_policy, BridgeDeliveryPolicy::Any);
         assert_eq!(cfg.delivery_quorum, None);
@@ -255,5 +289,27 @@ mod tests {
         assert_eq!(cfg.rpc_addr(), "127.0.0.1:1111");
         cfg.rpc_addr = Some("127.0.0.1:2222".to_string());
         assert_eq!(cfg.rpc_addr(), "127.0.0.1:2222");
+    }
+
+    #[test]
+    fn bridge_validation_requires_bearer_token_when_enabled() {
+        let err = BridgeConfig {
+            enabled: true,
+            ..BridgeConfig::default()
+        }
+        .validate()
+        .expect_err("missing token should fail");
+        assert!(err.to_string().contains("bearer_token"));
+    }
+
+    #[test]
+    fn bridge_validation_accepts_enabled_bridge_with_bearer_token() {
+        BridgeConfig {
+            enabled: true,
+            bearer_token: Some("secret".to_string()),
+            ..BridgeConfig::default()
+        }
+        .validate()
+        .expect("valid bridge config");
     }
 }

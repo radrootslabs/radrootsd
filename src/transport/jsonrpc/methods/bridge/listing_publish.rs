@@ -10,6 +10,7 @@ use uuid::Uuid;
 
 use crate::core::bridge::publish::{BridgePublishSettings, connect_and_publish_event};
 use crate::core::bridge::store::{BridgeJobRecord, new_listing_publish_job};
+use crate::transport::jsonrpc::auth::require_bridge_auth;
 use crate::transport::jsonrpc::{MethodRegistry, RpcContext, RpcError};
 
 #[derive(Debug, Deserialize)]
@@ -27,13 +28,17 @@ struct BridgeListingPublishResponse {
 
 pub fn register(m: &mut RpcModule<RpcContext>, registry: &MethodRegistry) -> Result<()> {
     registry.track("bridge.listing.publish");
-    m.register_async_method("bridge.listing.publish", |params, ctx, _| async move {
-        let params: BridgeListingPublishParams = params
-            .parse()
-            .map_err(|e| RpcError::InvalidParams(e.to_string()))?;
-        let response = publish_listing(ctx.as_ref().clone(), params).await?;
-        Ok::<BridgeListingPublishResponse, RpcError>(response)
-    })?;
+    m.register_async_method(
+        "bridge.listing.publish",
+        |params, ctx, extensions| async move {
+            require_bridge_auth(&extensions)?;
+            let params: BridgeListingPublishParams = params
+                .parse()
+                .map_err(|e| RpcError::InvalidParams(e.to_string()))?;
+            let response = publish_listing(ctx.as_ref().clone(), params).await?;
+            Ok::<BridgeListingPublishResponse, RpcError>(response)
+        },
+    )?;
     Ok(())
 }
 

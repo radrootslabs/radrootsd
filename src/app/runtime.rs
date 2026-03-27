@@ -262,6 +262,7 @@ async fn wait_for_shutdown_or_stopped(handle: ServerHandle) -> RunWaitOutcome {
 
 pub async fn run() -> Result<()> {
     let (args, settings): (cli::Args, config::Settings) = load_args_and_settings()?;
+    settings.config.validate()?;
 
     info!("Starting radrootsd");
 
@@ -436,6 +437,21 @@ mod tests {
         let err = run().await.expect_err("missing identity should error");
         let msg = format!("{err:#}");
         assert!(msg.contains("identity"));
+    }
+
+    #[tokio::test]
+    async fn run_returns_error_when_bridge_is_enabled_without_bearer_token() {
+        let _guard = test_guard();
+        let path = unique_identity_path("bridge-auth");
+        let args = args_for_identity(path, true);
+        let mut settings = settings_with_relays(Vec::new());
+        settings.config.bridge.enabled = true;
+        settings.config.bridge.bearer_token = None;
+        *run_load_hook()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Ok((args, settings)));
+        let err = run().await.expect_err("invalid bridge config should error");
+        assert!(err.to_string().contains("bearer_token"));
     }
 
     #[tokio::test]

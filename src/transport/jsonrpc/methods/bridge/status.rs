@@ -3,12 +3,14 @@ use jsonrpsee::server::RpcModule;
 use serde::Serialize;
 
 use crate::app::config::BridgeDeliveryPolicy;
+use crate::transport::jsonrpc::auth::{BRIDGE_AUTH_MODE, require_bridge_auth};
 use crate::transport::jsonrpc::{MethodRegistry, RpcContext, RpcError};
 
 #[derive(Clone, Debug, Serialize)]
 struct BridgeStatusResponse {
     enabled: bool,
     ready: bool,
+    auth_mode: String,
     signer_mode: String,
     relay_count: usize,
     delivery_policy: BridgeDeliveryPolicy,
@@ -25,12 +27,14 @@ struct BridgeStatusResponse {
 
 pub fn register(m: &mut RpcModule<RpcContext>, registry: &MethodRegistry) -> Result<()> {
     registry.track("bridge.status");
-    m.register_async_method("bridge.status", |_params, ctx, _| async move {
+    m.register_async_method("bridge.status", |_params, ctx, extensions| async move {
+        require_bridge_auth(&extensions)?;
         let relay_count = ctx.state.client.relays().await.len();
         let snapshot = ctx.state.bridge_jobs.snapshot();
         Ok::<BridgeStatusResponse, RpcError>(BridgeStatusResponse {
             enabled: ctx.state.bridge_config.enabled,
             ready: ctx.state.bridge_config.enabled && relay_count > 0,
+            auth_mode: BRIDGE_AUTH_MODE.to_string(),
             signer_mode: "embedded_service_identity".to_string(),
             relay_count,
             delivery_policy: ctx.state.bridge_config.delivery_policy,

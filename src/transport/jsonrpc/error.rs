@@ -13,6 +13,8 @@ pub enum RpcError {
     InvalidParams(String),
     #[error("method not found: {0}")]
     MethodNotFound(String),
+    #[error("unauthorized: {0}")]
+    Unauthorized(String),
     #[error("{0}")]
     Other(String),
 }
@@ -23,6 +25,9 @@ impl From<RpcError> for ErrorObjectOwned {
             RpcError::InvalidParams(msg) => ErrorObject::owned(-32602, msg, None::<()>),
             RpcError::MethodNotFound(name) => {
                 ErrorObject::owned(-32601, format!("method not found: {name}"), None::<()>)
+            }
+            RpcError::Unauthorized(msg) => {
+                ErrorObject::owned(-32001, format!("unauthorized: {msg}"), None::<()>)
             }
             other => ErrorObject::owned(-32000, other.to_string(), None::<()>),
         }

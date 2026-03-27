@@ -20,9 +20,11 @@ addr = "127.0.0.1:7070"
 
 [config.bridge]
 enabled = true
+bearer_token = "change-me"
 delivery_policy = "any"
 publish_max_attempts = 2
 
 [config.nip46]
+public_jsonrpc_enabled = false
 session_ttl_secs = 900
 perms = []

@@ -3,11 +3,21 @@
 use std::net::SocketAddr;
 
 use anyhow::Result;
-use jsonrpsee::server::{BatchRequestConfig, Server, ServerBuilder, ServerConfigBuilder};
+use jsonrpsee::server::{
+    BatchRequestConfig, HttpBody, HttpRequest, RpcModule, ServerBuilder, ServerConfigBuilder,
+    ServerHandle,
+};
 
-use crate::app::config::RpcConfig;
+use crate::app::config::{BridgeConfig, RpcConfig};
+use crate::transport::jsonrpc::RpcContext;
+use crate::transport::jsonrpc::auth;
 
-pub async fn build_server(addr: SocketAddr, rpc_cfg: &RpcConfig) -> Result<Server> {
+pub async fn start_server(
+    addr: SocketAddr,
+    rpc_cfg: &RpcConfig,
+    bridge_cfg: &BridgeConfig,
+    root: RpcModule<RpcContext>,
+) -> Result<ServerHandle> {
     let mut builder = ServerConfigBuilder::new()
         .max_request_body_size(rpc_cfg.max_request_body_size)
         .max_response_body_size(rpc_cfg.max_response_body_size)
@@ -25,6 +35,22 @@ pub async fn build_server(addr: SocketAddr, rpc_cfg: &RpcConfig) -> Result<Serve
     }
 
     let server_cfg = builder.build();
-    let server = ServerBuilder::with_config(server_cfg).build(addr).await?;
-    Ok(server)
+    let bridge_bearer_token = bridge_cfg.bearer_token().map(str::to_owned);
+    let server = ServerBuilder::with_config(server_cfg)
+        .set_http_middleware(tower::ServiceBuilder::new().map_request(
+            move |mut request: HttpRequest<HttpBody>| {
+                let bridge_auth = auth::authorize_bridge_request(
+                    request
+                        .headers()
+                        .get("authorization")
+                        .and_then(|value| value.to_str().ok()),
+                    bridge_bearer_token.as_deref(),
+                );
+                request.extensions_mut().insert(bridge_auth);
+                request
+            },
+        ))
+        .build(addr)
+        .await?;
+    Ok(server.start(root))
 }
