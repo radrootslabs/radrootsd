@@ -4,6 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 use std::sync::Arc;
 
+use serde::Serialize;
 use tokio::sync::Mutex;
 
 use radroots_nostr::prelude::{
@@ -28,6 +29,31 @@ pub struct PendingNostrRequest {
 
 pub struct Nip46AuthorizeOutcome {
     pub pending: Option<PendingNostrRequest>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Nip46SessionRole {
+    InboundLocalSigner,
+    OutboundRemoteSigner,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct Nip46SessionView {
+    pub session_id: String,
+    pub role: Nip46SessionRole,
+    pub client_pubkey: String,
+    pub signer_pubkey: String,
+    pub user_pubkey: Option<String>,
+    pub relays: Vec<String>,
+    pub permissions: Vec<String>,
+    pub name: Option<String>,
+    pub url: Option<String>,
+    pub image: Option<String>,
+    pub auth_required: bool,
+    pub authorized: bool,
+    pub auth_url: Option<String>,
+    pub expires_in_secs: Option<u64>,
 }
 
 #[derive(Clone)]
@@ -178,6 +204,41 @@ impl Nip46Session {
             .map(|expires_at| expires_at <= Instant::now())
             .unwrap_or(false)
     }
+
+    pub fn role(&self) -> Nip46SessionRole {
+        if self.client_keys.public_key() == self.remote_signer_pubkey {
+            Nip46SessionRole::InboundLocalSigner
+        } else {
+            Nip46SessionRole::OutboundRemoteSigner
+        }
+    }
+
+    pub fn public_view(&self) -> Nip46SessionView {
+        Nip46SessionView {
+            session_id: self.id.clone(),
+            role: self.role(),
+            client_pubkey: self.client_pubkey.to_hex(),
+            signer_pubkey: self.remote_signer_pubkey.to_hex(),
+            user_pubkey: self.user_pubkey.as_ref().map(|pubkey| pubkey.to_hex()),
+            relays: self.relays.clone(),
+            permissions: self.perms.clone(),
+            name: self.name.clone(),
+            url: self.url.clone(),
+            image: self.image.clone(),
+            auth_required: self.auth_required,
+            authorized: self.authorized,
+            auth_url: self.auth_url.clone(),
+            expires_in_secs: self.expires_at.map(remaining_secs),
+        }
+    }
+}
+
+fn remaining_secs(expires_at: Instant) -> u64 {
+    if expires_at <= Instant::now() {
+        0
+    } else {
+        expires_at.saturating_duration_since(Instant::now()).as_secs()
+    }
 }
 
 pub fn filter_perms(requested: &[String], allowed: &[String]) -> Vec<String> {
@@ -256,6 +317,56 @@ mod tests {
         assert!(found.is_none());
         let found_again = store.get("expired").await;
         assert!(found_again.is_none());
+    }
+
+    #[test]
+    fn public_view_marks_inbound_local_signer_sessions() {
+        let session = build_session("inbound", None);
+
+        let view = session.public_view();
+
+        assert_eq!(view.session_id, "inbound");
+        assert_eq!(view.role, Nip46SessionRole::InboundLocalSigner);
+        assert_eq!(view.client_pubkey, session.client_pubkey.to_hex());
+        assert_eq!(view.signer_pubkey, session.remote_signer_pubkey.to_hex());
+        assert_eq!(view.permissions, session.perms);
+    }
+
+    #[test]
+    fn public_view_marks_outbound_remote_signer_sessions() {
+        let client_keys = RadrootsNostrKeys::generate();
+        let remote_signer_keys = RadrootsNostrKeys::generate();
+        let session = Nip46Session {
+            id: "outbound".to_string(),
+            client: RadrootsNostrClient::new(client_keys.clone()),
+            client_keys: client_keys.clone(),
+            client_pubkey: client_keys.public_key(),
+            remote_signer_pubkey: remote_signer_keys.public_key(),
+            user_pubkey: None,
+            relays: vec!["wss://relay.example.com".to_string()],
+            perms: vec!["sign_event".to_string()],
+            name: Some("remote signer".to_string()),
+            url: Some("https://signer.example.com".to_string()),
+            image: None,
+            expires_at: Some(Instant::now() + Duration::from_secs(30)),
+            auth_required: true,
+            authorized: false,
+            auth_url: Some("https://signer.example.com/auth".to_string()),
+            pending_request: None,
+        };
+
+        let view = session.public_view();
+
+        assert_eq!(view.session_id, "outbound");
+        assert_eq!(view.role, Nip46SessionRole::OutboundRemoteSigner);
+        assert_eq!(view.client_pubkey, session.client_pubkey.to_hex());
+        assert_eq!(view.signer_pubkey, session.remote_signer_pubkey.to_hex());
+        assert_eq!(view.relays, session.relays);
+        assert_eq!(view.permissions, session.perms);
+        assert!(view.auth_required);
+        assert!(!view.authorized);
+        assert_eq!(view.auth_url, session.auth_url);
+        assert!(view.expires_in_secs.is_some());
     }
 
     #[tokio::test]
