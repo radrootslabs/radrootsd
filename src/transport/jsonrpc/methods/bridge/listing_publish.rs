@@ -3,6 +3,7 @@ use jsonrpsee::server::RpcModule;
 use radroots_events::listing::RadrootsListing;
 use radroots_events_codec::listing::encode::to_wire_parts;
 use radroots_nostr::prelude::{radroots_event_from_nostr, radroots_nostr_build_event};
+use radroots_nostr_signer::prelude::RadrootsNostrSignerBackend;
 use radroots_trade::listing::validation::validate_listing_event;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -45,15 +46,26 @@ async fn publish_listing(
     }
 
     let idempotency_key = normalize_idempotency_key(params.idempotency_key)?;
-    let listing =
-        canonicalize_listing_for_embedded_signer(params.listing, &ctx.state.pubkey.to_hex());
+    let signer_identity = ctx
+        .state
+        .bridge_signer
+        .signer_identity()
+        .map_err(|error| RpcError::Other(format!("bridge signer unavailable: {error}")))?
+        .ok_or_else(|| RpcError::Other("bridge signer identity is missing".to_string()))?;
+    let listing = canonicalize_listing_for_embedded_signer(
+        params.listing,
+        signer_identity.public_key_hex.as_str(),
+    );
     let parts = to_wire_parts(&listing)
         .map_err(|error| RpcError::InvalidParams(format!("invalid listing contract: {error}")))?;
     let builder = radroots_nostr_build_event(parts.kind, parts.content, parts.tags)
         .map_err(|error| RpcError::Other(format!("failed to build listing event: {error}")))?;
-    let event = builder
-        .sign_with_keys(&ctx.state.keys)
+    let signed = ctx
+        .state
+        .bridge_signer
+        .sign_event_builder(builder)
         .map_err(|error| RpcError::Other(format!("failed to sign listing event: {error}")))?;
+    let event = signed.event;
     let canonical = radroots_event_from_nostr(&event);
     let validated = validate_listing_event(&canonical)
         .map_err(|error| RpcError::InvalidParams(format!("invalid listing contract: {error}")))?;

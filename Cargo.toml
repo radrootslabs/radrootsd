@@ -16,6 +16,7 @@ radroots-events = { path = "../lib/crates/events" }
 radroots-events-codec = { path = "../lib/crates/events-codec" }
 radroots-identity = { path = "../lib/crates/identity" }
 radroots-nostr = { path = "../lib/crates/nostr" }
+radroots-nostr-signer = { path = "../lib/crates/nostr-signer" }
 radroots-runtime = { path = "../lib/crates/runtime" }
 radroots-trade = { path = "../lib/crates/trade" }
 
@@ -28,6 +29,7 @@ radroots-events = { workspace = true, features = ["serde"] }
 radroots-events-codec = { workspace = true, features = ["nostr", "serde_json"] }
 radroots-identity = { workspace = true }
 radroots-nostr = { workspace = true, features = ["client", "codec", "events", "http"] }
+radroots-nostr-signer = { workspace = true }
 radroots-runtime = { workspace = true, features = ["cli"] }
 radroots-trade = { workspace = true }
 nostr = { version = "0.44.2", features = ["nip46"] }

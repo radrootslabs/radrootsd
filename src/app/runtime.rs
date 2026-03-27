@@ -269,13 +269,13 @@ pub async fn run() -> Result<()> {
         args.service.identity.as_ref(),
         args.service.allow_generate_identity,
     )?;
-    let keys = identity.keys().clone();
     let radrootsd = Radrootsd::new(
-        keys,
+        identity.clone(),
         settings.metadata.clone(),
         settings.config.bridge.clone(),
         settings.config.nip46.clone(),
     );
+    let radrootsd = radrootsd?;
 
     for relay in settings.config.service.relays.iter() {
         radrootsd.client.add_relay(relay).await?;
@@ -332,7 +332,8 @@ mod tests {
     use crate::core::Radrootsd;
     use crate::transport::jsonrpc;
     use radroots_events::kinds::KIND_LISTING;
-    use radroots_nostr::prelude::{RadrootsNostrKeys, RadrootsNostrMetadata};
+    use radroots_identity::RadrootsIdentity;
+    use radroots_nostr::prelude::RadrootsNostrMetadata;
     use std::path::PathBuf;
     use std::sync::{Mutex, MutexGuard};
 
@@ -399,13 +400,14 @@ mod tests {
     }
 
     async fn make_handle(settings: &config::Settings) -> jsonrpsee::server::ServerHandle {
-        let keys = RadrootsNostrKeys::generate();
+        let identity = RadrootsIdentity::generate();
         let state = Radrootsd::new(
-            keys,
+            identity,
             settings.metadata.clone(),
             settings.config.bridge.clone(),
             settings.config.nip46.clone(),
-        );
+        )
+        .expect("state");
         jsonrpc::start_rpc(
             state,
             "127.0.0.1:0".parse().expect("addr"),

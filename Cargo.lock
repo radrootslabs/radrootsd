@@ -1772,6 +1772,7 @@ dependencies = [
 name = "radroots-log"
 version = "0.1.0-alpha.1"
 dependencies = [
+ "chrono",
  "thiserror 1.0.69",
  "tracing",
  "tracing-appender",
@@ -1791,6 +1792,34 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 1.0.69",
+]
+
+[[package]]
+name = "radroots-nostr-connect"
+version = "0.1.0-alpha.1"
+dependencies = [
+ "nostr",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "url",
+]
+
+[[package]]
+name = "radroots-nostr-signer"
+version = "0.1.0-alpha.1"
+dependencies = [
+ "hex",
+ "nostr",
+ "radroots-identity",
+ "radroots-nostr-connect",
+ "radroots-runtime",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 1.0.69",
+ "url",
+ "uuid",
 ]
 
 [[package]]
@@ -1835,6 +1864,7 @@ dependencies = [
  "radroots-events-codec",
  "radroots-identity",
  "radroots-nostr",
+ "radroots-nostr-signer",
  "radroots-runtime",
  "radroots-trade",
  "reqwest",
