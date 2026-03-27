@@ -5,12 +5,16 @@ use radroots_events_codec::listing::encode::to_wire_parts;
 use radroots_nostr::prelude::{radroots_event_from_nostr, radroots_nostr_build_event};
 use radroots_nostr_signer::prelude::RadrootsNostrSignerBackend;
 use radroots_trade::listing::validation::validate_listing_event;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::core::bridge::publish::{BridgePublishSettings, connect_and_publish_event};
-use crate::core::bridge::store::{BridgeJobRecord, new_listing_publish_job};
+use crate::core::bridge::store::new_listing_publish_job;
 use crate::transport::jsonrpc::auth::require_bridge_auth;
+use crate::transport::jsonrpc::methods::bridge::shared::{
+    BridgePublishResponse, bridge_signer_pubkey_hex, ensure_bridge_enabled,
+    normalize_idempotency_key,
+};
 use crate::transport::jsonrpc::{MethodRegistry, RpcContext, RpcError};
 
 #[derive(Debug, Deserialize)]
@@ -18,12 +22,6 @@ struct BridgeListingPublishParams {
     listing: RadrootsListing,
     #[serde(default)]
     idempotency_key: Option<String>,
-}
-
-#[derive(Clone, Debug, Serialize)]
-struct BridgeListingPublishResponse {
-    deduplicated: bool,
-    job: BridgeJobRecord,
 }
 
 pub fn register(m: &mut RpcModule<RpcContext>, registry: &MethodRegistry) -> Result<()> {
@@ -36,7 +34,7 @@ pub fn register(m: &mut RpcModule<RpcContext>, registry: &MethodRegistry) -> Res
                 .parse()
                 .map_err(|e| RpcError::InvalidParams(e.to_string()))?;
             let response = publish_listing(ctx.as_ref().clone(), params).await?;
-            Ok::<BridgeListingPublishResponse, RpcError>(response)
+            Ok::<BridgePublishResponse, RpcError>(response)
         },
     )?;
     Ok(())
@@ -45,22 +43,11 @@ pub fn register(m: &mut RpcModule<RpcContext>, registry: &MethodRegistry) -> Res
 async fn publish_listing(
     ctx: RpcContext,
     params: BridgeListingPublishParams,
-) -> Result<BridgeListingPublishResponse, RpcError> {
-    if !ctx.state.bridge_config.enabled {
-        return Err(RpcError::Other("bridge ingress is disabled".to_string()));
-    }
-
+) -> Result<BridgePublishResponse, RpcError> {
+    ensure_bridge_enabled(&ctx)?;
     let idempotency_key = normalize_idempotency_key(params.idempotency_key)?;
-    let signer_identity = ctx
-        .state
-        .bridge_signer
-        .signer_identity()
-        .map_err(|error| RpcError::Other(format!("bridge signer unavailable: {error}")))?
-        .ok_or_else(|| RpcError::Other("bridge signer identity is missing".to_string()))?;
-    let listing = canonicalize_listing_for_embedded_signer(
-        params.listing,
-        signer_identity.public_key_hex.as_str(),
-    );
+    let signer_pubkey = bridge_signer_pubkey_hex(&ctx)?;
+    let listing = canonicalize_listing_for_embedded_signer(params.listing, signer_pubkey.as_str());
     let parts = to_wire_parts(&listing)
         .map_err(|error| RpcError::InvalidParams(format!("invalid listing contract: {error}")))?;
     let builder = radroots_nostr_build_event(parts.kind, parts.content, parts.tags)
@@ -87,7 +74,7 @@ async fn publish_listing(
     let job = match reserved {
         Ok(job) => job,
         Err(existing) => {
-            return Ok(BridgeListingPublishResponse {
+            return Ok(BridgePublishResponse {
                 deduplicated: true,
                 job: existing,
             });
@@ -106,21 +93,10 @@ async fn publish_listing(
         .complete(&job.job_id, execution)
         .ok_or_else(|| RpcError::Other("bridge job disappeared during completion".to_string()))?;
 
-    Ok(BridgeListingPublishResponse {
+    Ok(BridgePublishResponse {
         deduplicated: false,
         job,
     })
-}
-
-fn normalize_idempotency_key(value: Option<String>) -> Result<Option<String>, RpcError> {
-    let value = value.map(|value| value.trim().to_string());
-    match value {
-        Some(value) if value.is_empty() => Err(RpcError::InvalidParams(
-            "idempotency_key cannot be empty".to_string(),
-        )),
-        Some(value) => Ok(Some(value)),
-        None => Ok(None),
-    }
 }
 
 fn canonicalize_listing_for_embedded_signer(
@@ -145,13 +121,7 @@ mod tests {
         RadrootsListingProduct,
     };
 
-    use super::{canonicalize_listing_for_embedded_signer, normalize_idempotency_key};
-
-    #[test]
-    fn normalize_idempotency_key_rejects_empty_values() {
-        let err = normalize_idempotency_key(Some("   ".to_string())).expect_err("empty key");
-        assert!(err.to_string().contains("idempotency_key"));
-    }
+    use super::canonicalize_listing_for_embedded_signer;
 
     #[test]
     fn canonicalize_listing_sets_missing_farm_pubkey() {

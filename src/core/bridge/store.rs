@@ -158,18 +158,19 @@ impl BridgeJobStoreInner {
     }
 }
 
-pub fn new_listing_publish_job(
+pub fn new_publish_job(
+    command: &str,
     job_id: String,
     idempotency_key: Option<String>,
     event_kind: u32,
     event_id: String,
-    event_addr: String,
+    event_addr: Option<String>,
     delivery_policy: BridgeDeliveryPolicy,
     delivery_quorum: Option<usize>,
 ) -> BridgeJobRecord {
     BridgeJobRecord {
         job_id,
-        command: "bridge.listing.publish".to_string(),
+        command: command.to_string(),
         idempotency_key,
         status: BridgeJobStatus::Accepted,
         requested_at_unix: unix_timestamp_now(),
@@ -177,7 +178,7 @@ pub fn new_listing_publish_job(
         signer_mode: "embedded_service_identity".to_string(),
         event_kind,
         event_id: Some(event_id),
-        event_addr: Some(event_addr),
+        event_addr,
         delivery_policy,
         delivery_quorum,
         relay_count: 0,
@@ -188,6 +189,48 @@ pub fn new_listing_publish_job(
         relay_results: Vec::new(),
         relay_outcome_summary: "accepted".to_string(),
     }
+}
+
+pub fn new_listing_publish_job(
+    job_id: String,
+    idempotency_key: Option<String>,
+    event_kind: u32,
+    event_id: String,
+    event_addr: String,
+    delivery_policy: BridgeDeliveryPolicy,
+    delivery_quorum: Option<usize>,
+) -> BridgeJobRecord {
+    new_publish_job(
+        "bridge.listing.publish",
+        job_id,
+        idempotency_key,
+        event_kind,
+        event_id,
+        Some(event_addr),
+        delivery_policy,
+        delivery_quorum,
+    )
+}
+
+pub fn new_order_request_job(
+    job_id: String,
+    idempotency_key: Option<String>,
+    event_kind: u32,
+    event_id: String,
+    listing_addr: String,
+    delivery_policy: BridgeDeliveryPolicy,
+    delivery_quorum: Option<usize>,
+) -> BridgeJobRecord {
+    new_publish_job(
+        "bridge.order.request",
+        job_id,
+        idempotency_key,
+        event_kind,
+        event_id,
+        Some(listing_addr),
+        delivery_policy,
+        delivery_quorum,
+    )
 }
 
 fn unix_timestamp_now() -> u64 {
@@ -202,7 +245,7 @@ mod tests {
     use crate::app::config::BridgeDeliveryPolicy;
     use crate::core::bridge::publish::BridgePublishExecution;
 
-    use super::{BridgeJobStatus, BridgeJobStore, new_listing_publish_job};
+    use super::{BridgeJobStatus, BridgeJobStore, new_listing_publish_job, new_order_request_job};
 
     #[test]
     fn reserve_returns_existing_job_for_same_idempotency_key() {
@@ -297,5 +340,21 @@ mod tests {
         assert!(store.get("job-1").is_none());
         assert!(store.get("job-2").is_some());
         assert_eq!(store.snapshot().retained_jobs, 1);
+    }
+
+    #[test]
+    fn order_request_job_uses_order_command_name() {
+        let job = new_order_request_job(
+            "job-1".to_string(),
+            Some("same".to_string()),
+            5322,
+            "event-1".to_string(),
+            "30402:author:listing".to_string(),
+            BridgeDeliveryPolicy::Any,
+            None,
+        );
+
+        assert_eq!(job.command, "bridge.order.request");
+        assert_eq!(job.event_addr.as_deref(), Some("30402:author:listing"));
     }
 }

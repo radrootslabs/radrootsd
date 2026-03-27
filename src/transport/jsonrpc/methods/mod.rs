@@ -60,6 +60,7 @@ mod tests {
         assert!(root.method("bridge.status").is_some());
         assert!(root.method("bridge.job.status").is_some());
         assert!(root.method("bridge.listing.publish").is_some());
+        assert!(root.method("bridge.order.request").is_some());
         assert!(root.method("nip46.connect").is_none());
     }
 
