@@ -10,12 +10,12 @@ pub mod get_public_key;
 pub mod nip04;
 pub mod nip44;
 pub mod ping;
-pub mod sign_event;
 pub mod session_authorize;
 pub mod session_close;
 pub mod session_list;
 pub mod session_require_auth;
 pub mod session_status;
+pub mod sign_event;
 pub mod status;
 
 pub fn module(ctx: RpcContext, registry: MethodRegistry) -> Result<RpcModule<RpcContext>> {

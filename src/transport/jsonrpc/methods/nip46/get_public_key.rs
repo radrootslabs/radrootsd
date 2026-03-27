@@ -62,15 +62,18 @@ async fn request_get_public_key(
         Some(_) => {
             return Err(RpcError::Other(
                 "nip46 get_public_key unexpected response".to_string(),
-            ))
+            ));
         }
         None => {
             return Err(RpcError::Other(
                 "nip46 get_public_key missing response".to_string(),
-            ))
+            ));
         }
     };
 
-    let updated = session.user_pubkey.map(|existing| existing != pubkey).unwrap_or(true);
+    let updated = session
+        .user_pubkey
+        .map(|existing| existing != pubkey)
+        .unwrap_or(true);
     Ok((pubkey, updated))
 }

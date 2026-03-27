@@ -45,8 +45,7 @@ pub fn register(m: &mut RpcModule<RpcContext>, registry: &MethodRegistry) -> Res
         let public_key = radroots_nostr::prelude::radroots_nostr_parse_pubkey(&public_key)
             .map_err(|e| RpcError::InvalidParams(format!("invalid public_key: {e}")))?;
         let req = NostrConnectRequest::Nip44Encrypt { public_key, text };
-        let response =
-            client::request(&session, req, "nip44_encrypt").await?;
+        let response = client::request(&session, req, "nip44_encrypt").await?;
         let response = response
             .to_response(NostrConnectMethod::Nip44Encrypt)
             .map_err(|e| RpcError::Other(format!("nip46 nip44_encrypt failed: {e}")))?;
@@ -60,12 +59,12 @@ pub fn register(m: &mut RpcModule<RpcContext>, registry: &MethodRegistry) -> Res
             Some(_) => {
                 return Err(RpcError::Other(
                     "nip46 nip44_encrypt unexpected response".to_string(),
-                ))
+                ));
             }
             None => {
                 return Err(RpcError::Other(
                     "nip46 nip44_encrypt missing response".to_string(),
-                ))
+                ));
             }
         };
         Ok::<Nip46Nip44EncryptResponse, RpcError>(Nip46Nip44EncryptResponse { ciphertext })
@@ -88,8 +87,7 @@ pub fn register(m: &mut RpcModule<RpcContext>, registry: &MethodRegistry) -> Res
             public_key,
             ciphertext,
         };
-        let response =
-            client::request(&session, req, "nip44_decrypt").await?;
+        let response = client::request(&session, req, "nip44_decrypt").await?;
         let response = response
             .to_response(NostrConnectMethod::Nip44Decrypt)
             .map_err(|e| RpcError::Other(format!("nip46 nip44_decrypt failed: {e}")))?;
@@ -103,12 +101,12 @@ pub fn register(m: &mut RpcModule<RpcContext>, registry: &MethodRegistry) -> Res
             Some(_) => {
                 return Err(RpcError::Other(
                     "nip46 nip44_decrypt unexpected response".to_string(),
-                ))
+                ));
             }
             None => {
                 return Err(RpcError::Other(
                     "nip46 nip44_decrypt missing response".to_string(),
-                ))
+                ));
             }
         };
         Ok::<Nip46Nip44DecryptResponse, RpcError>(Nip46Nip44DecryptResponse { plaintext })

@@ -3,22 +3,18 @@
 use std::time::Duration;
 
 use crate::core::nip46::session::Nip46Session;
-use crate::transport::jsonrpc::{params::DEFAULT_TIMEOUT_SECS, RpcError};
-use radroots_nostr::prelude::{
-    radroots_nostr_filter_tag,
-    RadrootsNostrEventBuilder,
-    RadrootsNostrFilter,
-    RadrootsNostrKind,
-    RadrootsNostrRelayPoolNotification,
-    RadrootsNostrSubscriptionId,
-    RadrootsNostrTimestamp,
-};
+use crate::transport::jsonrpc::{RpcError, params::DEFAULT_TIMEOUT_SECS};
+use nostr::JsonUtil;
+use nostr::UnsignedEvent;
 use nostr::nips::{
     nip44,
     nip46::{NostrConnectMessage, NostrConnectMethod, NostrConnectRequest, ResponseResult},
 };
-use nostr::JsonUtil;
-use nostr::UnsignedEvent;
+use radroots_nostr::prelude::{
+    RadrootsNostrEventBuilder, RadrootsNostrFilter, RadrootsNostrKind,
+    RadrootsNostrRelayPoolNotification, RadrootsNostrSubscriptionId, RadrootsNostrTimestamp,
+    radroots_nostr_filter_tag,
+};
 use tokio::sync::broadcast;
 use tokio::time::sleep;
 
@@ -42,13 +38,9 @@ pub async fn sign_event(
         Some(_) => {
             return Err(RpcError::Other(format!(
                 "nip46 {label} unexpected response"
-            )))
+            )));
         }
-        None => {
-            return Err(RpcError::Other(format!(
-                "nip46 {label} missing response"
-            )))
-        }
+        None => return Err(RpcError::Other(format!("nip46 {label} missing response"))),
     };
 
     event
@@ -95,7 +87,14 @@ pub async fn request(
         return Err(error);
     }
 
-    wait_for_response(session, &request_id, label, notifications, &subscription.val).await
+    wait_for_response(
+        session,
+        &request_id,
+        label,
+        notifications,
+        &subscription.val,
+    )
+    .await
 }
 
 fn response_filter(

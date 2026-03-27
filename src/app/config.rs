@@ -34,6 +34,34 @@ fn default_nip46_perms() -> Vec<String> {
     Vec::new()
 }
 
+fn default_bridge_enabled() -> bool {
+    false
+}
+
+fn default_bridge_connect_timeout_secs() -> u64 {
+    10
+}
+
+fn default_bridge_delivery_policy() -> BridgeDeliveryPolicy {
+    BridgeDeliveryPolicy::Any
+}
+
+fn default_bridge_publish_max_attempts() -> usize {
+    1
+}
+
+fn default_bridge_publish_initial_backoff_millis() -> u64 {
+    250
+}
+
+fn default_bridge_publish_max_backoff_millis() -> u64 {
+    2_000
+}
+
+fn default_bridge_job_status_retention() -> usize {
+    256
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Nip46Config {
     #[serde(default = "default_nip46_session_ttl_secs")]
@@ -50,6 +78,59 @@ impl Default for Nip46Config {
             session_ttl_secs: default_nip46_session_ttl_secs(),
             perms: default_nip46_perms(),
             nostrconnect_url: None,
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum BridgeDeliveryPolicy {
+    Any,
+    Quorum,
+    All,
+}
+
+impl BridgeDeliveryPolicy {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Any => "any",
+            Self::Quorum => "quorum",
+            Self::All => "all",
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct BridgeConfig {
+    #[serde(default = "default_bridge_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_bridge_connect_timeout_secs")]
+    pub connect_timeout_secs: u64,
+    #[serde(default = "default_bridge_delivery_policy")]
+    pub delivery_policy: BridgeDeliveryPolicy,
+    #[serde(default)]
+    pub delivery_quorum: Option<usize>,
+    #[serde(default = "default_bridge_publish_max_attempts")]
+    pub publish_max_attempts: usize,
+    #[serde(default = "default_bridge_publish_initial_backoff_millis")]
+    pub publish_initial_backoff_millis: u64,
+    #[serde(default = "default_bridge_publish_max_backoff_millis")]
+    pub publish_max_backoff_millis: u64,
+    #[serde(default = "default_bridge_job_status_retention")]
+    pub job_status_retention: usize,
+}
+
+impl Default for BridgeConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_bridge_enabled(),
+            connect_timeout_secs: default_bridge_connect_timeout_secs(),
+            delivery_policy: default_bridge_delivery_policy(),
+            delivery_quorum: None,
+            publish_max_attempts: default_bridge_publish_max_attempts(),
+            publish_initial_backoff_millis: default_bridge_publish_initial_backoff_millis(),
+            publish_max_backoff_millis: default_bridge_publish_max_backoff_millis(),
+            job_status_retention: default_bridge_job_status_retention(),
         }
     }
 }
@@ -96,6 +177,8 @@ pub struct Configuration {
     pub rpc_addr: Option<String>,
     #[serde(default)]
     pub nip46: Nip46Config,
+    #[serde(default)]
+    pub bridge: BridgeConfig,
 }
 
 impl Configuration {
@@ -112,7 +195,7 @@ pub struct Settings {
 
 #[cfg(test)]
 mod tests {
-    use super::{Configuration, Nip46Config, RpcConfig};
+    use super::{BridgeConfig, BridgeDeliveryPolicy, Configuration, Nip46Config, RpcConfig};
     use radroots_runtime::RadrootsNostrServiceConfig;
 
     fn service_config() -> RadrootsNostrServiceConfig {
@@ -145,6 +228,19 @@ mod tests {
     }
 
     #[test]
+    fn bridge_defaults_are_expected() {
+        let cfg = BridgeConfig::default();
+        assert!(!cfg.enabled);
+        assert_eq!(cfg.connect_timeout_secs, 10);
+        assert_eq!(cfg.delivery_policy, BridgeDeliveryPolicy::Any);
+        assert_eq!(cfg.delivery_quorum, None);
+        assert_eq!(cfg.publish_max_attempts, 1);
+        assert_eq!(cfg.publish_initial_backoff_millis, 250);
+        assert_eq!(cfg.publish_max_backoff_millis, 2_000);
+        assert_eq!(cfg.job_status_retention, 256);
+    }
+
+    #[test]
     fn rpc_addr_prefers_override() {
         let mut cfg = Configuration {
             service: service_config(),
@@ -154,6 +250,7 @@ mod tests {
             },
             rpc_addr: None,
             nip46: Nip46Config::default(),
+            bridge: BridgeConfig::default(),
         };
         assert_eq!(cfg.rpc_addr(), "127.0.0.1:1111");
         cfg.rpc_addr = Some("127.0.0.1:2222".to_string());

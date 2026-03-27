@@ -5,6 +5,7 @@ use jsonrpsee::server::RpcModule;
 
 use crate::transport::jsonrpc::{MethodRegistry, RpcContext};
 
+pub mod bridge;
 pub mod nip46;
 
 pub fn register_all(
@@ -12,6 +13,7 @@ pub fn register_all(
     ctx: RpcContext,
     registry: MethodRegistry,
 ) -> Result<()> {
+    root.merge(bridge::module(ctx.clone(), registry.clone())?)?;
     root.merge(nip46::module(ctx, registry)?)?;
     Ok(())
 }

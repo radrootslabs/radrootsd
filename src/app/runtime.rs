@@ -9,13 +9,14 @@ use crate::core::Radrootsd;
 use crate::transport::jsonrpc;
 #[cfg(not(test))]
 use crate::transport::nostr::listener::spawn_nip46_listener;
+#[cfg(not(test))]
+use anyhow::Context;
+use radroots_events::kinds::KIND_LISTING;
 use radroots_events::profile::RadrootsProfileType;
 use radroots_nostr::prelude::{
     RadrootsNostrApplicationHandlerSpec, RadrootsNostrKind,
     radroots_nostr_bootstrap_service_presence,
 };
-#[cfg(not(test))]
-use anyhow::Context;
 
 #[cfg(test)]
 static RUN_LOAD_HOOK: std::sync::OnceLock<
@@ -42,8 +43,8 @@ enum RunWaitOutcome {
 }
 
 #[cfg(test)]
-fn run_load_hook(
-) -> &'static std::sync::Mutex<Option<Result<(cli::Args, config::Settings), String>>> {
+fn run_load_hook()
+-> &'static std::sync::Mutex<Option<Result<(cli::Args, config::Settings), String>>> {
     RUN_LOAD_HOOK.get_or_init(|| std::sync::Mutex::new(None))
 }
 
@@ -148,11 +149,12 @@ async fn publish_service_presence(
     identity: RadrootsIdentity,
     metadata: radroots_nostr::prelude::RadrootsNostrMetadata,
     service_cfg: radroots_runtime::RadrootsNostrServiceConfig,
+    bridge_config: config::BridgeConfig,
     nip46_config: config::Nip46Config,
 ) -> Result<()> {
-    let nip46_kind = RadrootsNostrKind::NostrConnect.as_u16() as u32;
+    let kinds = service_presence_kinds(&bridge_config);
     let handler_spec = RadrootsNostrApplicationHandlerSpec {
-        kinds: vec![nip46_kind],
+        kinds,
         identifier: service_cfg.nip89_identifier.clone(),
         metadata: Some(metadata.clone()),
         extra_tags: service_cfg.nip89_extra_tags.clone(),
@@ -168,6 +170,7 @@ async fn maybe_publish_service_presence(
     identity: RadrootsIdentity,
     metadata: radroots_nostr::prelude::RadrootsNostrMetadata,
     service_cfg: radroots_runtime::RadrootsNostrServiceConfig,
+    bridge_config: config::BridgeConfig,
     nip46_config: config::Nip46Config,
 ) {
     #[cfg(test)]
@@ -177,6 +180,7 @@ async fn maybe_publish_service_presence(
             identity,
             metadata,
             service_cfg,
+            bridge_config,
             nip46_config,
         )
         .await;
@@ -195,6 +199,7 @@ async fn maybe_publish_service_presence(
             identity,
             metadata,
             service_cfg,
+            bridge_config,
             nip46_config,
         )
         .await;
@@ -268,6 +273,7 @@ pub async fn run() -> Result<()> {
     let radrootsd = Radrootsd::new(
         keys,
         settings.metadata.clone(),
+        settings.config.bridge.clone(),
         settings.config.nip46.clone(),
     );
 
@@ -281,6 +287,7 @@ pub async fn run() -> Result<()> {
             identity.clone(),
             settings.metadata.clone(),
             settings.config.service.clone(),
+            settings.config.bridge.clone(),
             settings.config.nip46.clone(),
         )
         .await;
@@ -305,6 +312,16 @@ pub async fn run() -> Result<()> {
     Ok(())
 }
 
+fn service_presence_kinds(bridge_config: &config::BridgeConfig) -> Vec<u32> {
+    let mut kinds = vec![RadrootsNostrKind::NostrConnect.as_u16() as u32];
+    if bridge_config.enabled {
+        kinds.push(KIND_LISTING);
+    }
+    kinds.sort_unstable();
+    kinds.dedup();
+    kinds
+}
+
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
@@ -314,6 +331,7 @@ mod tests {
     use crate::app::{cli, config};
     use crate::core::Radrootsd;
     use crate::transport::jsonrpc;
+    use radroots_events::kinds::KIND_LISTING;
     use radroots_nostr::prelude::{RadrootsNostrKeys, RadrootsNostrMetadata};
     use std::path::PathBuf;
     use std::sync::{Mutex, MutexGuard};
@@ -321,7 +339,9 @@ mod tests {
     static TEST_LOCK: Mutex<()> = Mutex::new(());
 
     fn test_guard() -> MutexGuard<'static, ()> {
-        let guard = TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let guard = TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         *run_load_hook()
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
@@ -372,6 +392,7 @@ mod tests {
                     ..config::RpcConfig::default()
                 },
                 rpc_addr: Some("127.0.0.1:0".to_string()),
+                bridge: config::BridgeConfig::default(),
                 nip46: config::Nip46Config::default(),
             },
         }
@@ -382,6 +403,7 @@ mod tests {
         let state = Radrootsd::new(
             keys,
             settings.metadata.clone(),
+            settings.config.bridge.clone(),
             settings.config.nip46.clone(),
         );
         jsonrpc::start_rpc(
@@ -423,7 +445,8 @@ mod tests {
         let handle = make_handle(&settings).await;
         *run_load_hook()
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Ok((args, settings.clone())));
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            Some(Ok((args, settings.clone())));
         *run_start_rpc_hook()
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Ok(handle));
@@ -447,7 +470,8 @@ mod tests {
         let _ = handle.stop();
         *run_load_hook()
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Ok((args, settings.clone())));
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            Some(Ok((args, settings.clone())));
         *run_start_rpc_hook()
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Ok(handle));
@@ -470,7 +494,8 @@ mod tests {
         let handle = make_handle(&settings).await;
         *run_load_hook()
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Ok((args, settings.clone())));
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            Some(Ok((args, settings.clone())));
         *run_start_rpc_hook()
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Ok(handle));
@@ -563,5 +588,20 @@ mod tests {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(RunWaitOutcome::Shutdown);
         assert!(run().await.is_ok());
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn service_presence_kinds_include_listing_when_bridge_is_enabled() {
+        let mut bridge = config::BridgeConfig::default();
+        bridge.enabled = true;
+
+        let kinds = super::service_presence_kinds(&bridge);
+
+        assert!(
+            kinds.contains(
+                &(radroots_nostr::prelude::RadrootsNostrKind::NostrConnect.as_u16() as u32)
+            )
+        );
+        assert!(kinds.contains(&KIND_LISTING));
     }
 }

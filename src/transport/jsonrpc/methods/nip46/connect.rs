@@ -7,30 +7,20 @@ use tokio::sync::broadcast;
 use tokio::time::sleep;
 use uuid::Uuid;
 
-use crate::core::nip46::session::{filter_perms, session_expires_at, Nip46Session};
+use crate::core::nip46::session::{Nip46Session, filter_perms, session_expires_at};
 use crate::transport::jsonrpc::nip46::connection::{
-    parse_connect_url,
-    Nip46ConnectInfo,
-    Nip46ConnectMode,
+    Nip46ConnectInfo, Nip46ConnectMode, parse_connect_url,
 };
 use crate::transport::jsonrpc::params::DEFAULT_TIMEOUT_SECS;
 use crate::transport::jsonrpc::{MethodRegistry, RpcContext, RpcError};
-use radroots_nostr::prelude::{
-    radroots_nostr_filter_tag,
-    radroots_nostr_parse_pubkey,
-    RadrootsNostrClient,
-    RadrootsNostrEventBuilder,
-    RadrootsNostrFilter,
-    RadrootsNostrKind,
-    RadrootsNostrKeys,
-    RadrootsNostrPublicKey,
-    RadrootsNostrSecretKey,
-    RadrootsNostrRelayPoolNotification,
-    RadrootsNostrSubscriptionId,
-    RadrootsNostrTimestamp,
-};
-use nostr::nips::{nip44, nip46::NostrConnectMessage, nip46::NostrConnectRequest};
 use nostr::JsonUtil;
+use nostr::nips::{nip44, nip46::NostrConnectMessage, nip46::NostrConnectRequest};
+use radroots_nostr::prelude::{
+    RadrootsNostrClient, RadrootsNostrEventBuilder, RadrootsNostrFilter, RadrootsNostrKeys,
+    RadrootsNostrKind, RadrootsNostrPublicKey, RadrootsNostrRelayPoolNotification,
+    RadrootsNostrSecretKey, RadrootsNostrSubscriptionId, RadrootsNostrTimestamp,
+    radroots_nostr_filter_tag, radroots_nostr_parse_pubkey,
+};
 
 #[derive(Debug, Deserialize)]
 struct Nip46ConnectParams {
@@ -70,9 +60,7 @@ async fn connect_nip46(
     let info = parse_connect_url(&url)?;
     match info.mode {
         Nip46ConnectMode::Bunker => connect_bunker(ctx, info).await,
-        Nip46ConnectMode::Nostrconnect => {
-            connect_nostrconnect(ctx, info, client_secret_key).await
-        }
+        Nip46ConnectMode::Nostrconnect => connect_nostrconnect(ctx, info, client_secret_key).await,
     }
 }
 
@@ -84,9 +72,10 @@ async fn connect_bunker(
         return Err(RpcError::InvalidParams("missing relay".to_string()));
     }
 
-    let remote_signer_raw = info.remote_signer_pubkey.as_ref().ok_or_else(|| {
-        RpcError::InvalidParams("missing remote signer pubkey".to_string())
-    })?;
+    let remote_signer_raw = info
+        .remote_signer_pubkey
+        .as_ref()
+        .ok_or_else(|| RpcError::InvalidParams("missing remote signer pubkey".to_string()))?;
     let remote_signer_pubkey = radroots_nostr_parse_pubkey(remote_signer_raw)
         .map_err(|e| RpcError::InvalidParams(format!("invalid remote signer: {e}")))?;
 
@@ -117,8 +106,8 @@ async fn connect_bunker(
         .await
         .map_err(|e| RpcError::Other(format!("nip46 connect failed: {e}")))?;
 
-    if let Err(error) = send_connect_request(&client, &client_keys, &remote_signer_pubkey, message)
-        .await
+    if let Err(error) =
+        send_connect_request(&client, &client_keys, &remote_signer_pubkey, message).await
     {
         client.unsubscribe(&subscription.val).await;
         return Err(error);
@@ -190,9 +179,10 @@ async fn connect_nostrconnect(
         .map_err(|e| RpcError::InvalidParams(format!("invalid client_secret_key: {e}")))?;
     let client_keys = RadrootsNostrKeys::new(client_secret_key);
     let client_pubkey = client_keys.public_key();
-    let client_pubkey_raw = info.client_pubkey.as_ref().ok_or_else(|| {
-        RpcError::InvalidParams("missing client pubkey".to_string())
-    })?;
+    let client_pubkey_raw = info
+        .client_pubkey
+        .as_ref()
+        .ok_or_else(|| RpcError::InvalidParams("missing client pubkey".to_string()))?;
     let expected_pubkey = radroots_nostr_parse_pubkey(client_pubkey_raw)
         .map_err(|e| RpcError::InvalidParams(format!("invalid client pubkey: {e}")))?;
     if expected_pubkey != client_pubkey {
@@ -208,13 +198,8 @@ async fn connect_nostrconnect(
         .wait_for_connection(Duration::from_secs(DEFAULT_TIMEOUT_SECS))
         .await;
 
-    let (remote_signer_pubkey, response) = wait_for_nostrconnect_response(
-        &client,
-        &client_keys,
-        &client_pubkey,
-        secret,
-    )
-    .await?;
+    let (remote_signer_pubkey, response) =
+        wait_for_nostrconnect_response(&client, &client_keys, &client_pubkey, secret).await?;
     validate_nostrconnect_response(&response, secret)?;
     claim_secret(&ctx, info.secret.as_deref()).await?;
 
@@ -369,7 +354,7 @@ fn validate_connect_response(
         _ => {
             return Err(RpcError::Other(
                 "nip46 connect response invalid".to_string(),
-            ))
+            ));
         }
     };
 
@@ -403,7 +388,7 @@ fn validate_nostrconnect_response(
         _ => {
             return Err(RpcError::Other(
                 "nip46 connect response invalid".to_string(),
-            ))
+            ));
         }
     };
 
@@ -412,9 +397,7 @@ fn validate_nostrconnect_response(
     }
 
     let Some(value) = result.as_deref() else {
-        return Err(RpcError::Other(
-            "nip46 connect missing result".to_string(),
-        ));
+        return Err(RpcError::Other("nip46 connect missing result".to_string()));
     };
 
     if value == secret {

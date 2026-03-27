@@ -1,10 +1,7 @@
-use crate::core::nip46::session::{sign_event_allowed, Nip46Session};
+use crate::core::nip46::session::{Nip46Session, sign_event_allowed};
 use crate::transport::jsonrpc::{RpcContext, RpcError};
 
-pub async fn get_session(
-    ctx: &RpcContext,
-    session_id: &str,
-) -> Result<Nip46Session, RpcError> {
+pub async fn get_session(ctx: &RpcContext, session_id: &str) -> Result<Nip46Session, RpcError> {
     ctx.state
         .nip46_sessions
         .get(session_id)
@@ -23,10 +20,7 @@ pub fn require_permission(session: &Nip46Session, perm: &str) -> Result<(), RpcE
     }
 }
 
-pub fn require_sign_event_permission(
-    session: &Nip46Session,
-    kind: u32,
-) -> Result<(), RpcError> {
+pub fn require_sign_event_permission(session: &Nip46Session, kind: u32) -> Result<(), RpcError> {
     if session.auth_required && !session.authorized {
         return Err(auth_required_error(session));
     }
@@ -38,9 +32,6 @@ pub fn require_sign_event_permission(
 }
 
 fn auth_required_error(session: &Nip46Session) -> RpcError {
-    let url = session
-        .auth_url
-        .as_deref()
-        .unwrap_or("auth required");
+    let url = session.auth_url.as_deref().unwrap_or("auth required");
     RpcError::Other(format!("auth_url:{url}"))
 }

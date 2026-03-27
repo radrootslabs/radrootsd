@@ -1,3 +1,4 @@
+pub mod bridge;
 pub mod nip46;
 pub mod state;
 

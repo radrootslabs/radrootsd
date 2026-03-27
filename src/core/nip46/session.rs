@@ -1,18 +1,14 @@
 #![forbid(unsafe_code)]
 
 use std::collections::{HashMap, HashSet};
-use std::time::{Duration, Instant};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use tokio::sync::Mutex;
 
-use radroots_nostr::prelude::{
-    RadrootsNostrClient,
-    RadrootsNostrKeys,
-    RadrootsNostrPublicKey,
-};
 use nostr::nips::nip46::NostrConnectRequest;
+use radroots_nostr::prelude::{RadrootsNostrClient, RadrootsNostrKeys, RadrootsNostrPublicKey};
 
 #[derive(Clone)]
 pub struct Nip46SessionStore {
@@ -107,11 +103,7 @@ impl Nip46SessionStore {
         sessions.remove(session_id).is_some()
     }
 
-    pub async fn set_user_pubkey(
-        &self,
-        session_id: &str,
-        pubkey: RadrootsNostrPublicKey,
-    ) -> bool {
+    pub async fn set_user_pubkey(&self, session_id: &str, pubkey: RadrootsNostrPublicKey) -> bool {
         let mut sessions = self.inner.lock().await;
         match sessions.get_mut(session_id) {
             Some(session) => {
@@ -237,7 +229,9 @@ fn remaining_secs(expires_at: Instant) -> u64 {
     if expires_at <= Instant::now() {
         0
     } else {
-        expires_at.saturating_duration_since(Instant::now()).as_secs()
+        expires_at
+            .saturating_duration_since(Instant::now())
+            .as_secs()
     }
 }
 
@@ -308,10 +302,7 @@ mod tests {
     #[tokio::test]
     async fn session_store_removes_expired() {
         let store = Nip46SessionStore::new();
-        let session = build_session(
-            "expired",
-            Some(Instant::now() - Duration::from_secs(1)),
-        );
+        let session = build_session("expired", Some(Instant::now() - Duration::from_secs(1)));
         store.insert(session).await;
         let found = store.get("expired").await;
         assert!(found.is_none());
@@ -372,10 +363,7 @@ mod tests {
     #[tokio::test]
     async fn session_store_keeps_active() {
         let store = Nip46SessionStore::new();
-        let session = build_session(
-            "active",
-            Some(Instant::now() + Duration::from_secs(60)),
-        );
+        let session = build_session("active", Some(Instant::now() + Duration::from_secs(60)));
         store.insert(session).await;
         let found = store.get("active").await;
         assert!(found.is_some());
@@ -473,7 +461,11 @@ mod tests {
             Some(Instant::now() - Duration::from_secs(1)),
         );
         store.insert(session).await;
-        assert!(!store.set_user_pubkey("expired-user", keys.public_key()).await);
+        assert!(
+            !store
+                .set_user_pubkey("expired-user", keys.public_key())
+                .await
+        );
     }
 
     #[tokio::test]
@@ -494,10 +486,7 @@ mod tests {
     #[tokio::test]
     async fn session_store_require_auth_sets_flags_and_clears_pending() {
         let store = Nip46SessionStore::new();
-        let mut session = build_session(
-            "auth",
-            Some(Instant::now() + Duration::from_secs(30)),
-        );
+        let mut session = build_session("auth", Some(Instant::now() + Duration::from_secs(30)));
         let keys = RadrootsNostrKeys::generate();
         session.pending_request = Some(PendingNostrRequest {
             request_id: "req-1".to_string(),
@@ -517,7 +506,11 @@ mod tests {
     #[tokio::test]
     async fn session_store_require_auth_handles_missing_and_expired() {
         let store = Nip46SessionStore::new();
-        assert!(!store.require_auth("missing", "https://auth".to_string()).await);
+        assert!(
+            !store
+                .require_auth("missing", "https://auth".to_string())
+                .await
+        );
 
         store
             .insert(build_session(
@@ -535,10 +528,8 @@ mod tests {
     #[tokio::test]
     async fn session_store_authorize_returns_pending() {
         let store = Nip46SessionStore::new();
-        let mut session = build_session(
-            "authorize",
-            Some(Instant::now() + Duration::from_secs(30)),
-        );
+        let mut session =
+            build_session("authorize", Some(Instant::now() + Duration::from_secs(30)));
         let keys = RadrootsNostrKeys::generate();
         session.pending_request = Some(PendingNostrRequest {
             request_id: "req-2".to_string(),

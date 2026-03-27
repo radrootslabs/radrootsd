@@ -21,9 +21,7 @@ pub fn register(m: &mut RpcModule<RpcContext>, registry: &MethodRegistry) -> Res
             .parse()
             .map_err(|e| RpcError::InvalidParams(e.to_string()))?;
         let closed = ctx.state.nip46_sessions.remove(&session_id).await;
-        Ok::<Nip46SessionCloseResponse, RpcError>(Nip46SessionCloseResponse {
-            closed,
-        })
+        Ok::<Nip46SessionCloseResponse, RpcError>(Nip46SessionCloseResponse { closed })
     })?;
     Ok(())
 }

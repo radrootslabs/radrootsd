@@ -51,9 +51,8 @@ pub fn parse_connect_url(raw: &str) -> Result<Nip46ConnectInfo, RpcError> {
 
 fn parse_bunker_url(url: &Url) -> Result<Nip46ConnectInfo, RpcError> {
     let remote_signer_pubkey = url.host_str().map(|host| host.to_string());
-    let query: Nip46ConnectQuery =
-        serde_qs::from_str(url.query().unwrap_or_default())
-            .map_err(|e| RpcError::InvalidParams(e.to_string()))?;
+    let query: Nip46ConnectQuery = serde_qs::from_str(url.query().unwrap_or_default())
+        .map_err(|e| RpcError::InvalidParams(e.to_string()))?;
     let relays = relay_list(query.relay);
     let perms = parse_perms(query.perms);
 
@@ -77,9 +76,8 @@ fn parse_nostrconnect_url(url: &Url) -> Result<Nip46ConnectInfo, RpcError> {
         .ok_or_else(|| RpcError::InvalidParams("missing client pubkey".to_string()))?;
     radroots_nostr_parse_pubkey(&client_pubkey)
         .map_err(|e| RpcError::InvalidParams(format!("invalid client pubkey: {e}")))?;
-    let query: Nip46ConnectQuery =
-        serde_qs::from_str(url.query().unwrap_or_default())
-            .map_err(|e| RpcError::InvalidParams(e.to_string()))?;
+    let query: Nip46ConnectQuery = serde_qs::from_str(url.query().unwrap_or_default())
+        .map_err(|e| RpcError::InvalidParams(e.to_string()))?;
     let relays = relay_list(query.relay);
     let perms = parse_perms(query.perms);
 

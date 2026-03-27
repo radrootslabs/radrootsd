@@ -1,32 +1,22 @@
 use std::time::Duration;
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
+use nostr::JsonUtil;
 use nostr::nips::nip04;
 use nostr::nips::nip44;
 use nostr::nips::nip46::{
-    NostrConnectMessage,
-    NostrConnectRequest,
-    NostrConnectResponse,
-    ResponseResult,
+    NostrConnectMessage, NostrConnectRequest, NostrConnectResponse, ResponseResult,
 };
-use nostr::JsonUtil;
 use tokio::sync::broadcast;
 use tracing::{info, warn};
 
 use crate::core::nip46::session::{
-    session_expires_at,
-    sign_event_allowed,
-    Nip46Session,
-    PendingNostrRequest,
+    Nip46Session, PendingNostrRequest, session_expires_at, sign_event_allowed,
 };
 use crate::core::state::Radrootsd;
 use radroots_nostr::prelude::{
-    radroots_nostr_filter_tag,
-    RadrootsNostrEventBuilder,
-    RadrootsNostrFilter,
-    RadrootsNostrKind,
-    RadrootsNostrRelayPoolNotification,
-    RadrootsNostrTimestamp,
+    RadrootsNostrEventBuilder, RadrootsNostrFilter, RadrootsNostrKind,
+    RadrootsNostrRelayPoolNotification, RadrootsNostrTimestamp, radroots_nostr_filter_tag,
 };
 
 const DEFAULT_TIMEOUT_SECS: u64 = 10;
@@ -49,8 +39,7 @@ async fn run_nip46_listener(radrootsd: Radrootsd) -> Result<()> {
     let filter = RadrootsNostrFilter::new()
         .kind(RadrootsNostrKind::NostrConnect)
         .since(RadrootsNostrTimestamp::now());
-    let filter =
-        radroots_nostr_filter_tag(filter, "p", vec![radrootsd.pubkey.to_hex()])?;
+    let filter = radroots_nostr_filter_tag(filter, "p", vec![radrootsd.pubkey.to_hex()])?;
     let mut notifications = radrootsd.client.notifications();
     let subscription = radrootsd.client.subscribe(filter, None).await?;
 
@@ -72,17 +61,14 @@ async fn run_nip46_listener(radrootsd: Radrootsd) -> Result<()> {
             continue;
         }
 
-        let decrypted = match nip44::decrypt(
-            radrootsd.keys.secret_key(),
-            &event.pubkey,
-            &event.content,
-        ) {
-            Ok(value) => value,
-            Err(err) => {
-                warn!("NIP-46 decrypt failed: {err}");
-                continue;
-            }
-        };
+        let decrypted =
+            match nip44::decrypt(radrootsd.keys.secret_key(), &event.pubkey, &event.content) {
+                Ok(value) => value,
+                Err(err) => {
+                    warn!("NIP-46 decrypt failed: {err}");
+                    continue;
+                }
+            };
         let message = match NostrConnectMessage::from_json(&decrypted) {
             Ok(value) => value,
             Err(err) => {
@@ -102,8 +88,7 @@ async fn run_nip46_listener(radrootsd: Radrootsd) -> Result<()> {
                 continue;
             }
         };
-        let response =
-            handle_request(&radrootsd, &event.pubkey, &request_id, request).await;
+        let response = handle_request(&radrootsd, &event.pubkey, &request_id, request).await;
         let response_message = NostrConnectMessage::response(request_id, response);
         let response_event = RadrootsNostrEventBuilder::nostr_connect(
             &radrootsd.keys,
@@ -139,8 +124,7 @@ pub(crate) async fn handle_request(
                 }
             }
             let session_id = client_pubkey.to_hex();
-            let expires_at =
-                session_expires_at(radrootsd.nip46_config.session_ttl_secs);
+            let expires_at = session_expires_at(radrootsd.nip46_config.session_ttl_secs);
             let session = Nip46Session {
                 id: session_id,
                 client: radrootsd.client.clone(),
@@ -188,7 +172,9 @@ pub(crate) async fn handle_request(
                 return NostrConnectResponse::with_error("pubkey mismatch");
             }
             match unsigned.sign_with_keys(&radrootsd.keys) {
-                Ok(event) => NostrConnectResponse::with_result(ResponseResult::SignEvent(Box::new(event))),
+                Ok(event) => {
+                    NostrConnectResponse::with_result(ResponseResult::SignEvent(Box::new(event)))
+                }
                 Err(err) => NostrConnectResponse::with_error(format!("sign_event failed: {err}")),
             }
         }
@@ -218,10 +204,15 @@ pub(crate) async fn handle_request(
                 Ok(ciphertext) => {
                     NostrConnectResponse::with_result(ResponseResult::Nip04Encrypt { ciphertext })
                 }
-                Err(err) => NostrConnectResponse::with_error(format!("nip04_encrypt failed: {err}")),
+                Err(err) => {
+                    NostrConnectResponse::with_error(format!("nip04_encrypt failed: {err}"))
+                }
             }
         }
-        NostrConnectRequest::Nip04Decrypt { public_key, ciphertext } => {
+        NostrConnectRequest::Nip04Decrypt {
+            public_key,
+            ciphertext,
+        } => {
             let session = match session_for_client(radrootsd, client_pubkey).await {
                 Ok(session) => session,
                 Err(response) => return response,
@@ -247,7 +238,9 @@ pub(crate) async fn handle_request(
                 Ok(plaintext) => {
                     NostrConnectResponse::with_result(ResponseResult::Nip04Decrypt { plaintext })
                 }
-                Err(err) => NostrConnectResponse::with_error(format!("nip04_decrypt failed: {err}")),
+                Err(err) => {
+                    NostrConnectResponse::with_error(format!("nip04_decrypt failed: {err}"))
+                }
             }
         }
         NostrConnectRequest::Nip44Encrypt { public_key, text } => {
@@ -272,15 +265,24 @@ pub(crate) async fn handle_request(
             {
                 return response;
             }
-            match nip44::encrypt(radrootsd.keys.secret_key(), &public_key, text, nip44::Version::V2)
-            {
+            match nip44::encrypt(
+                radrootsd.keys.secret_key(),
+                &public_key,
+                text,
+                nip44::Version::V2,
+            ) {
                 Ok(ciphertext) => {
                     NostrConnectResponse::with_result(ResponseResult::Nip44Encrypt { ciphertext })
                 }
-                Err(err) => NostrConnectResponse::with_error(format!("nip44_encrypt failed: {err}")),
+                Err(err) => {
+                    NostrConnectResponse::with_error(format!("nip44_encrypt failed: {err}"))
+                }
             }
         }
-        NostrConnectRequest::Nip44Decrypt { public_key, ciphertext } => {
+        NostrConnectRequest::Nip44Decrypt {
+            public_key,
+            ciphertext,
+        } => {
             let session = match session_for_client(radrootsd, client_pubkey).await {
                 Ok(session) => session,
                 Err(response) => return response,
@@ -306,7 +308,9 @@ pub(crate) async fn handle_request(
                 Ok(plaintext) => {
                     NostrConnectResponse::with_result(ResponseResult::Nip44Decrypt { plaintext })
                 }
-                Err(err) => NostrConnectResponse::with_error(format!("nip44_decrypt failed: {err}")),
+                Err(err) => {
+                    NostrConnectResponse::with_error(format!("nip44_decrypt failed: {err}"))
+                }
             }
         }
         NostrConnectRequest::Ping => NostrConnectResponse::with_result(ResponseResult::Pong),

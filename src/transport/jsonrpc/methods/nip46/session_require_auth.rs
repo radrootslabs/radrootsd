@@ -20,7 +20,10 @@ struct Nip46SessionRequireAuthResponse {
 pub fn register(m: &mut RpcModule<RpcContext>, registry: &MethodRegistry) -> Result<()> {
     registry.track("nip46.session.require_auth");
     m.register_async_method("nip46.session.require_auth", |params, ctx, _| async move {
-        let Nip46SessionRequireAuthParams { session_id, auth_url } = params
+        let Nip46SessionRequireAuthParams {
+            session_id,
+            auth_url,
+        } = params
             .parse()
             .map_err(|e| RpcError::InvalidParams(e.to_string()))?;
         if auth_url.trim().is_empty() {
