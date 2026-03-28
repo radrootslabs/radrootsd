@@ -107,7 +107,7 @@ async fn publish_order_request(
         crate::core::bridge::store::BridgeJobReservation::Duplicate(existing) => {
             return Ok(BridgePublishResponse {
                 deduplicated: true,
-                job: existing,
+                job: existing.into(),
             });
         }
     };
@@ -136,7 +136,7 @@ async fn publish_order_request(
 
     Ok(BridgePublishResponse {
         deduplicated: false,
-        job,
+        job: job.into(),
     })
 }
 

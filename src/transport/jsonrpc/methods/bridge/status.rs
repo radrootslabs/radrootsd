@@ -22,6 +22,10 @@ struct BridgeStatusResponse {
     job_status_retention: usize,
     retained_jobs: usize,
     retained_idempotency_keys: usize,
+    accepted_jobs: usize,
+    published_jobs: usize,
+    failed_jobs: usize,
+    recovered_failed_jobs: usize,
     methods: Vec<String>,
 }
 
@@ -45,6 +49,10 @@ pub fn register(m: &mut RpcModule<RpcContext>, registry: &MethodRegistry) -> Res
             job_status_retention: ctx.state.bridge_config.job_status_retention,
             retained_jobs: snapshot.retained_jobs,
             retained_idempotency_keys: snapshot.retained_idempotency_keys,
+            accepted_jobs: snapshot.accepted_jobs,
+            published_jobs: snapshot.published_jobs,
+            failed_jobs: snapshot.failed_jobs,
+            recovered_failed_jobs: snapshot.recovered_failed_jobs,
             methods: ctx.methods.list(),
         })
     })?;

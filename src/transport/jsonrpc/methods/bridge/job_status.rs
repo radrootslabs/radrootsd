@@ -2,8 +2,8 @@ use anyhow::Result;
 use jsonrpsee::server::RpcModule;
 use serde::Deserialize;
 
-use crate::core::bridge::store::BridgeJobRecord;
 use crate::transport::jsonrpc::auth::require_bridge_auth;
+use crate::transport::jsonrpc::methods::bridge::shared::BridgeJobView;
 use crate::transport::jsonrpc::{MethodRegistry, RpcContext, RpcError};
 
 #[derive(Debug, Deserialize)]
@@ -26,7 +26,7 @@ pub fn register(m: &mut RpcModule<RpcContext>, registry: &MethodRegistry) -> Res
             .bridge_jobs
             .get(job_id)
             .ok_or_else(|| RpcError::Other(format!("unknown bridge job: {job_id}")))
-            .map(|job| -> BridgeJobRecord { job })
+            .map(BridgeJobView::from)
     })?;
     Ok(())
 }

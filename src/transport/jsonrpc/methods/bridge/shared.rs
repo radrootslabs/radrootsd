@@ -5,14 +5,77 @@ use radroots_nostr_signer::prelude::RadrootsNostrSignerBackend;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
-use crate::core::bridge::store::{BridgeJobRecord, BridgeJobReservation, BridgeJobStoreError};
+use crate::core::bridge::publish::BridgeRelayPublishResult;
+use crate::core::bridge::store::{
+    BridgeJobRecord, BridgeJobReservation, BridgeJobStatus, BridgeJobStoreError,
+};
 use crate::transport::jsonrpc::nip46::{client as nip46_client, session as nip46_session};
 use crate::transport::jsonrpc::{RpcContext, RpcError};
 
 #[derive(Clone, Debug, Serialize)]
 pub(super) struct BridgePublishResponse {
     pub deduplicated: bool,
-    pub job: BridgeJobRecord,
+    pub job: BridgeJobView,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub(super) struct BridgeJobView {
+    pub job_id: String,
+    pub command: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idempotency_key: Option<String>,
+    pub status: BridgeJobStatus,
+    pub terminal: bool,
+    pub recovered_after_restart: bool,
+    pub requested_at_unix: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed_at_unix: Option<u64>,
+    pub signer_mode: String,
+    pub event_kind: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event_addr: Option<String>,
+    pub delivery_policy: crate::app::config::BridgeDeliveryPolicy,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delivery_quorum: Option<usize>,
+    pub relay_count: usize,
+    pub acknowledged_relay_count: usize,
+    pub required_acknowledged_relay_count: usize,
+    pub attempt_count: usize,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attempt_summaries: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub relay_results: Vec<BridgeRelayPublishResult>,
+    pub relay_outcome_summary: String,
+}
+
+impl From<BridgeJobRecord> for BridgeJobView {
+    fn from(record: BridgeJobRecord) -> Self {
+        Self {
+            terminal: record.is_terminal(),
+            recovered_after_restart: record.recovered_after_restart(),
+            job_id: record.job_id,
+            command: record.command,
+            idempotency_key: record.idempotency_key,
+            status: record.status,
+            requested_at_unix: record.requested_at_unix,
+            completed_at_unix: record.completed_at_unix,
+            signer_mode: record.signer_mode,
+            event_kind: record.event_kind,
+            event_id: record.event_id,
+            event_addr: record.event_addr,
+            delivery_policy: record.delivery_policy,
+            delivery_quorum: record.delivery_quorum,
+            relay_count: record.relay_count,
+            acknowledged_relay_count: record.acknowledged_relay_count,
+            required_acknowledged_relay_count: record.required_acknowledged_relay_count,
+            attempt_count: record.attempt_count,
+            attempt_summaries: record.attempt_summaries,
+            relay_results: record.relay_results,
+            relay_outcome_summary: record.relay_outcome_summary,
+        }
+    }
 }
 
 pub(super) fn ensure_bridge_enabled(ctx: &RpcContext) -> Result<(), RpcError> {
@@ -159,12 +222,17 @@ mod tests {
     use radroots_identity::RadrootsIdentity;
     use radroots_nostr::prelude::{RadrootsNostrClient, RadrootsNostrKeys, RadrootsNostrMetadata};
 
-    use crate::app::config::{BridgeConfig, Nip46Config};
+    use crate::app::config::{BridgeConfig, BridgeDeliveryPolicy, Nip46Config};
     use crate::core::Radrootsd;
+    use crate::core::bridge::store::{
+        BRIDGE_PENDING_RECOVERY_SUMMARY, BridgeJobStatus, new_listing_publish_job,
+    };
     use crate::core::nip46::session::Nip46Session;
     use crate::transport::jsonrpc::{MethodRegistry, RpcContext};
 
-    use super::{fingerprint_bridge_request, normalize_idempotency_key, resolve_bridge_signer};
+    use super::{
+        BridgeJobView, fingerprint_bridge_request, normalize_idempotency_key, resolve_bridge_signer,
+    };
     use std::time::Instant;
 
     #[test]
@@ -238,5 +306,25 @@ mod tests {
         )
         .expect("second");
         assert_ne!(first, second);
+    }
+
+    #[test]
+    fn bridge_job_view_exposes_terminal_and_recovery_flags() {
+        let mut job = new_listing_publish_job(
+            "job-1".to_string(),
+            Some("same".to_string()),
+            "embedded_service_identity".to_string(),
+            30402,
+            Some("event-1".to_string()),
+            "30402:author:listing".to_string(),
+            BridgeDeliveryPolicy::Any,
+            None,
+        );
+        job.status = BridgeJobStatus::Failed;
+        job.completed_at_unix = Some(1);
+        job.relay_outcome_summary = BRIDGE_PENDING_RECOVERY_SUMMARY.to_string();
+        let view = BridgeJobView::from(job);
+        assert!(view.terminal);
+        assert!(view.recovered_after_restart);
     }
 }

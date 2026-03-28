@@ -9,7 +9,7 @@ use crate::app::config::BridgeDeliveryPolicy;
 use crate::core::bridge::publish::{BridgePublishExecution, BridgeRelayPublishResult};
 
 const BRIDGE_JOB_STORE_VERSION: u32 = 2;
-const BRIDGE_PENDING_RECOVERY_SUMMARY: &str =
+pub(crate) const BRIDGE_PENDING_RECOVERY_SUMMARY: &str =
     "bridge publish did not complete before process restart";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -50,10 +50,25 @@ pub struct BridgeJobRecord {
     pub relay_outcome_summary: String,
 }
 
+impl BridgeJobRecord {
+    pub fn is_terminal(&self) -> bool {
+        self.status != BridgeJobStatus::Accepted
+    }
+
+    pub fn recovered_after_restart(&self) -> bool {
+        self.status == BridgeJobStatus::Failed
+            && self.relay_outcome_summary == BRIDGE_PENDING_RECOVERY_SUMMARY
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct BridgeJobStoreSnapshot {
     pub retained_jobs: usize,
     pub retained_idempotency_keys: usize,
+    pub accepted_jobs: usize,
+    pub published_jobs: usize,
+    pub failed_jobs: usize,
+    pub recovered_failed_jobs: usize,
     pub capacity: usize,
 }
 
@@ -232,9 +247,29 @@ impl BridgeJobStore {
 
     pub fn snapshot(&self) -> BridgeJobStoreSnapshot {
         let inner = self.inner.read().unwrap_or_else(|e| e.into_inner());
+        let mut accepted_jobs = 0usize;
+        let mut published_jobs = 0usize;
+        let mut failed_jobs = 0usize;
+        let mut recovered_failed_jobs = 0usize;
+        for record in inner.jobs.values() {
+            match record.status {
+                BridgeJobStatus::Accepted => accepted_jobs += 1,
+                BridgeJobStatus::Published => published_jobs += 1,
+                BridgeJobStatus::Failed => {
+                    failed_jobs += 1;
+                    if record.recovered_after_restart() {
+                        recovered_failed_jobs += 1;
+                    }
+                }
+            }
+        }
         BridgeJobStoreSnapshot {
             retained_jobs: inner.jobs.len(),
             retained_idempotency_keys: inner.idempotency.len(),
+            accepted_jobs,
+            published_jobs,
+            failed_jobs,
+            recovered_failed_jobs,
             capacity: inner.capacity,
         }
     }
@@ -623,6 +658,9 @@ mod tests {
         assert!(store.get("job-1").is_none());
         assert!(store.get("job-2").is_some());
         assert_eq!(store.snapshot().retained_jobs, 1);
+        assert_eq!(store.snapshot().accepted_jobs, 1);
+        assert_eq!(store.snapshot().published_jobs, 0);
+        assert_eq!(store.snapshot().failed_jobs, 0);
     }
 
     #[test]
@@ -704,6 +742,14 @@ mod tests {
             existing.relay_outcome_summary,
             BRIDGE_PENDING_RECOVERY_SUMMARY
         );
+        assert!(existing.is_terminal());
+        assert!(existing.recovered_after_restart());
+
+        let snapshot = loaded.store.snapshot();
+        assert_eq!(snapshot.accepted_jobs, 0);
+        assert_eq!(snapshot.published_jobs, 0);
+        assert_eq!(snapshot.failed_jobs, 1);
+        assert_eq!(snapshot.recovered_failed_jobs, 1);
 
         let payload = std::fs::read_to_string(&path).expect("persisted payload");
         let persisted: PersistedBridgeJobStore =

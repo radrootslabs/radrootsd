@@ -103,5 +103,9 @@ mod tests {
             .await
             .expect("request");
         assert!(response.get().contains("\"auth_mode\":\"bearer_token\""));
+        assert!(response.get().contains("\"accepted_jobs\":0"));
+        assert!(response.get().contains("\"published_jobs\":0"));
+        assert!(response.get().contains("\"failed_jobs\":0"));
+        assert!(response.get().contains("\"recovered_failed_jobs\":0"));
     }
 }
