@@ -3,8 +3,13 @@ use jsonrpsee::server::RpcModule;
 use serde::Serialize;
 
 use crate::app::config::BridgeDeliveryPolicy;
+use crate::core::nip46::session::Nip46SessionRole;
 use crate::transport::jsonrpc::auth::{BRIDGE_AUTH_MODE, require_bridge_auth};
 use crate::transport::jsonrpc::{MethodRegistry, RpcContext, RpcError};
+
+const BRIDGE_SIGNER_SELECTION_MODE: &str = "selectable_per_request";
+const BRIDGE_DEFAULT_SIGNER_MODE: &str = "embedded_service_identity";
+const BRIDGE_NIP46_SIGNER_MODE: &str = "nip46_session";
 
 #[derive(Clone, Debug, Serialize)]
 struct BridgeStatusResponse {
@@ -12,6 +17,9 @@ struct BridgeStatusResponse {
     ready: bool,
     auth_mode: String,
     signer_mode: String,
+    default_signer_mode: String,
+    supported_signer_modes: Vec<String>,
+    available_nip46_signer_sessions: usize,
     relay_count: usize,
     delivery_policy: BridgeDeliveryPolicy,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -35,11 +43,25 @@ pub fn register(m: &mut RpcModule<RpcContext>, registry: &MethodRegistry) -> Res
         require_bridge_auth(&extensions)?;
         let relay_count = ctx.state.client.relays().await.len();
         let snapshot = ctx.state.bridge_jobs.snapshot();
+        let available_nip46_signer_sessions = ctx
+            .state
+            .nip46_sessions
+            .list()
+            .await
+            .into_iter()
+            .filter(|session| session.role() == Nip46SessionRole::OutboundRemoteSigner)
+            .count();
         Ok::<BridgeStatusResponse, RpcError>(BridgeStatusResponse {
             enabled: ctx.state.bridge_config.enabled,
             ready: ctx.state.bridge_config.enabled && relay_count > 0,
             auth_mode: BRIDGE_AUTH_MODE.to_string(),
-            signer_mode: "embedded_service_identity".to_string(),
+            signer_mode: BRIDGE_SIGNER_SELECTION_MODE.to_string(),
+            default_signer_mode: BRIDGE_DEFAULT_SIGNER_MODE.to_string(),
+            supported_signer_modes: vec![
+                BRIDGE_DEFAULT_SIGNER_MODE.to_string(),
+                BRIDGE_NIP46_SIGNER_MODE.to_string(),
+            ],
+            available_nip46_signer_sessions,
             relay_count,
             delivery_policy: ctx.state.bridge_config.delivery_policy,
             delivery_quorum: ctx.state.bridge_config.delivery_quorum,

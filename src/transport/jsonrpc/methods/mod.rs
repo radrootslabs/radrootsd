@@ -103,6 +103,24 @@ mod tests {
             .await
             .expect("request");
         assert!(response.get().contains("\"auth_mode\":\"bearer_token\""));
+        assert!(
+            response
+                .get()
+                .contains("\"signer_mode\":\"selectable_per_request\"")
+        );
+        assert!(
+            response
+                .get()
+                .contains("\"default_signer_mode\":\"embedded_service_identity\"")
+        );
+        assert!(response.get().contains(
+            "\"supported_signer_modes\":[\"embedded_service_identity\",\"nip46_session\"]"
+        ));
+        assert!(
+            response
+                .get()
+                .contains("\"available_nip46_signer_sessions\":0")
+        );
         assert!(response.get().contains("\"accepted_jobs\":0"));
         assert!(response.get().contains("\"published_jobs\":0"));
         assert!(response.get().contains("\"failed_jobs\":0"));
