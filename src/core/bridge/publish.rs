@@ -137,6 +137,24 @@ pub async fn connect_and_publish_event(
     .await
 }
 
+pub fn failed_prepublish_execution(
+    settings: &BridgePublishSettings,
+    summary: impl Into<String>,
+) -> BridgePublishExecution {
+    let summary = summary.into();
+    BridgePublishExecution {
+        published: false,
+        relay_count: 0,
+        acknowledged_relay_count: 0,
+        required_acknowledged_relay_count: 0,
+        delivery_policy: settings.delivery_policy,
+        attempt_count: 0,
+        relay_outcome_summary: summary.clone(),
+        relay_results: Vec::new(),
+        attempt_summaries: vec![summary],
+    }
+}
+
 pub async fn publish_with_policy<T, F, Fut>(
     relays: &[RadrootsNostrRelayUrl],
     settings: &BridgePublishSettings,

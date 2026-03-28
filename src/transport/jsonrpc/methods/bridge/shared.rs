@@ -3,8 +3,9 @@ use nostr::Event;
 use radroots_nostr::prelude::RadrootsNostrEventBuilder;
 use radroots_nostr_signer::prelude::RadrootsNostrSignerBackend;
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 
-use crate::core::bridge::store::BridgeJobRecord;
+use crate::core::bridge::store::{BridgeJobRecord, BridgeJobReservation, BridgeJobStoreError};
 use crate::transport::jsonrpc::nip46::{client as nip46_client, session as nip46_session};
 use crate::transport::jsonrpc::{RpcContext, RpcError};
 
@@ -112,6 +113,47 @@ pub(super) fn normalize_idempotency_key(value: Option<String>) -> Result<Option<
     }
 }
 
+#[derive(Serialize)]
+struct BridgeRequestFingerprint<'a, T> {
+    command: &'a str,
+    signer_mode: &'a str,
+    signer_pubkey_hex: &'a str,
+    payload: &'a T,
+}
+
+pub(super) fn fingerprint_bridge_request<T: Serialize>(
+    command: &str,
+    signer: &BridgeSignerSelection,
+    payload: &T,
+) -> Result<String, RpcError> {
+    let payload = serde_json::to_vec(&BridgeRequestFingerprint {
+        command,
+        signer_mode: &signer.signer_mode(),
+        signer_pubkey_hex: &signer.signer_pubkey_hex(),
+        payload,
+    })
+    .map_err(|error| RpcError::Other(format!("failed to fingerprint bridge request: {error}")))?;
+    let digest = Sha256::digest(payload);
+    Ok(format!("{digest:x}"))
+}
+
+pub(super) fn reserve_bridge_job(
+    ctx: &RpcContext,
+    record: BridgeJobRecord,
+    request_fingerprint: String,
+    label: &str,
+) -> Result<BridgeJobReservation, RpcError> {
+    ctx.state
+        .bridge_jobs
+        .reserve(record, request_fingerprint)
+        .map_err(|error| match error {
+            BridgeJobStoreError::IdempotencyConflict { .. } => {
+                RpcError::InvalidParams(error.to_string())
+            }
+            _ => RpcError::Other(format!("failed to persist {label} job: {error}")),
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use radroots_identity::RadrootsIdentity;
@@ -122,7 +164,7 @@ mod tests {
     use crate::core::nip46::session::Nip46Session;
     use crate::transport::jsonrpc::{MethodRegistry, RpcContext};
 
-    use super::{normalize_idempotency_key, resolve_bridge_signer};
+    use super::{fingerprint_bridge_request, normalize_idempotency_key, resolve_bridge_signer};
     use std::time::Instant;
 
     #[test]
@@ -175,5 +217,26 @@ mod tests {
             session_keys.public_key().to_hex()
         );
         assert_eq!(signer.signer_mode(), "nip46_session:session-1");
+    }
+
+    #[test]
+    fn fingerprint_bridge_request_changes_when_request_changes() {
+        let signer = super::BridgeSignerSelection::EmbeddedServiceIdentity {
+            signer_pubkey_hex: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                .to_string(),
+        };
+        let first = fingerprint_bridge_request(
+            "bridge.order.request",
+            &signer,
+            &serde_json::json!({"order_id":"one"}),
+        )
+        .expect("first");
+        let second = fingerprint_bridge_request(
+            "bridge.order.request",
+            &signer,
+            &serde_json::json!({"order_id":"two"}),
+        )
+        .expect("second");
+        assert_ne!(first, second);
     }
 }

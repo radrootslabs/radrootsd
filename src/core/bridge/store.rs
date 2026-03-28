@@ -8,7 +8,7 @@ use thiserror::Error;
 use crate::app::config::BridgeDeliveryPolicy;
 use crate::core::bridge::publish::{BridgePublishExecution, BridgeRelayPublishResult};
 
-const BRIDGE_JOB_STORE_VERSION: u32 = 1;
+const BRIDGE_JOB_STORE_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -64,9 +64,15 @@ pub struct BridgeJobStore {
 #[derive(Debug)]
 struct BridgeJobStoreInner {
     jobs: HashMap<String, BridgeJobRecord>,
-    idempotency: HashMap<String, String>,
+    idempotency: HashMap<String, BridgeIdempotencyRecord>,
     order: VecDeque<String>,
     capacity: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct BridgeIdempotencyRecord {
+    job_id: String,
+    request_fingerprint: String,
 }
 
 #[derive(Debug, Clone)]
@@ -78,7 +84,7 @@ struct BridgeJobStorePersistence {
 struct PersistedBridgeJobStore {
     version: u32,
     jobs: HashMap<String, BridgeJobRecord>,
-    idempotency: HashMap<String, String>,
+    idempotency: HashMap<String, BridgeIdempotencyRecord>,
     order: VecDeque<String>,
 }
 
@@ -92,6 +98,11 @@ pub enum BridgeJobStoreError {
     Io(#[from] std::io::Error),
     #[error("bridge job store json error: {0}")]
     Json(#[from] serde_json::Error),
+    #[error("idempotency_key `{key}` conflicts with existing bridge job `{existing_job_id}`")]
+    IdempotencyConflict {
+        key: String,
+        existing_job_id: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -125,11 +136,18 @@ impl BridgeJobStore {
     pub fn reserve(
         &self,
         mut record: BridgeJobRecord,
+        request_fingerprint: String,
     ) -> Result<BridgeJobReservation, BridgeJobStoreError> {
         let mut inner = self.inner.write().unwrap_or_else(|e| e.into_inner());
         if let Some(idempotency_key) = record.idempotency_key.as_ref() {
-            if let Some(job_id) = inner.idempotency.get(idempotency_key) {
-                if let Some(existing) = inner.jobs.get(job_id) {
+            if let Some(existing_idempotency) = inner.idempotency.get(idempotency_key) {
+                if existing_idempotency.request_fingerprint != request_fingerprint {
+                    return Err(BridgeJobStoreError::IdempotencyConflict {
+                        key: idempotency_key.clone(),
+                        existing_job_id: existing_idempotency.job_id.clone(),
+                    });
+                }
+                if let Some(existing) = inner.jobs.get(&existing_idempotency.job_id) {
                     return Ok(BridgeJobReservation::Duplicate(existing.clone()));
                 }
             }
@@ -138,9 +156,13 @@ impl BridgeJobStore {
         record.status = BridgeJobStatus::Accepted;
         inner.order.push_back(record.job_id.clone());
         if let Some(idempotency_key) = record.idempotency_key.as_ref() {
-            inner
-                .idempotency
-                .insert(idempotency_key.clone(), record.job_id.clone());
+            inner.idempotency.insert(
+                idempotency_key.clone(),
+                BridgeIdempotencyRecord {
+                    job_id: record.job_id.clone(),
+                    request_fingerprint,
+                },
+            );
         }
         inner.jobs.insert(record.job_id.clone(), record.clone());
         inner.prune();
@@ -153,12 +175,16 @@ impl BridgeJobStore {
     pub fn complete(
         &self,
         job_id: &str,
+        event_id: Option<String>,
         execution: BridgePublishExecution,
     ) -> Result<Option<BridgeJobRecord>, BridgeJobStoreError> {
         let mut inner = self.inner.write().unwrap_or_else(|e| e.into_inner());
         let Some(record) = inner.jobs.get_mut(job_id) else {
             return Ok(None);
         };
+        if let Some(event_id) = event_id {
+            record.event_id = Some(event_id);
+        }
         record.status = if execution.published {
             BridgeJobStatus::Published
         } else {
@@ -218,7 +244,12 @@ impl BridgeJobStoreInner {
                 continue;
             };
             if let Some(idempotency_key) = removed.idempotency_key {
-                if self.idempotency.get(&idempotency_key) == Some(&job_id) {
+                if self
+                    .idempotency
+                    .get(&idempotency_key)
+                    .map(|record| record.job_id.as_str())
+                    == Some(job_id.as_str())
+                {
                     self.idempotency.remove(&idempotency_key);
                 }
             }
@@ -295,7 +326,7 @@ pub fn new_publish_job(
     idempotency_key: Option<String>,
     signer_mode: String,
     event_kind: u32,
-    event_id: String,
+    event_id: Option<String>,
     event_addr: Option<String>,
     delivery_policy: BridgeDeliveryPolicy,
     delivery_quorum: Option<usize>,
@@ -309,7 +340,7 @@ pub fn new_publish_job(
         completed_at_unix: None,
         signer_mode,
         event_kind,
-        event_id: Some(event_id),
+        event_id,
         event_addr,
         delivery_policy,
         delivery_quorum,
@@ -328,7 +359,7 @@ pub fn new_listing_publish_job(
     idempotency_key: Option<String>,
     signer_mode: String,
     event_kind: u32,
-    event_id: String,
+    event_id: Option<String>,
     event_addr: String,
     delivery_policy: BridgeDeliveryPolicy,
     delivery_quorum: Option<usize>,
@@ -351,7 +382,7 @@ pub fn new_order_request_job(
     idempotency_key: Option<String>,
     signer_mode: String,
     event_kind: u32,
-    event_id: String,
+    event_id: Option<String>,
     listing_addr: String,
     delivery_policy: BridgeDeliveryPolicy,
     delivery_quorum: Option<usize>,
@@ -394,7 +425,7 @@ mod tests {
             Some("same".to_string()),
             "embedded_service_identity".to_string(),
             30402,
-            "event-1".to_string(),
+            Some("event-1".to_string()),
             "30402:author:listing".to_string(),
             BridgeDeliveryPolicy::Any,
             None,
@@ -404,22 +435,60 @@ mod tests {
             Some("same".to_string()),
             "embedded_service_identity".to_string(),
             30402,
-            "event-2".to_string(),
+            Some("event-2".to_string()),
             "30402:author:listing".to_string(),
             BridgeDeliveryPolicy::Any,
             None,
         );
 
         assert!(matches!(
-            store.reserve(first.clone()).expect("reserve"),
+            store
+                .reserve(first.clone(), "fingerprint-1".to_string())
+                .expect("reserve"),
             BridgeJobReservation::Accepted(_)
         ));
-        let existing = match store.reserve(second).expect("same idempotency key") {
+        let existing = match store
+            .reserve(second, "fingerprint-1".to_string())
+            .expect("same idempotency key")
+        {
             BridgeJobReservation::Duplicate(existing) => existing,
             BridgeJobReservation::Accepted(_) => panic!("expected duplicate reservation"),
         };
         assert_eq!(existing.job_id, first.job_id);
         assert_eq!(existing.status, BridgeJobStatus::Accepted);
+    }
+
+    #[test]
+    fn reserve_rejects_conflicting_idempotency_key_reuse() {
+        let store = BridgeJobStore::new(8);
+        let first = new_listing_publish_job(
+            "job-1".to_string(),
+            Some("same".to_string()),
+            "embedded_service_identity".to_string(),
+            30402,
+            Some("event-1".to_string()),
+            "30402:author:listing".to_string(),
+            BridgeDeliveryPolicy::Any,
+            None,
+        );
+        let second = new_listing_publish_job(
+            "job-2".to_string(),
+            Some("same".to_string()),
+            "embedded_service_identity".to_string(),
+            30402,
+            Some("event-2".to_string()),
+            "30402:author:listing".to_string(),
+            BridgeDeliveryPolicy::Any,
+            None,
+        );
+
+        store
+            .reserve(first, "fingerprint-1".to_string())
+            .expect("reserve first");
+        let err = store
+            .reserve(second, "fingerprint-2".to_string())
+            .expect_err("conflicting idempotency");
+        assert!(err.to_string().contains("conflicts"));
     }
 
     #[test]
@@ -430,19 +499,22 @@ mod tests {
             None,
             "embedded_service_identity".to_string(),
             30402,
-            "event-1".to_string(),
+            Some("event-1".to_string()),
             "30402:author:listing".to_string(),
             BridgeDeliveryPolicy::Any,
             None,
         );
         assert!(matches!(
-            store.reserve(job).expect("reserve job"),
+            store
+                .reserve(job, "fingerprint-1".to_string())
+                .expect("reserve job"),
             BridgeJobReservation::Accepted(_)
         ));
 
         let completed = store
             .complete(
                 "job-1",
+                Some("event-1".to_string()),
                 BridgePublishExecution {
                     published: true,
                     relay_count: 2,
@@ -472,7 +544,7 @@ mod tests {
             Some("first".to_string()),
             "embedded_service_identity".to_string(),
             30402,
-            "event-1".to_string(),
+            Some("event-1".to_string()),
             "30402:author:listing-1".to_string(),
             BridgeDeliveryPolicy::Any,
             None,
@@ -482,18 +554,22 @@ mod tests {
             Some("second".to_string()),
             "embedded_service_identity".to_string(),
             30402,
-            "event-2".to_string(),
+            Some("event-2".to_string()),
             "30402:author:listing-2".to_string(),
             BridgeDeliveryPolicy::Any,
             None,
         );
 
         assert!(matches!(
-            store.reserve(first).expect("first"),
+            store
+                .reserve(first, "fingerprint-1".to_string())
+                .expect("first"),
             BridgeJobReservation::Accepted(_)
         ));
         assert!(matches!(
-            store.reserve(second).expect("second"),
+            store
+                .reserve(second, "fingerprint-2".to_string())
+                .expect("second"),
             BridgeJobReservation::Accepted(_)
         ));
 
@@ -509,7 +585,7 @@ mod tests {
             Some("same".to_string()),
             "nip46_session:session-1".to_string(),
             5322,
-            "event-1".to_string(),
+            Some("event-1".to_string()),
             "30402:author:listing".to_string(),
             BridgeDeliveryPolicy::Any,
             None,
@@ -533,13 +609,15 @@ mod tests {
             Some("same".to_string()),
             "embedded_service_identity".to_string(),
             30402,
-            "event-1".to_string(),
+            Some("event-1".to_string()),
             "30402:author:listing".to_string(),
             BridgeDeliveryPolicy::Any,
             None,
         );
         assert!(matches!(
-            store.reserve(first).expect("reserve first"),
+            store
+                .reserve(first, "fingerprint-1".to_string())
+                .expect("reserve first"),
             BridgeJobReservation::Accepted(_)
         ));
 
@@ -549,12 +627,15 @@ mod tests {
             Some("same".to_string()),
             "embedded_service_identity".to_string(),
             30402,
-            "event-2".to_string(),
+            Some("event-2".to_string()),
             "30402:author:listing".to_string(),
             BridgeDeliveryPolicy::Any,
             None,
         );
-        let existing = match loaded.reserve(duplicate).expect("dedupe after reload") {
+        let existing = match loaded
+            .reserve(duplicate, "fingerprint-1".to_string())
+            .expect("dedupe after reload")
+        {
             BridgeJobReservation::Duplicate(existing) => existing,
             BridgeJobReservation::Accepted(_) => panic!("expected duplicate reservation"),
         };
@@ -563,7 +644,7 @@ mod tests {
         let payload = std::fs::read_to_string(&path).expect("persisted payload");
         let persisted: PersistedBridgeJobStore =
             serde_json::from_str(&payload).expect("persisted store");
-        assert_eq!(persisted.version, 1);
+        assert_eq!(persisted.version, 2);
 
         let _ = std::fs::remove_file(path);
     }

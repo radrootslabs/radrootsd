@@ -12,11 +12,14 @@ use radroots_trade::listing::{
 use serde::Deserialize;
 use uuid::Uuid;
 
-use crate::core::bridge::publish::{BridgePublishSettings, connect_and_publish_event};
+use crate::core::bridge::publish::{
+    BridgePublishSettings, connect_and_publish_event, failed_prepublish_execution,
+};
 use crate::core::bridge::store::new_order_request_job;
 use crate::transport::jsonrpc::auth::require_bridge_auth;
 use crate::transport::jsonrpc::methods::bridge::shared::{
-    BridgePublishResponse, ensure_bridge_enabled, normalize_idempotency_key, resolve_bridge_signer,
+    BridgePublishResponse, ensure_bridge_enabled, fingerprint_bridge_request,
+    normalize_idempotency_key, reserve_bridge_job, resolve_bridge_signer,
     sign_bridge_event_builder,
 };
 use crate::transport::jsonrpc::{MethodRegistry, RpcContext, RpcError};
@@ -61,6 +64,7 @@ async fn publish_order_request(
     .await?;
     let signer_pubkey = signer.signer_pubkey_hex();
     let order = canonicalize_order_request_for_signer(params.order, signer_pubkey.as_str())?;
+    let request_fingerprint = fingerprint_bridge_request("bridge.order.request", &signer, &order)?;
     let envelope = TradeListingEnvelope::new(
         TradeListingMessageType::OrderRequest,
         order.listing_addr.clone(),
@@ -82,43 +86,51 @@ async fn publish_order_request(
         .map_err(|error| {
             RpcError::Other(format!("failed to build order request event: {error}"))
         })?;
-    let event = sign_bridge_event_builder(&ctx, &signer, builder, "bridge.order.request").await?;
 
-    let reserved = ctx.state.bridge_jobs.reserve(new_order_request_job(
-        Uuid::new_v4().to_string(),
-        idempotency_key,
-        signer.signer_mode(),
-        u32::from(TradeListingMessageType::OrderRequest.kind()),
-        event.id.to_hex(),
-        order.listing_addr.clone(),
-        ctx.state.bridge_config.delivery_policy,
-        ctx.state.bridge_config.delivery_quorum,
-    ));
+    let reserved = reserve_bridge_job(
+        &ctx,
+        new_order_request_job(
+            Uuid::new_v4().to_string(),
+            idempotency_key,
+            signer.signer_mode(),
+            u32::from(TradeListingMessageType::OrderRequest.kind()),
+            None,
+            order.listing_addr.clone(),
+            ctx.state.bridge_config.delivery_policy,
+            ctx.state.bridge_config.delivery_quorum,
+        ),
+        request_fingerprint,
+        "bridge order",
+    )?;
     let job = match reserved {
-        Ok(crate::core::bridge::store::BridgeJobReservation::Accepted(job)) => job,
-        Ok(crate::core::bridge::store::BridgeJobReservation::Duplicate(existing)) => {
+        crate::core::bridge::store::BridgeJobReservation::Accepted(job) => job,
+        crate::core::bridge::store::BridgeJobReservation::Duplicate(existing) => {
             return Ok(BridgePublishResponse {
                 deduplicated: true,
                 job: existing,
             });
         }
-        Err(error) => {
-            return Err(RpcError::Other(format!(
-                "failed to persist bridge order job: {error}"
-            )));
-        }
     };
 
-    let execution = connect_and_publish_event(
-        &ctx.state.client,
-        &BridgePublishSettings::from_config(&ctx.state.bridge_config),
-        &event,
-    )
-    .await;
+    let publish_settings = BridgePublishSettings::from_config(&ctx.state.bridge_config);
+    let event =
+        match sign_bridge_event_builder(&ctx, &signer, builder, "bridge.order.request").await {
+            Ok(event) => event,
+            Err(error) => {
+                let _ = ctx.state.bridge_jobs.complete(
+                    &job.job_id,
+                    None,
+                    failed_prepublish_execution(&publish_settings, error.to_string()),
+                );
+                return Err(error);
+            }
+        };
+
+    let execution = connect_and_publish_event(&ctx.state.client, &publish_settings, &event).await;
     let job = ctx
         .state
         .bridge_jobs
-        .complete(&job.job_id, execution)
+        .complete(&job.job_id, Some(event.id.to_hex()), execution)
         .map_err(|error| RpcError::Other(format!("failed to persist bridge order job: {error}")))?
         .ok_or_else(|| RpcError::Other("bridge job disappeared during completion".to_string()))?;
 
@@ -341,6 +353,49 @@ mod tests {
         .expect("second");
         assert!(second.deduplicated);
         assert_eq!(second.job.job_id, first.job.job_id);
+    }
+
+    #[tokio::test]
+    async fn publish_order_request_rejects_conflicting_idempotency_key_reuse() {
+        let identity = RadrootsIdentity::generate();
+        let metadata: RadrootsNostrMetadata =
+            serde_json::from_str(r#"{"name":"radrootsd-test"}"#).expect("metadata");
+        let state = Radrootsd::new(
+            identity,
+            metadata,
+            BridgeConfig {
+                enabled: true,
+                bearer_token: Some("secret".to_string()),
+                ..BridgeConfig::default()
+            },
+            Nip46Config::default(),
+        )
+        .expect("state");
+        let ctx = RpcContext::new(state, MethodRegistry::default());
+        publish_order_request(
+            ctx.clone(),
+            BridgeOrderRequestParams {
+                order: base_order("", "", TradeOrderStatus::Requested),
+                signer_session_id: None,
+                idempotency_key: Some("same-key".to_string()),
+            },
+        )
+        .await
+        .expect("first");
+
+        let mut conflicting = base_order("", "", TradeOrderStatus::Requested);
+        conflicting.order_id = "order-2".to_string();
+        let err = publish_order_request(
+            ctx,
+            BridgeOrderRequestParams {
+                order: conflicting,
+                signer_session_id: None,
+                idempotency_key: Some("same-key".to_string()),
+            },
+        )
+        .await
+        .expect_err("conflicting idempotency");
+        assert!(err.to_string().contains("conflicts"));
     }
 
     fn base_listing_addr() -> &'static str {

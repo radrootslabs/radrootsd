@@ -1871,6 +1871,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_qs",
+ "sha2",
  "thiserror 2.0.18",
  "tokio",
  "tower",

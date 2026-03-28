@@ -7,11 +7,14 @@ use radroots_trade::listing::validation::validate_listing_event;
 use serde::Deserialize;
 use uuid::Uuid;
 
-use crate::core::bridge::publish::{BridgePublishSettings, connect_and_publish_event};
+use crate::core::bridge::publish::{
+    BridgePublishSettings, connect_and_publish_event, failed_prepublish_execution,
+};
 use crate::core::bridge::store::new_listing_publish_job;
 use crate::transport::jsonrpc::auth::require_bridge_auth;
 use crate::transport::jsonrpc::methods::bridge::shared::{
-    BridgePublishResponse, ensure_bridge_enabled, normalize_idempotency_key, resolve_bridge_signer,
+    BridgePublishResponse, ensure_bridge_enabled, fingerprint_bridge_request,
+    normalize_idempotency_key, reserve_bridge_job, resolve_bridge_signer,
     sign_bridge_event_builder,
 };
 use crate::transport::jsonrpc::{MethodRegistry, RpcContext, RpcError};
@@ -50,52 +53,81 @@ async fn publish_listing(
     let signer = resolve_bridge_signer(&ctx, params.signer_session_id.as_deref(), 30402).await?;
     let signer_pubkey = signer.signer_pubkey_hex();
     let listing = canonicalize_listing_for_signer(params.listing, signer_pubkey.as_str());
+    let request_fingerprint =
+        fingerprint_bridge_request("bridge.listing.publish", &signer, &listing)?;
     let parts = to_wire_parts(&listing)
         .map_err(|error| RpcError::InvalidParams(format!("invalid listing contract: {error}")))?;
     let builder = radroots_nostr_build_event(parts.kind, parts.content, parts.tags)
         .map_err(|error| RpcError::Other(format!("failed to build listing event: {error}")))?;
-    let event = sign_bridge_event_builder(&ctx, &signer, builder, "bridge.listing.publish").await?;
-    let canonical = radroots_event_from_nostr(&event);
-    let validated = validate_listing_event(&canonical)
-        .map_err(|error| RpcError::InvalidParams(format!("invalid listing contract: {error}")))?;
+    let listing_addr = format!("{}:{}:{}", parts.kind, signer_pubkey, listing.d_tag.trim());
 
-    let reserved = ctx.state.bridge_jobs.reserve(new_listing_publish_job(
-        Uuid::new_v4().to_string(),
-        idempotency_key,
-        signer.signer_mode(),
-        parts.kind,
-        event.id.to_hex(),
-        validated.listing_addr,
-        ctx.state.bridge_config.delivery_policy,
-        ctx.state.bridge_config.delivery_quorum,
-    ));
+    let reserved = reserve_bridge_job(
+        &ctx,
+        new_listing_publish_job(
+            Uuid::new_v4().to_string(),
+            idempotency_key,
+            signer.signer_mode(),
+            parts.kind,
+            None,
+            listing_addr,
+            ctx.state.bridge_config.delivery_policy,
+            ctx.state.bridge_config.delivery_quorum,
+        ),
+        request_fingerprint,
+        "bridge listing",
+    )?;
     let job = match reserved {
-        Ok(crate::core::bridge::store::BridgeJobReservation::Accepted(job)) => job,
-        Ok(crate::core::bridge::store::BridgeJobReservation::Duplicate(existing)) => {
+        crate::core::bridge::store::BridgeJobReservation::Accepted(job) => job,
+        crate::core::bridge::store::BridgeJobReservation::Duplicate(existing) => {
             return Ok(BridgePublishResponse {
                 deduplicated: true,
                 job: existing,
             });
         }
+    };
+
+    let publish_settings = BridgePublishSettings::from_config(&ctx.state.bridge_config);
+    let event =
+        match sign_bridge_event_builder(&ctx, &signer, builder, "bridge.listing.publish").await {
+            Ok(event) => event,
+            Err(error) => {
+                let _ = ctx.state.bridge_jobs.complete(
+                    &job.job_id,
+                    None,
+                    failed_prepublish_execution(&publish_settings, error.to_string()),
+                );
+                return Err(error);
+            }
+        };
+    let canonical = radroots_event_from_nostr(&event);
+    let validated = match validate_listing_event(&canonical) {
+        Ok(validated) => validated,
         Err(error) => {
-            return Err(RpcError::Other(format!(
-                "failed to persist bridge listing job: {error}"
+            let _ = ctx.state.bridge_jobs.complete(
+                &job.job_id,
+                Some(event.id.to_hex()),
+                failed_prepublish_execution(
+                    &publish_settings,
+                    format!("invalid listing contract: {error}"),
+                ),
+            );
+            return Err(RpcError::InvalidParams(format!(
+                "invalid listing contract: {error}"
             )));
         }
     };
 
-    let execution = connect_and_publish_event(
-        &ctx.state.client,
-        &BridgePublishSettings::from_config(&ctx.state.bridge_config),
-        &event,
-    )
-    .await;
+    let execution = connect_and_publish_event(&ctx.state.client, &publish_settings, &event).await;
     let job = ctx
         .state
         .bridge_jobs
-        .complete(&job.job_id, execution)
+        .complete(&job.job_id, Some(event.id.to_hex()), execution)
         .map_err(|error| RpcError::Other(format!("failed to persist bridge listing job: {error}")))?
         .ok_or_else(|| RpcError::Other("bridge job disappeared during completion".to_string()))?;
+    debug_assert_eq!(
+        job.event_addr.as_deref(),
+        Some(validated.listing_addr.as_str())
+    );
 
     Ok(BridgePublishResponse {
         deduplicated: false,
@@ -124,8 +156,14 @@ mod tests {
         RadrootsListingDeliveryMethod, RadrootsListingFarmRef, RadrootsListingLocation,
         RadrootsListingProduct,
     };
+    use radroots_identity::RadrootsIdentity;
+    use radroots_nostr::prelude::RadrootsNostrMetadata;
 
-    use super::canonicalize_listing_for_signer;
+    use crate::app::config::{BridgeConfig, Nip46Config};
+    use crate::core::Radrootsd;
+    use crate::transport::jsonrpc::{MethodRegistry, RpcContext};
+
+    use super::{BridgeListingPublishParams, canonicalize_listing_for_signer, publish_listing};
 
     #[test]
     fn canonicalize_listing_sets_missing_farm_pubkey() {
@@ -133,18 +171,60 @@ mod tests {
         assert_eq!(listing.farm.pubkey, "abc123");
     }
 
+    #[tokio::test]
+    async fn publish_listing_is_job_backed_and_idempotent() {
+        let identity = RadrootsIdentity::generate();
+        let metadata: RadrootsNostrMetadata =
+            serde_json::from_str(r#"{"name":"radrootsd-test"}"#).expect("metadata");
+        let state = Radrootsd::new(
+            identity,
+            metadata,
+            BridgeConfig {
+                enabled: true,
+                bearer_token: Some("secret".to_string()),
+                ..BridgeConfig::default()
+            },
+            Nip46Config::default(),
+        )
+        .expect("state");
+        let ctx = RpcContext::new(state, MethodRegistry::default());
+        let params = BridgeListingPublishParams {
+            listing: base_listing(),
+            signer_session_id: None,
+            idempotency_key: Some("same-key".to_string()),
+        };
+
+        let first = publish_listing(ctx.clone(), params).await.expect("first");
+        assert!(!first.deduplicated);
+        assert_eq!(first.job.command, "bridge.listing.publish");
+        assert!(first.job.event_addr.is_some());
+
+        let second = publish_listing(
+            ctx,
+            BridgeListingPublishParams {
+                listing: base_listing(),
+                signer_session_id: None,
+                idempotency_key: Some("same-key".to_string()),
+            },
+        )
+        .await
+        .expect("second");
+        assert!(second.deduplicated);
+        assert_eq!(second.job.job_id, first.job.job_id);
+    }
+
     fn base_listing() -> RadrootsListing {
         RadrootsListing {
-            d_tag: "fresh-carrots".to_string(),
+            d_tag: "AAAAAAAAAAAAAAAAAAAAAg".to_string(),
             farm: RadrootsListingFarmRef {
                 pubkey: String::new(),
-                d_tag: "farm-1".to_string(),
+                d_tag: "AAAAAAAAAAAAAAAAAAAAAw".to_string(),
             },
             product: RadrootsListingProduct {
-                key: "carrot".to_string(),
-                title: "Fresh carrots".to_string(),
-                category: "vegetable".to_string(),
-                summary: Some("Sweet carrots".to_string()),
+                key: "coffee".to_string(),
+                title: "Coffee".to_string(),
+                category: "coffee".to_string(),
+                summary: Some("Single origin coffee".to_string()),
                 process: None,
                 lot: None,
                 location: None,
@@ -155,19 +235,19 @@ mod tests {
             bins: vec![RadrootsListingBin {
                 bin_id: "bin-1".to_string(),
                 quantity: RadrootsCoreQuantity::new(
-                    RadrootsCoreDecimal::from(25),
-                    RadrootsCoreUnit::MassKg,
+                    RadrootsCoreDecimal::from(1000u32),
+                    RadrootsCoreUnit::MassG,
                 ),
-                price_per_canonical_unit: RadrootsCoreQuantityPrice {
-                    amount: RadrootsCoreMoney {
-                        amount: RadrootsCoreDecimal::from(4),
-                        currency: RadrootsCoreCurrency::USD,
-                    },
-                    quantity: RadrootsCoreQuantity::new(
-                        RadrootsCoreDecimal::from(1),
-                        RadrootsCoreUnit::MassKg,
+                price_per_canonical_unit: RadrootsCoreQuantityPrice::new(
+                    RadrootsCoreMoney::new(
+                        RadrootsCoreDecimal::from(20u32),
+                        RadrootsCoreCurrency::USD,
                     ),
-                },
+                    RadrootsCoreQuantity::new(
+                        RadrootsCoreDecimal::from(1u32),
+                        RadrootsCoreUnit::MassG,
+                    ),
+                ),
                 display_amount: None,
                 display_unit: None,
                 display_label: None,
@@ -177,16 +257,16 @@ mod tests {
             resource_area: None,
             plot: None,
             discounts: None,
-            inventory_available: Some(RadrootsCoreDecimal::from(25)),
+            inventory_available: Some(RadrootsCoreDecimal::from(5u32)),
             availability: Some(RadrootsListingAvailability::Status {
                 status: radroots_events::listing::RadrootsListingStatus::Active,
             }),
             delivery_method: Some(RadrootsListingDeliveryMethod::Pickup),
             location: Some(RadrootsListingLocation {
-                primary: "Shed 1".to_string(),
-                city: Some("Portland".to_string()),
-                region: Some("OR".to_string()),
-                country: Some("US".to_string()),
+                primary: "Farm".to_string(),
+                city: None,
+                region: None,
+                country: None,
                 lat: None,
                 lng: None,
                 geohash: None,
