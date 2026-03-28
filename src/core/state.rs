@@ -41,9 +41,18 @@ impl Radrootsd {
             bridge_config.state_path.clone(),
             bridge_config.job_status_retention,
         )?;
+        #[cfg(not(test))]
+        if !bridge_jobs.recovered_jobs.is_empty() {
+            tracing::warn!(
+                recovered_bridge_jobs = bridge_jobs.recovered_jobs.len(),
+                "terminalized bridge jobs left accepted across restart"
+            );
+        }
         #[cfg(test)]
         let bridge_jobs =
             crate::core::bridge::store::BridgeJobStore::new(bridge_config.job_status_retention);
+        #[cfg(not(test))]
+        let bridge_jobs = bridge_jobs.store;
         let nip46_sessions = crate::core::nip46::session::Nip46SessionStore::new();
 
         Ok(Self {
