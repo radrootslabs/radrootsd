@@ -21,6 +21,7 @@ addr = "127.0.0.1:7070"
 [config.bridge]
 enabled = true
 bearer_token = "change-me"
+state_path = "state/bridge-jobs.json"
 delivery_policy = "any"
 publish_max_attempts = 2
 

@@ -36,6 +36,12 @@ impl Radrootsd {
             "build": option_env!("GIT_HASH").unwrap_or("unknown"),
         });
         let bridge_signer = RadrootsNostrEmbeddedSignerBackend::new_in_memory(identity)?;
+        #[cfg(not(test))]
+        let bridge_jobs = crate::core::bridge::store::BridgeJobStore::load(
+            bridge_config.state_path.clone(),
+            bridge_config.job_status_retention,
+        )?;
+        #[cfg(test)]
         let bridge_jobs =
             crate::core::bridge::store::BridgeJobStore::new(bridge_config.job_status_retention);
         let nip46_sessions = crate::core::nip46::session::Nip46SessionStore::new();

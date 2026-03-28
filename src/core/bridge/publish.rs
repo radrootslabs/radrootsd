@@ -2,12 +2,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
 use radroots_nostr::prelude::{RadrootsNostrClient, RadrootsNostrOutput, RadrootsNostrRelayUrl};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tokio::time::sleep;
 
 use crate::app::config::{BridgeConfig, BridgeDeliveryPolicy};
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BridgeRelayPublishResult {
     pub relay_url: String,
     pub acknowledged: bool,
@@ -418,6 +418,7 @@ mod tests {
             publish_initial_backoff_millis: 125,
             publish_max_backoff_millis: 500,
             job_status_retention: 64,
+            ..BridgeConfig::default()
         };
 
         assert_eq!(

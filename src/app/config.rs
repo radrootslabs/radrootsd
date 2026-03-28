@@ -2,6 +2,7 @@ use anyhow::{Result, bail};
 use radroots_nostr::prelude::RadrootsNostrMetadata;
 use radroots_runtime::RadrootsNostrServiceConfig;
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 
 fn default_rpc_addr() -> String {
     "127.0.0.1:7070".to_string()
@@ -67,6 +68,10 @@ fn default_bridge_job_status_retention() -> usize {
     256
 }
 
+fn default_bridge_state_path() -> PathBuf {
+    PathBuf::from("state/bridge-jobs.json")
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Nip46Config {
     #[serde(default = "default_nip46_session_ttl_secs")]
@@ -128,6 +133,8 @@ pub struct BridgeConfig {
     pub publish_max_backoff_millis: u64,
     #[serde(default = "default_bridge_job_status_retention")]
     pub job_status_retention: usize,
+    #[serde(default = "default_bridge_state_path")]
+    pub state_path: PathBuf,
 }
 
 impl Default for BridgeConfig {
@@ -142,6 +149,7 @@ impl Default for BridgeConfig {
             publish_initial_backoff_millis: default_bridge_publish_initial_backoff_millis(),
             publish_max_backoff_millis: default_bridge_publish_max_backoff_millis(),
             job_status_retention: default_bridge_job_status_retention(),
+            state_path: default_bridge_state_path(),
         }
     }
 }

@@ -1,8 +1,11 @@
 use anyhow::Result;
+use nostr::Event;
+use radroots_nostr::prelude::RadrootsNostrEventBuilder;
 use radroots_nostr_signer::prelude::RadrootsNostrSignerBackend;
 use serde::Serialize;
 
 use crate::core::bridge::store::BridgeJobRecord;
+use crate::transport::jsonrpc::nip46::{client as nip46_client, session as nip46_session};
 use crate::transport::jsonrpc::{RpcContext, RpcError};
 
 #[derive(Clone, Debug, Serialize)]
@@ -18,6 +21,33 @@ pub(super) fn ensure_bridge_enabled(ctx: &RpcContext) -> Result<(), RpcError> {
     Ok(())
 }
 
+#[derive(Clone)]
+pub(super) enum BridgeSignerSelection {
+    EmbeddedServiceIdentity {
+        signer_pubkey_hex: String,
+    },
+    Nip46Session {
+        session_id: String,
+        session: crate::core::nip46::session::Nip46Session,
+    },
+}
+
+impl BridgeSignerSelection {
+    pub(super) fn signer_pubkey_hex(&self) -> String {
+        match self {
+            Self::EmbeddedServiceIdentity { signer_pubkey_hex } => signer_pubkey_hex.clone(),
+            Self::Nip46Session { session, .. } => session.remote_signer_pubkey.to_hex(),
+        }
+    }
+
+    pub(super) fn signer_mode(&self) -> String {
+        match self {
+            Self::EmbeddedServiceIdentity { .. } => "embedded_service_identity".to_string(),
+            Self::Nip46Session { session_id, .. } => format!("nip46_session:{session_id}"),
+        }
+    }
+}
+
 pub(super) fn bridge_signer_pubkey_hex(ctx: &RpcContext) -> Result<String, RpcError> {
     Ok(ctx
         .state
@@ -26,6 +56,49 @@ pub(super) fn bridge_signer_pubkey_hex(ctx: &RpcContext) -> Result<String, RpcEr
         .map_err(|error| RpcError::Other(format!("bridge signer unavailable: {error}")))?
         .ok_or_else(|| RpcError::Other("bridge signer identity is missing".to_string()))?
         .public_key_hex)
+}
+
+pub(super) async fn resolve_bridge_signer(
+    ctx: &RpcContext,
+    signer_session_id: Option<&str>,
+    event_kind: u32,
+) -> Result<BridgeSignerSelection, RpcError> {
+    match signer_session_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        Some(session_id) => {
+            let session = nip46_session::get_session(ctx, session_id).await?;
+            nip46_session::require_sign_event_permission(&session, event_kind)?;
+            Ok(BridgeSignerSelection::Nip46Session {
+                session_id: session_id.to_string(),
+                session,
+            })
+        }
+        None => Ok(BridgeSignerSelection::EmbeddedServiceIdentity {
+            signer_pubkey_hex: bridge_signer_pubkey_hex(ctx)?,
+        }),
+    }
+}
+
+pub(super) async fn sign_bridge_event_builder(
+    ctx: &RpcContext,
+    signer: &BridgeSignerSelection,
+    builder: RadrootsNostrEventBuilder,
+    label: &str,
+) -> Result<Event, RpcError> {
+    match signer {
+        BridgeSignerSelection::EmbeddedServiceIdentity { .. } => ctx
+            .state
+            .bridge_signer
+            .sign_event_builder(builder)
+            .map(|signed| signed.event)
+            .map_err(|error| RpcError::Other(format!("failed to sign {label} event: {error}"))),
+        BridgeSignerSelection::Nip46Session { session, .. } => {
+            let unsigned = builder.build(session.remote_signer_pubkey);
+            nip46_client::sign_event(session, unsigned, label).await
+        }
+    }
 }
 
 pub(super) fn normalize_idempotency_key(value: Option<String>) -> Result<Option<String>, RpcError> {
@@ -41,11 +114,66 @@ pub(super) fn normalize_idempotency_key(value: Option<String>) -> Result<Option<
 
 #[cfg(test)]
 mod tests {
-    use super::normalize_idempotency_key;
+    use radroots_identity::RadrootsIdentity;
+    use radroots_nostr::prelude::{RadrootsNostrClient, RadrootsNostrKeys, RadrootsNostrMetadata};
+
+    use crate::app::config::{BridgeConfig, Nip46Config};
+    use crate::core::Radrootsd;
+    use crate::core::nip46::session::Nip46Session;
+    use crate::transport::jsonrpc::{MethodRegistry, RpcContext};
+
+    use super::{normalize_idempotency_key, resolve_bridge_signer};
+    use std::time::Instant;
 
     #[test]
     fn normalize_idempotency_key_rejects_empty_values() {
         let err = normalize_idempotency_key(Some("   ".to_string())).expect_err("empty key");
         assert!(err.to_string().contains("idempotency_key"));
+    }
+
+    #[tokio::test]
+    async fn resolve_bridge_signer_prefers_requested_nip46_session() {
+        let identity = RadrootsIdentity::generate();
+        let metadata: RadrootsNostrMetadata =
+            serde_json::from_str(r#"{"name":"radrootsd-test"}"#).expect("metadata");
+        let state = Radrootsd::new(
+            identity.clone(),
+            metadata,
+            BridgeConfig::default(),
+            Nip46Config::default(),
+        )
+        .expect("state");
+        let session_keys = RadrootsNostrKeys::generate();
+        state
+            .nip46_sessions
+            .insert(Nip46Session {
+                id: "session-1".to_string(),
+                client: RadrootsNostrClient::new(session_keys.clone()),
+                client_keys: session_keys.clone(),
+                client_pubkey: session_keys.public_key(),
+                remote_signer_pubkey: session_keys.public_key(),
+                user_pubkey: None,
+                relays: vec!["wss://relay.example.com".to_string()],
+                perms: vec!["sign_event".to_string()],
+                name: None,
+                url: None,
+                image: None,
+                expires_at: Some(Instant::now() + std::time::Duration::from_secs(60)),
+                auth_required: false,
+                authorized: true,
+                auth_url: None,
+                pending_request: None,
+            })
+            .await;
+        let ctx = RpcContext::new(state, MethodRegistry::default());
+
+        let signer = resolve_bridge_signer(&ctx, Some("session-1"), 30402)
+            .await
+            .expect("session signer");
+        assert_eq!(
+            signer.signer_pubkey_hex(),
+            session_keys.public_key().to_hex()
+        );
+        assert_eq!(signer.signer_mode(), "nip46_session:session-1");
     }
 }

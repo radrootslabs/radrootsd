@@ -2,7 +2,6 @@ use anyhow::Result;
 use jsonrpsee::server::RpcModule;
 use radroots_events::kinds::KIND_LISTING;
 use radroots_nostr::prelude::{radroots_nostr_build_event, radroots_nostr_parse_pubkey};
-use radroots_nostr_signer::prelude::RadrootsNostrSignerBackend;
 use radroots_trade::listing::{
     dvm::{
         TradeListingAddress, TradeListingEnvelope, TradeListingMessageType,
@@ -17,14 +16,16 @@ use crate::core::bridge::publish::{BridgePublishSettings, connect_and_publish_ev
 use crate::core::bridge::store::new_order_request_job;
 use crate::transport::jsonrpc::auth::require_bridge_auth;
 use crate::transport::jsonrpc::methods::bridge::shared::{
-    BridgePublishResponse, bridge_signer_pubkey_hex, ensure_bridge_enabled,
-    normalize_idempotency_key,
+    BridgePublishResponse, ensure_bridge_enabled, normalize_idempotency_key, resolve_bridge_signer,
+    sign_bridge_event_builder,
 };
 use crate::transport::jsonrpc::{MethodRegistry, RpcContext, RpcError};
 
 #[derive(Debug, Deserialize)]
 struct BridgeOrderRequestParams {
     order: TradeOrder,
+    #[serde(default)]
+    signer_session_id: Option<String>,
     #[serde(default)]
     idempotency_key: Option<String>,
 }
@@ -52,8 +53,14 @@ async fn publish_order_request(
     ensure_bridge_enabled(&ctx)?;
 
     let idempotency_key = normalize_idempotency_key(params.idempotency_key)?;
-    let signer_pubkey = bridge_signer_pubkey_hex(&ctx)?;
-    let order = canonicalize_order_request_for_embedded_signer(params.order, &signer_pubkey)?;
+    let signer = resolve_bridge_signer(
+        &ctx,
+        params.signer_session_id.as_deref(),
+        u32::from(TradeListingMessageType::OrderRequest.kind()),
+    )
+    .await?;
+    let signer_pubkey = signer.signer_pubkey_hex();
+    let order = canonicalize_order_request_for_signer(params.order, signer_pubkey.as_str())?;
     let envelope = TradeListingEnvelope::new(
         TradeListingMessageType::OrderRequest,
         order.listing_addr.clone(),
@@ -75,16 +82,12 @@ async fn publish_order_request(
         .map_err(|error| {
             RpcError::Other(format!("failed to build order request event: {error}"))
         })?;
-    let signed = ctx
-        .state
-        .bridge_signer
-        .sign_event_builder(builder)
-        .map_err(|error| RpcError::Other(format!("failed to sign order request event: {error}")))?;
-    let event = signed.event;
+    let event = sign_bridge_event_builder(&ctx, &signer, builder, "bridge.order.request").await?;
 
     let reserved = ctx.state.bridge_jobs.reserve(new_order_request_job(
         Uuid::new_v4().to_string(),
         idempotency_key,
+        signer.signer_mode(),
         u32::from(TradeListingMessageType::OrderRequest.kind()),
         event.id.to_hex(),
         order.listing_addr.clone(),
@@ -92,12 +95,17 @@ async fn publish_order_request(
         ctx.state.bridge_config.delivery_quorum,
     ));
     let job = match reserved {
-        Ok(job) => job,
-        Err(existing) => {
+        Ok(crate::core::bridge::store::BridgeJobReservation::Accepted(job)) => job,
+        Ok(crate::core::bridge::store::BridgeJobReservation::Duplicate(existing)) => {
             return Ok(BridgePublishResponse {
                 deduplicated: true,
                 job: existing,
             });
+        }
+        Err(error) => {
+            return Err(RpcError::Other(format!(
+                "failed to persist bridge order job: {error}"
+            )));
         }
     };
 
@@ -111,6 +119,7 @@ async fn publish_order_request(
         .state
         .bridge_jobs
         .complete(&job.job_id, execution)
+        .map_err(|error| RpcError::Other(format!("failed to persist bridge order job: {error}")))?
         .ok_or_else(|| RpcError::Other("bridge job disappeared during completion".to_string()))?;
 
     Ok(BridgePublishResponse {
@@ -119,7 +128,7 @@ async fn publish_order_request(
     })
 }
 
-fn canonicalize_order_request_for_embedded_signer(
+fn canonicalize_order_request_for_signer(
     mut order: TradeOrder,
     signer_pubkey: &str,
 ) -> Result<TradeOrder, RpcError> {
@@ -147,7 +156,7 @@ fn canonicalize_order_request_for_embedded_signer(
     };
     if buyer_pubkey != signer_pubkey {
         return Err(RpcError::InvalidParams(
-            "order.buyer_pubkey must match the bridge signer identity".to_string(),
+            "order.buyer_pubkey must match the requested bridge signer identity".to_string(),
         ));
     }
 
@@ -229,13 +238,13 @@ mod tests {
     use crate::transport::jsonrpc::{MethodRegistry, RpcContext};
 
     use super::{
-        BridgeOrderRequestParams, canonicalize_order_request_for_embedded_signer,
-        normalize_optional_string, publish_order_request,
+        BridgeOrderRequestParams, canonicalize_order_request_for_signer, normalize_optional_string,
+        publish_order_request,
     };
 
     #[test]
     fn canonicalize_order_request_sets_missing_buyer_and_seller_pubkeys() {
-        let order = canonicalize_order_request_for_embedded_signer(
+        let order = canonicalize_order_request_for_signer(
             base_order("", "", TradeOrderStatus::Requested),
             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         )
@@ -253,7 +262,7 @@ mod tests {
 
     #[test]
     fn canonicalize_order_request_rejects_non_requested_status() {
-        let err = canonicalize_order_request_for_embedded_signer(
+        let err = canonicalize_order_request_for_signer(
             base_order(
                 "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 "",
@@ -273,7 +282,7 @@ mod tests {
             TradeOrderStatus::Requested,
         );
         order.items[0].bin_count = 0;
-        let err = canonicalize_order_request_for_embedded_signer(
+        let err = canonicalize_order_request_for_signer(
             order,
             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         )
@@ -309,6 +318,7 @@ mod tests {
         let ctx = RpcContext::new(state, MethodRegistry::default());
         let params = BridgeOrderRequestParams {
             order: base_order("", "", TradeOrderStatus::Requested),
+            signer_session_id: None,
             idempotency_key: Some("same-key".to_string()),
         };
 
@@ -323,6 +333,7 @@ mod tests {
             ctx,
             BridgeOrderRequestParams {
                 order: base_order("", "", TradeOrderStatus::Requested),
+                signer_session_id: None,
                 idempotency_key: Some("same-key".to_string()),
             },
         )
