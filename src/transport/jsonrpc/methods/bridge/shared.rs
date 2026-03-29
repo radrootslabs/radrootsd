@@ -179,7 +179,6 @@ pub(super) fn normalize_idempotency_key(value: Option<String>) -> Result<Option<
 #[derive(Serialize)]
 struct BridgeRequestFingerprint<'a, T> {
     command: &'a str,
-    signer_mode: &'a str,
     signer_pubkey_hex: &'a str,
     payload: &'a T,
 }
@@ -191,7 +190,6 @@ pub(super) fn fingerprint_bridge_request<T: Serialize>(
 ) -> Result<String, RpcError> {
     let payload = serde_json::to_vec(&BridgeRequestFingerprint {
         command,
-        signer_mode: &signer.signer_mode(),
         signer_pubkey_hex: &signer.signer_pubkey_hex(),
         payload,
     })
@@ -306,6 +304,52 @@ mod tests {
         )
         .expect("second");
         assert_ne!(first, second);
+    }
+
+    #[test]
+    fn fingerprint_bridge_request_is_stable_across_nip46_session_renewal() {
+        let session_keys = RadrootsNostrKeys::generate();
+        let session = Nip46Session {
+            id: "session-1".to_string(),
+            client: RadrootsNostrClient::new(session_keys.clone()),
+            client_keys: RadrootsNostrKeys::generate(),
+            client_pubkey: RadrootsNostrKeys::generate().public_key(),
+            remote_signer_pubkey: session_keys.public_key(),
+            user_pubkey: None,
+            relays: vec!["wss://relay.example.com".to_string()],
+            perms: vec!["sign_event".to_string()],
+            name: None,
+            url: None,
+            image: None,
+            expires_at: None,
+            auth_required: false,
+            authorized: true,
+            auth_url: None,
+            pending_request: None,
+        };
+        let renewed_session = Nip46Session {
+            id: "session-2".to_string(),
+            ..session.clone()
+        };
+        let first = fingerprint_bridge_request(
+            "bridge.order.request",
+            &super::BridgeSignerSelection::Nip46Session {
+                session_id: "session-1".to_string(),
+                session,
+            },
+            &serde_json::json!({"order_id":"same"}),
+        )
+        .expect("first");
+        let second = fingerprint_bridge_request(
+            "bridge.order.request",
+            &super::BridgeSignerSelection::Nip46Session {
+                session_id: "session-2".to_string(),
+                session: renewed_session,
+            },
+            &serde_json::json!({"order_id":"same"}),
+        )
+        .expect("second");
+        assert_eq!(first, second);
     }
 
     #[test]
