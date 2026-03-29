@@ -1,14 +1,16 @@
 use anyhow::Result;
 use jsonrpsee::server::RpcModule;
 use radroots_events::kinds::KIND_LISTING;
-use radroots_nostr::prelude::{radroots_nostr_build_event, radroots_nostr_parse_pubkey};
-use radroots_trade::listing::{
-    dvm::{
-        TradeListingAddress, TradeListingEnvelope, TradeListingMessageType,
-        trade_listing_envelope_event_build,
-    },
-    order::{TradeOrder, TradeOrderStatus},
+use radroots_events::trade::{
+    RadrootsTradeEnvelope as TradeListingEnvelope,
+    RadrootsTradeMessageType as TradeListingMessageType, RadrootsTradeOrder as TradeOrder,
+    RadrootsTradeOrderStatus as TradeOrderStatus,
 };
+use radroots_events_codec::trade::{
+    RadrootsTradeListingAddress as TradeListingAddress,
+    trade_envelope_event_build as trade_listing_envelope_event_build,
+};
+use radroots_nostr::prelude::{radroots_nostr_build_event, radroots_nostr_parse_pubkey};
 use serde::Deserialize;
 use uuid::Uuid;
 
@@ -241,9 +243,12 @@ fn normalize_optional_string(value: Option<String>) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use radroots_core::RadrootsCoreDiscountValue;
+    use radroots_events::trade::{
+        RadrootsTradeOrder as TradeOrder, RadrootsTradeOrderItem as TradeOrderItem,
+        RadrootsTradeOrderStatus as TradeOrderStatus,
+    };
     use radroots_identity::RadrootsIdentity;
     use radroots_nostr::prelude::RadrootsNostrMetadata;
-    use radroots_trade::listing::order::{TradeOrder, TradeOrderItem, TradeOrderStatus};
 
     use crate::app::config::{BridgeConfig, Nip46Config};
     use crate::core::Radrootsd;
