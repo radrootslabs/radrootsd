@@ -44,14 +44,22 @@
               ];
             libraryPath = pkgs.lib.makeLibraryPath basePackages;
             includePath = pkgs.lib.makeSearchPathOutput "dev" "include" basePackages;
+            llvmToolsBin = "${pkgs.llvmPackages.llvm}/bin";
             darwinLdFlags = pkgs.lib.optionalString pkgs.stdenv.isDarwin "-L${pkgs.darwin.libiconv}/lib";
             darwinRustFlags = pkgs.lib.optionalString pkgs.stdenv.isDarwin "-L native=${pkgs.darwin.libiconv}/lib";
+            coveragePackages = basePackages ++ [
+              pkgs.llvmPackages.llvm
+            ];
             mkApp =
-              name: text:
+              name:
+              {
+                runtimeInputs ? basePackages,
+                text,
+              }:
               let
                 script = pkgs.writeShellApplication {
                   inherit name;
-                  runtimeInputs = basePackages;
+                  inherit runtimeInputs;
                   text = ''
                     set -euo pipefail
                     repo_root="$(git rev-parse --show-toplevel)"
@@ -75,10 +83,12 @@
           f {
             inherit
               basePackages
+              coveragePackages
               darwinLdFlags
               darwinRustFlags
               includePath
               libraryPath
+              llvmToolsBin
               mkApp
               pkgs
               rustToolchain
@@ -88,19 +98,53 @@
     in
     {
       apps = forAllSystems (
-        { mkApp, ... }:
+        {
+          coveragePackages,
+          llvmToolsBin,
+          mkApp,
+          ...
+        }:
         rec {
           default = check;
-          check = mkApp "check" ''
-            cargo metadata --format-version 1 --no-deps
-            cargo check
-          '';
-          fmt = mkApp "fmt" ''
-            cargo fmt --all --check
-          '';
-          test = mkApp "test" ''
-            cargo test
-          '';
+          check = mkApp "check" {
+            text = ''
+              cargo metadata --format-version 1 --no-deps
+              cargo check
+            '';
+          };
+          coverage-report = mkApp "coverage-report" {
+            runtimeInputs = coveragePackages;
+            text = ''
+              export PATH="$HOME/.cargo/bin:$PATH"
+              cargo +nightly llvm-cov --version >/dev/null 2>&1 || {
+                echo "cargo +nightly llvm-cov must be available to run coverage-report" >&2
+                exit 1
+              }
+              export LLVM_COV="${llvmToolsBin}/llvm-cov"
+              export LLVM_PROFDATA="${llvmToolsBin}/llvm-profdata"
+              coverage_target_dir="$(mktemp -d "''${TMPDIR:-/tmp}/radrootsd-llvm-cov.XXXXXX")"
+              trap 'rm -rf "$coverage_target_dir"' EXIT
+              export CARGO_TARGET_DIR="$coverage_target_dir"
+              mkdir -p target/coverage
+              cargo +nightly llvm-cov clean --workspace
+              cargo +nightly llvm-cov --workspace --all-features --branch --no-report
+              cargo +nightly llvm-cov report --json --summary-only --output-path target/coverage/summary.json
+              cargo +nightly llvm-cov report --lcov --output-path target/coverage/lcov.info
+              cargo +nightly llvm-cov report --summary-only
+              echo "coverage summary: target/coverage/summary.json"
+              echo "coverage lcov: target/coverage/lcov.info"
+            '';
+          };
+          fmt = mkApp "fmt" {
+            text = ''
+              cargo fmt --all --check
+            '';
+          };
+          test = mkApp "test" {
+            text = ''
+              cargo test
+            '';
+          };
         }
       );
 

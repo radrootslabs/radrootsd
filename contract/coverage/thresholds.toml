@@ -1,6 +1,0 @@
-[coverage]
-line_percent = 100.0
-function_percent = 100.0
-branch_percent = 100.0
-region_percent = 100.0
-require_branch_records = true
