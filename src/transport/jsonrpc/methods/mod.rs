@@ -61,6 +61,19 @@ mod tests {
         assert!(root.method("bridge.job.status").is_some());
         assert!(root.method("bridge.listing.publish").is_some());
         assert!(root.method("bridge.order.request").is_some());
+        assert!(root.method("bridge.order.response").is_some());
+        assert!(root.method("bridge.order.revision").is_some());
+        assert!(root.method("bridge.order.revision.accept").is_some());
+        assert!(root.method("bridge.order.revision.decline").is_some());
+        assert!(root.method("bridge.order.question").is_some());
+        assert!(root.method("bridge.order.answer").is_some());
+        assert!(root.method("bridge.order.discount.request").is_some());
+        assert!(root.method("bridge.order.discount.offer").is_some());
+        assert!(root.method("bridge.order.discount.accept").is_some());
+        assert!(root.method("bridge.order.discount.decline").is_some());
+        assert!(root.method("bridge.order.cancel").is_some());
+        assert!(root.method("bridge.order.fulfillment.update").is_some());
+        assert!(root.method("bridge.order.receipt").is_some());
         assert!(root.method("nip46.connect").is_none());
     }
 

@@ -1,12 +1,13 @@
 use anyhow::Result;
 use jsonrpsee::server::RpcModule;
 use radroots_events::RadrootsNostrEvent;
+use radroots_events::kinds::{KIND_LISTING, KIND_LISTING_DRAFT, is_listing_kind};
 use radroots_events::listing::RadrootsListing;
-use radroots_events_codec::listing::encode::to_wire_parts;
+use radroots_events_codec::listing::encode::to_wire_parts_with_kind;
 use radroots_events_codec::wire::WireEventParts;
 use radroots_nostr::prelude::radroots_nostr_build_event;
 use radroots_trade::listing::validation::validate_listing_event;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::core::bridge::publish::{
@@ -25,9 +26,17 @@ use crate::transport::jsonrpc::{MethodRegistry, RpcContext, RpcError};
 struct BridgeListingPublishParams {
     listing: RadrootsListing,
     #[serde(default)]
+    kind: Option<u32>,
+    #[serde(default)]
     signer_session_id: Option<String>,
     #[serde(default)]
     idempotency_key: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct CanonicalBridgeListingPublishRequest {
+    kind: u32,
+    listing: RadrootsListing,
 }
 
 pub fn register(m: &mut RpcModule<RpcContext>, registry: &MethodRegistry) -> Result<()> {
@@ -52,15 +61,20 @@ async fn publish_listing(
 ) -> Result<BridgePublishResponse, RpcError> {
     ensure_bridge_enabled(&ctx)?;
     let idempotency_key = normalize_idempotency_key(params.idempotency_key)?;
-    let signer = resolve_bridge_signer(&ctx, params.signer_session_id.as_deref(), 30402).await?;
+    let kind = resolve_listing_kind(params.kind)?;
+    let signer = resolve_bridge_signer(&ctx, params.signer_session_id.as_deref(), kind).await?;
     let signer_pubkey = signer.signer_pubkey_hex();
     let listing = canonicalize_listing_for_signer(params.listing, signer_pubkey.as_str());
+    let canonical = CanonicalBridgeListingPublishRequest { kind, listing };
     let request_fingerprint =
-        fingerprint_bridge_request("bridge.listing.publish", &signer, &listing)?;
-    let parts = to_wire_parts(&listing)
+        fingerprint_bridge_request("bridge.listing.publish", &signer, &canonical)?;
+    let parts = to_wire_parts_with_kind(&canonical.listing, canonical.kind)
         .map_err(|error| RpcError::InvalidParams(format!("invalid listing contract: {error}")))?;
-    let validated =
-        validate_canonical_listing_contract_for_signer(&listing, signer_pubkey.as_str(), &parts)?;
+    let validated = validate_canonical_listing_contract_for_signer(
+        &canonical.listing,
+        signer_pubkey.as_str(),
+        &parts,
+    )?;
     let builder = radroots_nostr_build_event(parts.kind, parts.content, parts.tags)
         .map_err(|error| RpcError::Other(format!("failed to build listing event: {error}")))?;
 
@@ -121,6 +135,16 @@ async fn publish_listing(
     })
 }
 
+fn resolve_listing_kind(kind: Option<u32>) -> Result<u32, RpcError> {
+    let kind = kind.unwrap_or(KIND_LISTING);
+    if !is_listing_kind(kind) {
+        return Err(RpcError::InvalidParams(format!(
+            "listing kind must be {KIND_LISTING} or {KIND_LISTING_DRAFT}"
+        )));
+    }
+    Ok(kind)
+}
+
 fn canonicalize_listing_for_signer(
     mut listing: RadrootsListing,
     signer_pubkey: &str,
@@ -157,12 +181,13 @@ mod tests {
         RadrootsCoreCurrency, RadrootsCoreDecimal, RadrootsCoreMoney, RadrootsCoreQuantity,
         RadrootsCoreQuantityPrice, RadrootsCoreUnit,
     };
+    use radroots_events::kinds::{KIND_LISTING, KIND_LISTING_DRAFT};
     use radroots_events::listing::{
         RadrootsListing, RadrootsListingAvailability, RadrootsListingBin,
         RadrootsListingDeliveryMethod, RadrootsListingFarmRef, RadrootsListingLocation,
         RadrootsListingProduct,
     };
-    use radroots_events_codec::listing::encode::to_wire_parts;
+    use radroots_events_codec::listing::encode::to_wire_parts_with_kind;
     use radroots_identity::RadrootsIdentity;
     use radroots_nostr::prelude::RadrootsNostrMetadata;
 
@@ -186,7 +211,7 @@ mod tests {
         let listing = canonicalize_listing_for_signer(base_listing(), "abc123");
         let mut invalid = listing.clone();
         invalid.farm.pubkey = "other".to_string();
-        let parts = to_wire_parts(&invalid).expect("wire parts");
+        let parts = to_wire_parts_with_kind(&invalid, KIND_LISTING).expect("wire parts");
         let err =
             validate_canonical_listing_contract_for_signer(&invalid, "abc123", &parts).unwrap_err();
         assert!(err.to_string().contains("invalid listing contract"));
@@ -211,6 +236,7 @@ mod tests {
         let ctx = RpcContext::new(state, MethodRegistry::default());
         let params = BridgeListingPublishParams {
             listing: base_listing(),
+            kind: None,
             signer_session_id: None,
             idempotency_key: Some("same-key".to_string()),
         };
@@ -224,6 +250,7 @@ mod tests {
             ctx,
             BridgeListingPublishParams {
                 listing: base_listing(),
+                kind: None,
                 signer_session_id: None,
                 idempotency_key: Some("same-key".to_string()),
             },
@@ -258,6 +285,7 @@ mod tests {
             ctx.clone(),
             BridgeListingPublishParams {
                 listing,
+                kind: None,
                 signer_session_id: None,
                 idempotency_key: Some("bad-listing".to_string()),
             },
@@ -266,6 +294,46 @@ mod tests {
         .expect_err("invalid seller rejected");
         assert!(err.to_string().contains("invalid listing contract"));
         assert_eq!(ctx.state.bridge_jobs.snapshot().retained_jobs, 0);
+    }
+
+    #[tokio::test]
+    async fn publish_listing_allows_draft_kind() {
+        let identity = RadrootsIdentity::generate();
+        let metadata: RadrootsNostrMetadata =
+            serde_json::from_str(r#"{"name":"radrootsd-test"}"#).expect("metadata");
+        let state = Radrootsd::new(
+            identity,
+            metadata,
+            BridgeConfig {
+                enabled: true,
+                bearer_token: Some("secret".to_string()),
+                ..BridgeConfig::default()
+            },
+            Nip46Config::default(),
+        )
+        .expect("state");
+        let ctx = RpcContext::new(state, MethodRegistry::default());
+
+        let response = publish_listing(
+            ctx,
+            BridgeListingPublishParams {
+                listing: base_listing(),
+                kind: Some(KIND_LISTING_DRAFT),
+                signer_session_id: None,
+                idempotency_key: Some("draft-kind".to_string()),
+            },
+        )
+        .await
+        .expect("draft listing");
+
+        assert_eq!(response.job.event_kind, KIND_LISTING_DRAFT);
+        assert!(
+            response
+                .job
+                .event_addr
+                .as_deref()
+                .is_some_and(|addr| addr.starts_with("30403:"))
+        );
     }
 
     fn base_listing() -> RadrootsListing {
