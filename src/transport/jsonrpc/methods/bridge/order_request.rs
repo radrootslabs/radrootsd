@@ -1,17 +1,22 @@
 use anyhow::Result;
 use jsonrpsee::server::RpcModule;
+use radroots_events::RadrootsNostrEventPtr;
 use radroots_events::kinds::KIND_LISTING;
 use radroots_events::trade::{
     RadrootsTradeEnvelope as TradeListingEnvelope,
+    RadrootsTradeMessagePayload as TradeListingMessagePayload,
     RadrootsTradeMessageType as TradeListingMessageType, RadrootsTradeOrder as TradeOrder,
-    RadrootsTradeOrderStatus as TradeOrderStatus,
 };
 use radroots_events_codec::trade::{
     RadrootsTradeListingAddress as TradeListingAddress,
     trade_envelope_event_build as trade_listing_envelope_event_build,
 };
-use radroots_nostr::prelude::{radroots_nostr_build_event, radroots_nostr_parse_pubkey};
+use radroots_nostr::prelude::{
+    RadrootsNostrFilter, RadrootsNostrKind, radroots_event_ptr_from_nostr,
+    radroots_nostr_build_event, radroots_nostr_filter_tag, radroots_nostr_parse_pubkey,
+};
 use serde::Deserialize;
+use std::time::Duration;
 use uuid::Uuid;
 
 use crate::core::bridge::publish::{
@@ -76,12 +81,16 @@ async fn publish_order_request(
     envelope.validate().map_err(|error| {
         RpcError::InvalidParams(format!("invalid order request envelope: {error}"))
     })?;
+    let listing_snapshot = fetch_listing_snapshot(&ctx, &order.listing_addr).await?;
     let built = trade_listing_envelope_event_build(
         order.seller_pubkey.clone(),
         TradeListingMessageType::OrderRequest,
         order.listing_addr.clone(),
         Some(order.order_id.clone()),
-        &order,
+        Some(&listing_snapshot),
+        None,
+        None,
+        &TradeListingMessagePayload::OrderRequest(order.clone()),
     )
     .map_err(|error| RpcError::Other(format!("failed to build order request event: {error}")))?;
     let builder = radroots_nostr_build_event(u32::from(built.kind), built.content, built.tags)
@@ -140,6 +149,52 @@ async fn publish_order_request(
         deduplicated: false,
         job: job.into(),
     })
+}
+
+async fn fetch_listing_snapshot(
+    ctx: &RpcContext,
+    listing_addr: &str,
+) -> Result<RadrootsNostrEventPtr, RpcError> {
+    let listing_addr = TradeListingAddress::parse(listing_addr)
+        .map_err(|error| RpcError::InvalidParams(format!("invalid order.listing_addr: {error}")))?;
+    if ctx.state.client.relays().await.is_empty() {
+        return Ok(synthetic_listing_snapshot(&listing_addr));
+    }
+    let filter = RadrootsNostrFilter::new()
+        .author(
+            radroots_nostr_parse_pubkey(&listing_addr.seller_pubkey).map_err(|error| {
+                RpcError::InvalidParams(format!("invalid order.seller_pubkey: {error}"))
+            })?,
+        )
+        .kind(RadrootsNostrKind::Custom(KIND_LISTING as u16));
+    let filter = radroots_nostr_filter_tag(filter, "d", vec![listing_addr.listing_id.clone()])
+        .map_err(|error| {
+            RpcError::Other(format!("failed to build listing snapshot filter: {error}"))
+        })?;
+    let mut events = ctx
+        .state
+        .client
+        .fetch_events(filter, Duration::from_secs(10))
+        .await
+        .map_err(|error| {
+            RpcError::Other(format!(
+                "failed to fetch listing snapshot for bridge.order.request: {error}"
+            ))
+        })?;
+    events.sort_by_key(|event| event.created_at);
+    let event = events.pop().ok_or_else(|| {
+        RpcError::InvalidParams(
+            "order.listing_addr must reference an existing public NIP-99 listing".to_string(),
+        )
+    })?;
+    Ok(radroots_event_ptr_from_nostr(&event))
+}
+
+fn synthetic_listing_snapshot(listing_addr: &TradeListingAddress) -> RadrootsNostrEventPtr {
+    RadrootsNostrEventPtr {
+        id: format!("listing:{}", listing_addr.as_str()),
+        relays: None,
+    }
 }
 
 fn canonicalize_order_request_for_signer(
@@ -208,17 +263,10 @@ fn canonicalize_order_request_for_signer(
         }
     }
 
-    if order.status != TradeOrderStatus::Requested {
-        return Err(RpcError::InvalidParams(
-            "order.status must be requested for bridge.order.request".to_string(),
-        ));
-    }
-
     order.order_id = order_id;
     order.listing_addr = listing_addr.as_str();
     order.buyer_pubkey = buyer_pubkey;
     order.seller_pubkey = seller_pubkey;
-    order.notes = normalize_optional_string(order.notes);
     if order.discounts.as_ref().is_some_and(Vec::is_empty) {
         order.discounts = None;
     }
@@ -233,19 +281,11 @@ fn normalized_required_string(value: String, field: &str) -> Result<String, RpcE
     Ok(value)
 }
 
-fn normalize_optional_string(value: Option<String>) -> Option<String> {
-    value.and_then(|value| {
-        let value = value.trim().to_string();
-        if value.is_empty() { None } else { Some(value) }
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use radroots_core::RadrootsCoreDiscountValue;
     use radroots_events::trade::{
         RadrootsTradeOrder as TradeOrder, RadrootsTradeOrderItem as TradeOrderItem,
-        RadrootsTradeOrderStatus as TradeOrderStatus,
     };
     use radroots_identity::RadrootsIdentity;
     use radroots_nostr::prelude::RadrootsNostrMetadata;
@@ -255,14 +295,13 @@ mod tests {
     use crate::transport::jsonrpc::{MethodRegistry, RpcContext};
 
     use super::{
-        BridgeOrderRequestParams, canonicalize_order_request_for_signer, normalize_optional_string,
-        publish_order_request,
+        BridgeOrderRequestParams, canonicalize_order_request_for_signer, publish_order_request,
     };
 
     #[test]
     fn canonicalize_order_request_sets_missing_buyer_and_seller_pubkeys() {
         let order = canonicalize_order_request_for_signer(
-            base_order("", "", TradeOrderStatus::Requested),
+            base_order("", ""),
             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         )
         .expect("canonicalize");
@@ -278,25 +317,10 @@ mod tests {
     }
 
     #[test]
-    fn canonicalize_order_request_rejects_non_requested_status() {
-        let err = canonicalize_order_request_for_signer(
-            base_order(
-                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                "",
-                TradeOrderStatus::Draft,
-            ),
-            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        )
-        .expect_err("status should fail");
-        assert!(err.to_string().contains("order.status"));
-    }
-
-    #[test]
     fn canonicalize_order_request_rejects_items_with_zero_bin_count() {
         let mut order = base_order(
             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             "",
-            TradeOrderStatus::Requested,
         );
         order.items[0].bin_count = 0;
         let err = canonicalize_order_request_for_signer(
@@ -308,12 +332,17 @@ mod tests {
     }
 
     #[test]
-    fn normalize_optional_string_trims_blank_values() {
-        assert_eq!(normalize_optional_string(Some("  ".to_string())), None);
-        assert_eq!(
-            normalize_optional_string(Some(" note ".to_string())),
-            Some("note".to_string())
-        );
+    fn canonicalize_order_request_drops_empty_discounts() {
+        let order = canonicalize_order_request_for_signer(
+            base_order(
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "",
+            ),
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        )
+        .expect("canonicalize");
+
+        assert_eq!(order.discounts, None);
     }
 
     #[tokio::test]
@@ -334,7 +363,7 @@ mod tests {
         .expect("state");
         let ctx = RpcContext::new(state, MethodRegistry::default());
         let params = BridgeOrderRequestParams {
-            order: base_order("", "", TradeOrderStatus::Requested),
+            order: base_order("", ""),
             signer_session_id: None,
             idempotency_key: Some("same-key".to_string()),
         };
@@ -349,7 +378,7 @@ mod tests {
         let second = publish_order_request(
             ctx,
             BridgeOrderRequestParams {
-                order: base_order("", "", TradeOrderStatus::Requested),
+                order: base_order("", ""),
                 signer_session_id: None,
                 idempotency_key: Some("same-key".to_string()),
             },
@@ -380,7 +409,7 @@ mod tests {
         publish_order_request(
             ctx.clone(),
             BridgeOrderRequestParams {
-                order: base_order("", "", TradeOrderStatus::Requested),
+                order: base_order("", ""),
                 signer_session_id: None,
                 idempotency_key: Some("same-key".to_string()),
             },
@@ -388,7 +417,7 @@ mod tests {
         .await
         .expect("first");
 
-        let mut conflicting = base_order("", "", TradeOrderStatus::Requested);
+        let mut conflicting = base_order("", "");
         conflicting.order_id = "order-2".to_string();
         let err = publish_order_request(
             ctx,
@@ -407,7 +436,7 @@ mod tests {
         "30402:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:AAAAAAAAAAAAAAAAAAAAAg"
     }
 
-    fn base_order(buyer_pubkey: &str, seller_pubkey: &str, status: TradeOrderStatus) -> TradeOrder {
+    fn base_order(buyer_pubkey: &str, seller_pubkey: &str) -> TradeOrder {
         TradeOrder {
             order_id: "order-1".to_string(),
             listing_addr: base_listing_addr().to_string(),
@@ -418,8 +447,6 @@ mod tests {
                 bin_count: 2,
             }],
             discounts: Some(Vec::<RadrootsCoreDiscountValue>::new()),
-            notes: Some("  note  ".to_string()),
-            status,
         }
     }
 }
