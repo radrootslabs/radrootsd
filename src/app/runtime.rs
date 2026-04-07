@@ -4,6 +4,7 @@ use radroots_identity::RadrootsIdentity;
 use std::time::Duration;
 use tracing::{info, warn};
 
+use crate::app::identity_storage::load_service_identity;
 use crate::app::{cli, config};
 use crate::core::Radrootsd;
 use crate::transport::jsonrpc;
@@ -266,8 +267,8 @@ pub async fn run() -> Result<()> {
 
     info!("Starting radrootsd");
 
-    let identity = RadrootsIdentity::load_or_generate(
-        args.service.identity.as_ref(),
+    let identity = load_service_identity(
+        args.service.identity.as_deref(),
         args.service.allow_generate_identity,
     )?;
     let radrootsd = Radrootsd::new(
@@ -335,6 +336,7 @@ mod tests {
     use radroots_events::kinds::KIND_LISTING;
     use radroots_identity::RadrootsIdentity;
     use radroots_nostr::prelude::RadrootsNostrMetadata;
+    use std::path::Path;
     use std::path::PathBuf;
     use std::sync::{Mutex, MutexGuard};
 
@@ -364,7 +366,14 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .expect("time")
             .as_nanos();
-        std::env::temp_dir().join(format!("radrootsd-{suffix}-{nanos}.json"))
+        std::env::temp_dir().join(format!("radrootsd-{suffix}-{nanos}.secret.json"))
+    }
+
+    fn cleanup_identity_artifacts(path: &Path) {
+        let _ = std::fs::remove_file(path);
+        let _ = std::fs::remove_file(crate::app::identity_storage::encrypted_identity_key_path(
+            path,
+        ));
     }
 
     fn args_for_identity(path: PathBuf, allow_generate: bool) -> cli::Args {
@@ -429,7 +438,7 @@ mod tests {
     #[tokio::test]
     async fn run_returns_error_when_identity_missing() {
         let _guard = test_guard();
-        let args = args_for_identity(PathBuf::from("/tmp/radrootsd-missing.json"), false);
+        let args = args_for_identity(PathBuf::from("/tmp/radrootsd-missing.secret.json"), false);
         let settings = settings_with_relays(Vec::new());
         *run_load_hook()
             .lock()
@@ -475,7 +484,7 @@ mod tests {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Ok(()));
         assert!(run().await.is_ok());
-        let _ = std::fs::remove_file(path);
+        cleanup_identity_artifacts(&path);
     }
 
     #[tokio::test]
@@ -500,7 +509,7 @@ mod tests {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Err("boom".to_string()));
         assert!(run().await.is_ok());
-        let _ = std::fs::remove_file(path);
+        cleanup_identity_artifacts(&path);
     }
 
     #[tokio::test]
@@ -521,7 +530,7 @@ mod tests {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(RunWaitOutcome::Shutdown);
         assert!(run().await.is_ok());
-        let _ = std::fs::remove_file(path);
+        cleanup_identity_artifacts(&path);
     }
 
     #[tokio::test]
@@ -536,7 +545,7 @@ mod tests {
         let err = run().await.expect_err("invalid relay should error");
         let msg = format!("{err:#}");
         assert!(!msg.is_empty());
-        let _ = std::fs::remove_file(path);
+        cleanup_identity_artifacts(&path);
     }
 
     #[tokio::test]
@@ -552,7 +561,7 @@ mod tests {
         let err = run().await.expect_err("invalid rpc addr should error");
         let msg = format!("{err:#}");
         assert!(msg.contains("invalid"));
-        let _ = std::fs::remove_file(path);
+        cleanup_identity_artifacts(&path);
     }
 
     #[tokio::test]
@@ -571,7 +580,7 @@ mod tests {
         let err = run().await.expect_err("rpc start hook should fail");
         let msg = format!("{err:#}");
         assert!(msg.contains("rpc start failed"));
-        let _ = std::fs::remove_file(path);
+        cleanup_identity_artifacts(&path);
     }
 
     #[tokio::test]
@@ -589,7 +598,7 @@ mod tests {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Ok(handle));
         assert!(run().await.is_ok());
-        let _ = std::fs::remove_file(path);
+        cleanup_identity_artifacts(&path);
     }
 
     #[tokio::test]
@@ -605,7 +614,7 @@ mod tests {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(RunWaitOutcome::Shutdown);
         assert!(run().await.is_ok());
-        let _ = std::fs::remove_file(path);
+        cleanup_identity_artifacts(&path);
     }
 
     #[test]
