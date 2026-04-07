@@ -58,6 +58,7 @@ mod tests {
         register_all(&mut root, ctx, registry).expect("register");
 
         assert!(root.method("bridge.status").is_some());
+        assert!(root.method("bridge.job.list").is_some());
         assert!(root.method("bridge.job.status").is_some());
         assert!(root.method("bridge.listing.publish").is_some());
         assert!(root.method("bridge.order.request").is_some());
@@ -138,5 +139,21 @@ mod tests {
         assert!(response.get().contains("\"published_jobs\":0"));
         assert!(response.get().contains("\"failed_jobs\":0"));
         assert!(response.get().contains("\"recovered_failed_jobs\":0"));
+    }
+
+    #[tokio::test]
+    async fn bridge_job_list_accepts_authenticated_requests() {
+        let registry = MethodRegistry::default();
+        let ctx = RpcContext::new(state(true, false), registry.clone());
+        let mut root = RpcModule::new(ctx.clone());
+        root.extensions_mut()
+            .insert(BridgeAuthorization::Authorized);
+        register_all(&mut root, ctx, registry).expect("register");
+
+        let (response, _stream) = root
+            .raw_json_request(r#"{"jsonrpc":"2.0","method":"bridge.job.list","id":1}"#, 1)
+            .await
+            .expect("request");
+        assert!(response.get().contains("\"result\":[]"));
     }
 }

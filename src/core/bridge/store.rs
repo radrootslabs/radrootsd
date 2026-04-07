@@ -245,6 +245,16 @@ impl BridgeJobStore {
             .cloned()
     }
 
+    pub fn list(&self) -> Vec<BridgeJobRecord> {
+        let inner = self.inner.read().unwrap_or_else(|e| e.into_inner());
+        inner
+            .order
+            .iter()
+            .rev()
+            .filter_map(|job_id| inner.jobs.get(job_id).cloned())
+            .collect()
+    }
+
     pub fn snapshot(&self) -> BridgeJobStoreSnapshot {
         let inner = self.inner.read().unwrap_or_else(|e| e.into_inner());
         let mut accepted_jobs = 0usize;
@@ -616,6 +626,32 @@ mod tests {
         assert_eq!(completed.attempt_count, 1);
         assert_eq!(completed.acknowledged_relay_count, 1);
         assert!(completed.completed_at_unix.is_some());
+    }
+
+    #[test]
+    fn list_returns_jobs_in_reverse_insertion_order() {
+        let store = BridgeJobStore::new(8);
+        for (job_id, fingerprint) in [("job-1", "fingerprint-1"), ("job-2", "fingerprint-2")] {
+            let job = new_listing_publish_job(
+                job_id.to_string(),
+                None,
+                "embedded_service_identity".to_string(),
+                30402,
+                Some(format!("event-{job_id}")),
+                "30402:author:listing".to_string(),
+                BridgeDeliveryPolicy::Any,
+                None,
+            );
+            store
+                .reserve(job, fingerprint.to_string())
+                .expect("reserve job");
+        }
+
+        let jobs = store.list();
+
+        assert_eq!(jobs.len(), 2);
+        assert_eq!(jobs[0].job_id, "job-2");
+        assert_eq!(jobs[1].job_id, "job-1");
     }
 
     #[test]
