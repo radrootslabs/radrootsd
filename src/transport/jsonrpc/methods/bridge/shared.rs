@@ -9,6 +9,7 @@ use crate::core::bridge::publish::BridgeRelayPublishResult;
 use crate::core::bridge::store::{
     BridgeJobRecord, BridgeJobReservation, BridgeJobStatus, BridgeJobStoreError,
 };
+use crate::core::nip46::session::Nip46SessionRole;
 use crate::transport::jsonrpc::nip46::{client as nip46_client, session as nip46_session};
 use crate::transport::jsonrpc::{RpcContext, RpcError};
 
@@ -145,6 +146,37 @@ pub(super) async fn resolve_bridge_signer(
     }
 }
 
+pub(super) async fn resolve_actor_bridge_signer(
+    ctx: &RpcContext,
+    signer_session_id: Option<&str>,
+    event_kind: u32,
+    command: &str,
+) -> Result<BridgeSignerSelection, RpcError> {
+    let session_id = signer_session_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            RpcError::Unauthorized(format!(
+                "{command} requires signer_session_id for actor-authored bridge writes"
+            ))
+        })?;
+    let session = ctx.state.nip46_sessions.get(session_id).await.ok_or_else(|| {
+        RpcError::Unauthorized(format!(
+            "{command} signer_session_id `{session_id}` was not found"
+        ))
+    })?;
+    nip46_session::require_sign_event_permission(&session, event_kind).map_err(|error| {
+        RpcError::Unauthorized(format!(
+            "{command} signer_session_id `{session_id}` {}",
+            error
+        ))
+    })?;
+    Ok(BridgeSignerSelection::Nip46Session {
+        session_id: session_id.to_string(),
+        session,
+    })
+}
+
 pub(super) async fn sign_bridge_event_builder(
     ctx: &RpcContext,
     signer: &BridgeSignerSelection,
@@ -158,10 +190,15 @@ pub(super) async fn sign_bridge_event_builder(
             .sign_event_builder(builder)
             .map(|signed| signed.event)
             .map_err(|error| RpcError::Other(format!("failed to sign {label} event: {error}"))),
-        BridgeSignerSelection::Nip46Session { session, .. } => {
-            let unsigned = builder.build(session.remote_signer_pubkey);
-            nip46_client::sign_event(session, unsigned, label).await
-        }
+        BridgeSignerSelection::Nip46Session { session, .. } => match session.role() {
+            Nip46SessionRole::InboundLocalSigner => builder
+                .sign_with_keys(&session.client_keys)
+                .map_err(|error| RpcError::Other(format!("failed to sign {label} event: {error}"))),
+            Nip46SessionRole::OutboundRemoteSigner => {
+                let unsigned = builder.build(session.remote_signer_pubkey);
+                nip46_client::sign_event(session, unsigned, label).await
+            }
+        },
     }
 }
 
@@ -229,7 +266,8 @@ mod tests {
     use crate::transport::jsonrpc::{MethodRegistry, RpcContext};
 
     use super::{
-        BridgeJobView, fingerprint_bridge_request, normalize_idempotency_key, resolve_bridge_signer,
+        BridgeJobView, fingerprint_bridge_request, normalize_idempotency_key,
+        resolve_actor_bridge_signer, resolve_bridge_signer,
     };
     use std::time::Instant;
 
@@ -283,6 +321,80 @@ mod tests {
             session_keys.public_key().to_hex()
         );
         assert_eq!(signer.signer_mode(), "nip46_session:session-1");
+    }
+
+    #[tokio::test]
+    async fn resolve_actor_bridge_signer_rejects_missing_session_id() {
+        let identity = RadrootsIdentity::generate();
+        let metadata: RadrootsNostrMetadata =
+            serde_json::from_str(r#"{"name":"radrootsd-test"}"#).expect("metadata");
+        let state = Radrootsd::new(
+            identity,
+            metadata,
+            BridgeConfig::default(),
+            Nip46Config::default(),
+        )
+        .expect("state");
+        let ctx = RpcContext::new(state, MethodRegistry::default());
+
+        let err = match resolve_actor_bridge_signer(&ctx, None, 30402, "bridge.listing.publish")
+            .await
+        {
+            Ok(_) => panic!("expected missing session to fail"),
+            Err(err) => err,
+        };
+        assert!(err.to_string().contains("requires signer_session_id"));
+    }
+
+    #[tokio::test]
+    async fn resolve_actor_bridge_signer_rejects_sign_event_permission_gap() {
+        let identity = RadrootsIdentity::generate();
+        let metadata: RadrootsNostrMetadata =
+            serde_json::from_str(r#"{"name":"radrootsd-test"}"#).expect("metadata");
+        let state = Radrootsd::new(
+            identity.clone(),
+            metadata,
+            BridgeConfig::default(),
+            Nip46Config::default(),
+        )
+        .expect("state");
+        let session_keys = RadrootsNostrKeys::generate();
+        state
+            .nip46_sessions
+            .insert(Nip46Session {
+                id: "session-1".to_string(),
+                client: RadrootsNostrClient::new(session_keys.clone()),
+                client_keys: session_keys.clone(),
+                client_pubkey: session_keys.public_key(),
+                remote_signer_pubkey: session_keys.public_key(),
+                user_pubkey: None,
+                relays: vec!["wss://relay.example.com".to_string()],
+                perms: vec!["nip04_encrypt".to_string()],
+                name: None,
+                url: None,
+                image: None,
+                expires_at: Some(Instant::now() + std::time::Duration::from_secs(60)),
+                auth_required: false,
+                authorized: true,
+                auth_url: None,
+                pending_request: None,
+            })
+            .await;
+        let ctx = RpcContext::new(state, MethodRegistry::default());
+
+        let err = match resolve_actor_bridge_signer(
+            &ctx,
+            Some("session-1"),
+            30402,
+            "bridge.listing.publish",
+        )
+        .await
+        {
+            Ok(_) => panic!("expected permission gap to fail"),
+            Err(err) => err,
+        };
+        assert!(err.to_string().contains("unauthorized"));
+        assert!(err.to_string().contains("sign_event:30402"));
     }
 
     #[test]

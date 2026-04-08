@@ -16,9 +16,8 @@ use crate::core::bridge::publish::{
 use crate::core::bridge::store::new_listing_publish_job;
 use crate::transport::jsonrpc::auth::require_bridge_auth;
 use crate::transport::jsonrpc::methods::bridge::shared::{
-    BridgePublishResponse, ensure_bridge_enabled, fingerprint_bridge_request,
-    normalize_idempotency_key, reserve_bridge_job, resolve_bridge_signer,
-    sign_bridge_event_builder,
+    BridgePublishResponse, ensure_bridge_enabled, fingerprint_bridge_request, normalize_idempotency_key,
+    reserve_bridge_job, resolve_actor_bridge_signer, sign_bridge_event_builder,
 };
 use crate::transport::jsonrpc::{MethodRegistry, RpcContext, RpcError};
 
@@ -62,7 +61,13 @@ async fn publish_listing(
     ensure_bridge_enabled(&ctx)?;
     let idempotency_key = normalize_idempotency_key(params.idempotency_key)?;
     let kind = resolve_listing_kind(params.kind)?;
-    let signer = resolve_bridge_signer(&ctx, params.signer_session_id.as_deref(), kind).await?;
+    let signer = resolve_actor_bridge_signer(
+        &ctx,
+        params.signer_session_id.as_deref(),
+        kind,
+        "bridge.listing.publish",
+    )
+    .await?;
     let signer_pubkey = signer.signer_pubkey_hex();
     let listing = canonicalize_listing_for_signer(params.listing, signer_pubkey.as_str());
     let canonical = CanonicalBridgeListingPublishRequest { kind, listing };
@@ -189,10 +194,14 @@ mod tests {
     };
     use radroots_events_codec::listing::encode::to_wire_parts_with_kind;
     use radroots_identity::RadrootsIdentity;
-    use radroots_nostr::prelude::RadrootsNostrMetadata;
+    use radroots_nostr::prelude::{
+        RadrootsNostrClient, RadrootsNostrKeys, RadrootsNostrMetadata, radroots_nostr_parse_pubkey,
+    };
+    use std::time::Instant;
 
     use crate::app::config::{BridgeConfig, Nip46Config};
     use crate::core::Radrootsd;
+    use crate::core::nip46::session::Nip46Session;
     use crate::transport::jsonrpc::{MethodRegistry, RpcContext};
 
     use super::{
@@ -234,10 +243,11 @@ mod tests {
         )
         .expect("state");
         let ctx = RpcContext::new(state, MethodRegistry::default());
+        let session_id = insert_signer_session(&ctx, "session-1").await;
         let params = BridgeListingPublishParams {
             listing: base_listing(),
             kind: None,
-            signer_session_id: None,
+            signer_session_id: Some(session_id.clone()),
             idempotency_key: Some("same-key".to_string()),
         };
 
@@ -251,7 +261,7 @@ mod tests {
             BridgeListingPublishParams {
                 listing: base_listing(),
                 kind: None,
-                signer_session_id: None,
+                signer_session_id: Some(session_id),
                 idempotency_key: Some("same-key".to_string()),
             },
         )
@@ -278,6 +288,7 @@ mod tests {
         )
         .expect("state");
         let ctx = RpcContext::new(state, MethodRegistry::default());
+        let session_id = insert_signer_session(&ctx, "session-1").await;
         let mut listing = base_listing();
         listing.farm.pubkey =
             "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string();
@@ -286,7 +297,7 @@ mod tests {
             BridgeListingPublishParams {
                 listing,
                 kind: None,
-                signer_session_id: None,
+                signer_session_id: Some(session_id),
                 idempotency_key: Some("bad-listing".to_string()),
             },
         )
@@ -313,13 +324,14 @@ mod tests {
         )
         .expect("state");
         let ctx = RpcContext::new(state, MethodRegistry::default());
+        let session_id = insert_signer_session(&ctx, "session-1").await;
 
         let response = publish_listing(
             ctx,
             BridgeListingPublishParams {
                 listing: base_listing(),
                 kind: Some(KIND_LISTING_DRAFT),
-                signer_session_id: None,
+                signer_session_id: Some(session_id),
                 idempotency_key: Some("draft-kind".to_string()),
             },
         )
@@ -334,6 +346,67 @@ mod tests {
                 .as_deref()
                 .is_some_and(|addr| addr.starts_with("30403:"))
         );
+    }
+
+    #[tokio::test]
+    async fn publish_listing_rejects_missing_signer_session() {
+        let identity = RadrootsIdentity::generate();
+        let metadata: RadrootsNostrMetadata =
+            serde_json::from_str(r#"{"name":"radrootsd-test"}"#).expect("metadata");
+        let state = Radrootsd::new(
+            identity,
+            metadata,
+            BridgeConfig {
+                enabled: true,
+                bearer_token: Some("secret".to_string()),
+                ..BridgeConfig::default()
+            },
+            Nip46Config::default(),
+        )
+        .expect("state");
+        let ctx = RpcContext::new(state, MethodRegistry::default());
+
+        let err = publish_listing(
+            ctx,
+            BridgeListingPublishParams {
+                listing: base_listing(),
+                kind: None,
+                signer_session_id: None,
+                idempotency_key: Some("missing-session".to_string()),
+            },
+        )
+        .await
+        .expect_err("missing session rejected");
+        assert!(err.to_string().contains("requires signer_session_id"));
+    }
+
+    async fn insert_signer_session(ctx: &RpcContext, session_id: &str) -> String {
+        let signer_keys = RadrootsNostrKeys::generate();
+        let signer_pubkey = signer_keys.public_key().to_hex();
+        let remote_signer_pubkey =
+            radroots_nostr_parse_pubkey(signer_pubkey.as_str()).expect("signer pubkey");
+        let client = RadrootsNostrClient::new(signer_keys.clone());
+        let client_keys = signer_keys.clone();
+        let client_pubkey = client_keys.public_key();
+        ctx.state.nip46_sessions.insert(Nip46Session {
+            id: session_id.to_string(),
+            client,
+            client_keys,
+            client_pubkey,
+            remote_signer_pubkey,
+            user_pubkey: None,
+            relays: Vec::new(),
+            perms: vec!["sign_event".to_string()],
+            name: None,
+            url: None,
+            image: None,
+            expires_at: Some(Instant::now() + std::time::Duration::from_secs(60)),
+            auth_required: false,
+            authorized: true,
+            auth_url: None,
+            pending_request: None,
+        }).await;
+        session_id.to_string()
     }
 
     fn base_listing() -> RadrootsListing {
