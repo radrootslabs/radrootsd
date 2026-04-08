@@ -31,6 +31,7 @@ radroots-identity = { workspace = true }
 radroots-nostr = { workspace = true, features = ["client", "codec", "events", "http"] }
 radroots-nostr-signer = { workspace = true }
 radroots-runtime = { workspace = true, features = ["cli"] }
+radroots-runtime-paths = { path = "../lib/crates/runtime-paths" }
 radroots-trade = { workspace = true }
 nostr = { version = "0.44.2", features = ["nip46"] }
 

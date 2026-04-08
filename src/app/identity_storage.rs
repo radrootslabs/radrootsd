@@ -40,8 +40,10 @@ pub fn load_encrypted_identity(path: impl AsRef<Path>) -> Result<RadrootsIdentit
 }
 
 fn resolved_identity_path(path: Option<&Path>) -> PathBuf {
-    path.map(Path::to_path_buf)
-        .unwrap_or_else(|| PathBuf::from(radroots_runtime::DEFAULT_SERVICE_IDENTITY_PATH))
+    path.map(Path::to_path_buf).unwrap_or_else(|| {
+        crate::app::config::default_identity_path_for_process()
+            .expect("resolve canonical radrootsd identity path")
+    })
 }
 
 #[cfg(test)]

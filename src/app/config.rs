@@ -1,8 +1,18 @@
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use radroots_nostr::prelude::RadrootsNostrMetadata;
 use radroots_runtime::RadrootsNostrServiceConfig;
+use radroots_runtime_paths::{
+    DEFAULT_CONFIG_FILE_NAME, DEFAULT_SERVICE_IDENTITY_FILE_NAME, RadrootsPathOverrides,
+    RadrootsPathProfile, RadrootsPathResolver, RadrootsRuntimeNamespace,
+};
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+const RADROOTSD_RUNTIME_ID: &str = "radrootsd";
+const BRIDGE_STATE_DIR_NAME: &str = "bridge";
+const BRIDGE_STATE_FILE_NAME: &str = "bridge-jobs.json";
+const RADROOTSD_PATHS_PROFILE_ENV: &str = "RADROOTSD_PATHS_PROFILE";
+const RADROOTSD_PATHS_REPO_LOCAL_ROOT_ENV: &str = "RADROOTSD_PATHS_REPO_LOCAL_ROOT";
 
 fn default_rpc_addr() -> String {
     "127.0.0.1:7070".to_string()
@@ -69,7 +79,240 @@ fn default_bridge_job_status_retention() -> usize {
 }
 
 fn default_bridge_state_path() -> PathBuf {
-    PathBuf::from("state/bridge-jobs.json")
+    default_runtime_paths_for_process()
+        .expect("resolve canonical radrootsd runtime paths")
+        .bridge_state_path
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RadrootsdRuntimePaths {
+    config_path: PathBuf,
+    logs_dir: PathBuf,
+    identity_path: PathBuf,
+    bridge_state_path: PathBuf,
+}
+
+#[derive(Debug, Deserialize, Clone, Default)]
+struct RawServiceConfig {
+    #[serde(default)]
+    pub logs_dir: Option<String>,
+    #[serde(default)]
+    pub relays: Vec<String>,
+    #[serde(default)]
+    pub nip89_identifier: Option<String>,
+    #[serde(default)]
+    pub nip89_extra_tags: Vec<Vec<String>>,
+}
+
+impl RawServiceConfig {
+    fn into_service_config(self, paths: &RadrootsdRuntimePaths) -> RadrootsNostrServiceConfig {
+        RadrootsNostrServiceConfig {
+            logs_dir: self
+                .logs_dir
+                .unwrap_or_else(|| paths.logs_dir.display().to_string()),
+            relays: self.relays,
+            nip89_identifier: self.nip89_identifier,
+            nip89_extra_tags: self.nip89_extra_tags,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Clone)]
+struct RawBridgeConfig {
+    #[serde(default = "default_bridge_enabled")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub bearer_token: Option<String>,
+    #[serde(default = "default_bridge_connect_timeout_secs")]
+    pub connect_timeout_secs: u64,
+    #[serde(default = "default_bridge_delivery_policy")]
+    pub delivery_policy: BridgeDeliveryPolicy,
+    #[serde(default)]
+    pub delivery_quorum: Option<usize>,
+    #[serde(default = "default_bridge_publish_max_attempts")]
+    pub publish_max_attempts: usize,
+    #[serde(default = "default_bridge_publish_initial_backoff_millis")]
+    pub publish_initial_backoff_millis: u64,
+    #[serde(default = "default_bridge_publish_max_backoff_millis")]
+    pub publish_max_backoff_millis: u64,
+    #[serde(default = "default_bridge_job_status_retention")]
+    pub job_status_retention: usize,
+    #[serde(default)]
+    pub state_path: Option<PathBuf>,
+}
+
+impl Default for RawBridgeConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_bridge_enabled(),
+            bearer_token: None,
+            connect_timeout_secs: default_bridge_connect_timeout_secs(),
+            delivery_policy: default_bridge_delivery_policy(),
+            delivery_quorum: None,
+            publish_max_attempts: default_bridge_publish_max_attempts(),
+            publish_initial_backoff_millis: default_bridge_publish_initial_backoff_millis(),
+            publish_max_backoff_millis: default_bridge_publish_max_backoff_millis(),
+            job_status_retention: default_bridge_job_status_retention(),
+            state_path: None,
+        }
+    }
+}
+
+impl RawBridgeConfig {
+    fn into_bridge_config(self, paths: &RadrootsdRuntimePaths) -> BridgeConfig {
+        BridgeConfig {
+            enabled: self.enabled,
+            bearer_token: self.bearer_token,
+            connect_timeout_secs: self.connect_timeout_secs,
+            delivery_policy: self.delivery_policy,
+            delivery_quorum: self.delivery_quorum,
+            publish_max_attempts: self.publish_max_attempts,
+            publish_initial_backoff_millis: self.publish_initial_backoff_millis,
+            publish_max_backoff_millis: self.publish_max_backoff_millis,
+            job_status_retention: self.job_status_retention,
+            state_path: self
+                .state_path
+                .unwrap_or_else(|| paths.bridge_state_path.clone()),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Clone)]
+struct RawConfiguration {
+    #[serde(flatten)]
+    pub service: RawServiceConfig,
+    #[serde(default)]
+    pub rpc: RpcConfig,
+    #[serde(default)]
+    pub rpc_addr: Option<String>,
+    #[serde(default)]
+    pub nip46: Nip46Config,
+    #[serde(default)]
+    pub bridge: RawBridgeConfig,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+struct RawSettings {
+    pub metadata: RadrootsNostrMetadata,
+    pub config: RawConfiguration,
+}
+
+impl RawSettings {
+    fn into_settings(self, paths: &RadrootsdRuntimePaths) -> Settings {
+        Settings {
+            metadata: self.metadata,
+            config: Configuration {
+                service: self.config.service.into_service_config(paths),
+                rpc: self.config.rpc,
+                rpc_addr: self.config.rpc_addr,
+                nip46: self.config.nip46,
+                bridge: self.config.bridge.into_bridge_config(paths),
+            },
+        }
+    }
+}
+
+fn parse_path_profile(value: &str) -> Result<RadrootsPathProfile> {
+    match value {
+        "interactive_user" => Ok(RadrootsPathProfile::InteractiveUser),
+        "service_host" => Ok(RadrootsPathProfile::ServiceHost),
+        "repo_local" => Ok(RadrootsPathProfile::RepoLocal),
+        _ => bail!(
+            "{RADROOTSD_PATHS_PROFILE_ENV} must be `interactive_user`, `service_host`, or `repo_local`"
+        ),
+    }
+}
+
+fn process_path_selection() -> Result<(RadrootsPathProfile, Option<PathBuf>)> {
+    let profile = match std::env::var(RADROOTSD_PATHS_PROFILE_ENV) {
+        Ok(value) => parse_path_profile(&value)?,
+        Err(std::env::VarError::NotPresent) => RadrootsPathProfile::InteractiveUser,
+        Err(std::env::VarError::NotUnicode(_)) => {
+            bail!("{RADROOTSD_PATHS_PROFILE_ENV} must be valid utf-8 when set")
+        }
+    };
+    let repo_local_root = std::env::var_os(RADROOTSD_PATHS_REPO_LOCAL_ROOT_ENV).map(PathBuf::from);
+    Ok((profile, repo_local_root))
+}
+
+fn path_overrides_for(
+    profile: RadrootsPathProfile,
+    repo_local_root: Option<&Path>,
+) -> Result<RadrootsPathOverrides> {
+    match profile {
+        RadrootsPathProfile::RepoLocal => {
+            let repo_local_root = repo_local_root.context(format!(
+                "{RADROOTSD_PATHS_REPO_LOCAL_ROOT_ENV} must be set when {RADROOTSD_PATHS_PROFILE_ENV}=repo_local"
+            ))?;
+            Ok(RadrootsPathOverrides::repo_local(repo_local_root))
+        }
+        _ => Ok(RadrootsPathOverrides::default()),
+    }
+}
+
+fn resolve_runtime_paths_with_resolver(
+    resolver: &RadrootsPathResolver,
+    profile: RadrootsPathProfile,
+    repo_local_root: Option<&Path>,
+) -> Result<RadrootsdRuntimePaths> {
+    let namespace = RadrootsRuntimeNamespace::service(RADROOTSD_RUNTIME_ID)
+        .map_err(|error| anyhow::anyhow!("resolve radrootsd namespace: {error}"))?;
+    let overrides = path_overrides_for(profile, repo_local_root)?;
+    let namespaced = resolver
+        .resolve(profile, &overrides)
+        .map_err(|error| anyhow::anyhow!("resolve radrootsd runtime paths: {error}"))?
+        .namespaced(&namespace);
+    Ok(RadrootsdRuntimePaths {
+        config_path: namespaced.config.join(DEFAULT_CONFIG_FILE_NAME),
+        logs_dir: namespaced.logs,
+        identity_path: namespaced.secrets.join(DEFAULT_SERVICE_IDENTITY_FILE_NAME),
+        bridge_state_path: namespaced
+            .data
+            .join(BRIDGE_STATE_DIR_NAME)
+            .join(BRIDGE_STATE_FILE_NAME),
+    })
+}
+
+fn default_runtime_paths_for_process() -> Result<RadrootsdRuntimePaths> {
+    let (profile, repo_local_root) = process_path_selection()?;
+    resolve_runtime_paths_with_resolver(
+        &RadrootsPathResolver::current(),
+        profile,
+        repo_local_root.as_deref(),
+    )
+}
+
+pub fn default_config_path_for_process() -> Result<PathBuf> {
+    Ok(default_runtime_paths_for_process()?.config_path)
+}
+
+pub fn default_identity_path_for_process() -> Result<PathBuf> {
+    Ok(default_runtime_paths_for_process()?.identity_path)
+}
+
+fn load_settings_from_path_with_resolver(
+    path: &Path,
+    resolver: &RadrootsPathResolver,
+    profile: RadrootsPathProfile,
+    repo_local_root: Option<&Path>,
+) -> Result<Settings> {
+    let raw: RawSettings = radroots_runtime::load_required_file(path)
+        .with_context(|| format!("load configuration from {}", path.display()))?;
+    let paths = resolve_runtime_paths_with_resolver(resolver, profile, repo_local_root)?;
+    let settings = raw.into_settings(&paths);
+    settings.validate()?;
+    Ok(settings)
+}
+
+pub fn load_settings_from_path(path: impl AsRef<Path>) -> Result<Settings> {
+    let path = path.as_ref();
+    let (profile, repo_local_root) = process_path_selection()?;
+    load_settings_from_path_with_resolver(
+        path,
+        &RadrootsPathResolver::current(),
+        profile,
+        repo_local_root.as_deref(),
+    )
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -233,14 +476,44 @@ pub struct Settings {
     pub config: Configuration,
 }
 
+impl Settings {
+    pub fn validate(&self) -> Result<()> {
+        self.config.validate()
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{BridgeConfig, BridgeDeliveryPolicy, Configuration, Nip46Config, RpcConfig};
+    use std::path::PathBuf;
+
+    use super::{
+        BridgeConfig, BridgeDeliveryPolicy, Configuration, Nip46Config, RpcConfig,
+        load_settings_from_path_with_resolver, resolve_runtime_paths_with_resolver,
+    };
     use radroots_runtime::RadrootsNostrServiceConfig;
+    use radroots_runtime_paths::{
+        RadrootsHostEnvironment, RadrootsPathProfile, RadrootsPathResolver, RadrootsPlatform,
+    };
+
+    fn linux_resolver(home: &str) -> RadrootsPathResolver {
+        RadrootsPathResolver::new(
+            RadrootsPlatform::Linux,
+            RadrootsHostEnvironment {
+                home_dir: Some(PathBuf::from(home)),
+                ..RadrootsHostEnvironment::default()
+            },
+        )
+    }
 
     fn service_config() -> RadrootsNostrServiceConfig {
+        let paths = resolve_runtime_paths_with_resolver(
+            &linux_resolver("/home/treesap"),
+            RadrootsPathProfile::InteractiveUser,
+            None,
+        )
+        .expect("resolve interactive-user paths");
         RadrootsNostrServiceConfig {
-            logs_dir: "logs".to_string(),
+            logs_dir: paths.logs_dir.display().to_string(),
             relays: Vec::new(),
             nip89_identifier: Some("radrootsd".to_string()),
             nip89_extra_tags: Vec::new(),
@@ -270,6 +543,8 @@ mod tests {
 
     #[test]
     fn bridge_defaults_are_expected() {
+        let paths =
+            super::default_runtime_paths_for_process().expect("resolve process runtime paths");
         let cfg = BridgeConfig::default();
         assert!(!cfg.enabled);
         assert!(cfg.bearer_token.is_none());
@@ -280,6 +555,7 @@ mod tests {
         assert_eq!(cfg.publish_initial_backoff_millis, 250);
         assert_eq!(cfg.publish_max_backoff_millis, 2_000);
         assert_eq!(cfg.job_status_retention, 256);
+        assert_eq!(cfg.state_path, paths.bridge_state_path);
     }
 
     #[test]
@@ -319,5 +595,106 @@ mod tests {
         }
         .validate()
         .expect("valid bridge config");
+    }
+
+    #[test]
+    fn runtime_paths_follow_interactive_user_contract() {
+        let paths = resolve_runtime_paths_with_resolver(
+            &linux_resolver("/home/treesap"),
+            RadrootsPathProfile::InteractiveUser,
+            None,
+        )
+        .expect("resolve interactive-user paths");
+
+        assert_eq!(
+            paths.config_path,
+            PathBuf::from("/home/treesap/.radroots/config/services/radrootsd/config.toml")
+        );
+        assert_eq!(
+            paths.logs_dir,
+            PathBuf::from("/home/treesap/.radroots/logs/services/radrootsd")
+        );
+        assert_eq!(
+            paths.identity_path,
+            PathBuf::from(
+                "/home/treesap/.radroots/secrets/services/radrootsd/identity.secret.json"
+            )
+        );
+        assert_eq!(
+            paths.bridge_state_path,
+            PathBuf::from(
+                "/home/treesap/.radroots/data/services/radrootsd/bridge/bridge-jobs.json"
+            )
+        );
+    }
+
+    #[test]
+    fn runtime_paths_follow_service_host_contract() {
+        let paths = resolve_runtime_paths_with_resolver(
+            &linux_resolver("/home/treesap"),
+            RadrootsPathProfile::ServiceHost,
+            None,
+        )
+        .expect("resolve service-host paths");
+
+        assert_eq!(
+            paths.config_path,
+            PathBuf::from("/etc/radroots/services/radrootsd/config.toml")
+        );
+        assert_eq!(
+            paths.logs_dir,
+            PathBuf::from("/var/log/radroots/services/radrootsd")
+        );
+        assert_eq!(
+            paths.identity_path,
+            PathBuf::from("/etc/radroots/secrets/services/radrootsd/identity.secret.json")
+        );
+        assert_eq!(
+            paths.bridge_state_path,
+            PathBuf::from("/var/lib/radroots/services/radrootsd/bridge/bridge-jobs.json")
+        );
+    }
+
+    #[test]
+    fn load_settings_materializes_profile_defaults_when_paths_are_omitted() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let config_path = temp.path().join("radrootsd.toml");
+        std::fs::write(
+            &config_path,
+            r#"
+[metadata]
+name = "radrootsd-test"
+
+[config]
+relays = ["ws://127.0.0.1:8080"]
+
+[config.rpc]
+addr = "127.0.0.1:7070"
+
+[config.bridge]
+enabled = true
+bearer_token = "change-me"
+"#,
+        )
+        .expect("write config");
+
+        let settings = load_settings_from_path_with_resolver(
+            &config_path,
+            &linux_resolver("/home/treesap"),
+            RadrootsPathProfile::InteractiveUser,
+            None,
+        )
+        .expect("load settings");
+
+        assert_eq!(
+            settings.config.service.logs_dir,
+            "/home/treesap/.radroots/logs/services/radrootsd"
+        );
+        assert_eq!(
+            settings.config.bridge.state_path,
+            PathBuf::from(
+                "/home/treesap/.radroots/data/services/radrootsd/bridge/bridge-jobs.json"
+            )
+        );
     }
 }

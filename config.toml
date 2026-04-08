@@ -1,3 +1,9 @@
+# canonical service-host sample:
+#   copy to /etc/radroots/services/radrootsd/config.toml
+#   launch with RADROOTSD_PATHS_PROFILE=service_host
+# manual operator runs may instead place the same file at:
+#   ~/.radroots/config/services/radrootsd/config.toml
+
 [metadata]
 name = "radrootsd"
 # display_name = ""
@@ -10,7 +16,6 @@ name = "radrootsd"
 # lud16 = ""
 
 [config]
-logs_dir = "logs"
 relays = [
   "ws://127.0.0.1:8080"
 ]
@@ -21,7 +26,6 @@ addr = "127.0.0.1:7070"
 [config.bridge]
 enabled = true
 bearer_token = "change-me"
-state_path = "state/bridge-jobs.json"
 delivery_policy = "any"
 publish_max_attempts = 2
 

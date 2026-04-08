@@ -12,6 +12,8 @@ use crate::transport::jsonrpc;
 use crate::transport::nostr::listener::spawn_nip46_listener;
 #[cfg(not(test))]
 use anyhow::Context;
+#[cfg(not(test))]
+use clap::Parser;
 use radroots_events::kinds::KIND_LISTING;
 use radroots_events::profile::RadrootsProfileType;
 use radroots_nostr::prelude::{
@@ -111,12 +113,19 @@ fn load_args_and_settings() -> Result<(cli::Args, config::Settings)> {
     }
 
     #[cfg(not(test))]
-    radroots_runtime::parse_and_load_path_with_init(
-        |a: &cli::Args| Some(a.service.config.as_path()),
-        |cfg: &config::Settings| cfg.config.service.logs_dir.as_str(),
-        None,
-    )
-    .context("load configuration")
+    {
+        let args = cli::Args::try_parse().map_err(radroots_runtime::RuntimeCliError::from)?;
+        let config_path = args
+            .service
+            .config
+            .clone()
+            .map(Ok)
+            .unwrap_or_else(config::default_config_path_for_process)?;
+        let settings =
+            config::load_settings_from_path(&config_path).context("load configuration")?;
+        radroots_runtime::init_with(settings.config.service.logs_dir.as_str(), None)?;
+        Ok((args, settings))
+    }
 }
 
 #[cfg_attr(coverage_nightly, coverage(off))]
@@ -379,7 +388,7 @@ mod tests {
     fn args_for_identity(path: PathBuf, allow_generate: bool) -> cli::Args {
         cli::Args {
             service: radroots_runtime::RadrootsServiceCliArgs {
-                config: PathBuf::from("config.toml"),
+                config: Some(PathBuf::from("config.toml")),
                 identity: Some(path),
                 allow_generate_identity: allow_generate,
             },
