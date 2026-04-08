@@ -656,6 +656,34 @@ mod tests {
     }
 
     #[test]
+    fn runtime_paths_follow_repo_local_contract() {
+        let repo_local_root = PathBuf::from("/repo/.local/radroots/dev/radrootsd");
+        let paths = resolve_runtime_paths_with_resolver(
+            &linux_resolver("/home/treesap"),
+            RadrootsPathProfile::RepoLocal,
+            Some(repo_local_root.as_path()),
+        )
+        .expect("resolve repo-local paths");
+
+        assert_eq!(
+            paths.config_path,
+            repo_local_root.join("config/services/radrootsd/config.toml")
+        );
+        assert_eq!(
+            paths.logs_dir,
+            repo_local_root.join("logs/services/radrootsd")
+        );
+        assert_eq!(
+            paths.identity_path,
+            repo_local_root.join("secrets/services/radrootsd/identity.secret.json")
+        );
+        assert_eq!(
+            paths.bridge_state_path,
+            repo_local_root.join("data/services/radrootsd/bridge/bridge-jobs.json")
+        );
+    }
+
+    #[test]
     fn load_settings_materializes_profile_defaults_when_paths_are_omitted() {
         let temp = tempfile::tempdir().expect("tempdir");
         let config_path = temp.path().join("radrootsd.toml");
