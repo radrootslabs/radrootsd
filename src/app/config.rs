@@ -13,6 +13,9 @@ const BRIDGE_STATE_DIR_NAME: &str = "bridge";
 const BRIDGE_STATE_FILE_NAME: &str = "bridge-jobs.json";
 const RADROOTSD_PATHS_PROFILE_ENV: &str = "RADROOTSD_PATHS_PROFILE";
 const RADROOTSD_PATHS_REPO_LOCAL_ROOT_ENV: &str = "RADROOTSD_PATHS_REPO_LOCAL_ROOT";
+const RADROOTSD_DEFAULT_SHARED_SECRET_BACKEND: &str = "encrypted_file";
+const RADROOTSD_ALLOWED_PROFILES: [&str; 3] = ["interactive_user", "service_host", "repo_local"];
+const RADROOTSD_ALLOWED_SHARED_SECRET_BACKENDS: [&str; 1] = ["encrypted_file"];
 
 fn default_rpc_addr() -> String {
     "127.0.0.1:7070".to_string()
@@ -90,6 +93,18 @@ struct RadrootsdRuntimePaths {
     logs_dir: PathBuf,
     identity_path: PathBuf,
     bridge_state_path: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RadrootsdRuntimeContractOutput {
+    pub active_profile: String,
+    pub allowed_profiles: Vec<String>,
+    pub default_shared_secret_backend: String,
+    pub allowed_shared_secret_backends: Vec<String>,
+    pub canonical_config_path: PathBuf,
+    pub canonical_logs_dir: PathBuf,
+    pub canonical_identity_path: PathBuf,
+    pub canonical_bridge_state_path: PathBuf,
 }
 
 #[derive(Debug, Deserialize, Clone, Default)]
@@ -288,6 +303,39 @@ pub fn default_config_path_for_process() -> Result<PathBuf> {
 
 pub fn default_identity_path_for_process() -> Result<PathBuf> {
     Ok(default_runtime_paths_for_process()?.identity_path)
+}
+
+pub fn runtime_contract_for_process() -> Result<RadrootsdRuntimeContractOutput> {
+    let (profile, repo_local_root) = process_path_selection()?;
+    runtime_contract_with_resolver(
+        &RadrootsPathResolver::current(),
+        profile,
+        repo_local_root.as_deref(),
+    )
+}
+
+fn runtime_contract_with_resolver(
+    resolver: &RadrootsPathResolver,
+    profile: RadrootsPathProfile,
+    repo_local_root: Option<&Path>,
+) -> Result<RadrootsdRuntimeContractOutput> {
+    let paths = resolve_runtime_paths_with_resolver(resolver, profile, repo_local_root)?;
+    Ok(RadrootsdRuntimeContractOutput {
+        active_profile: profile.to_string(),
+        allowed_profiles: RADROOTSD_ALLOWED_PROFILES
+            .into_iter()
+            .map(str::to_owned)
+            .collect(),
+        default_shared_secret_backend: RADROOTSD_DEFAULT_SHARED_SECRET_BACKEND.to_owned(),
+        allowed_shared_secret_backends: RADROOTSD_ALLOWED_SHARED_SECRET_BACKENDS
+            .into_iter()
+            .map(str::to_owned)
+            .collect(),
+        canonical_config_path: paths.config_path,
+        canonical_logs_dir: paths.logs_dir,
+        canonical_identity_path: paths.identity_path,
+        canonical_bridge_state_path: paths.bridge_state_path,
+    })
 }
 
 fn load_settings_from_path_with_resolver(
@@ -489,6 +537,7 @@ mod tests {
     use super::{
         BridgeConfig, BridgeDeliveryPolicy, Configuration, Nip46Config, RpcConfig,
         load_settings_from_path_with_resolver, resolve_runtime_paths_with_resolver,
+        runtime_contract_with_resolver,
     };
     use radroots_runtime::RadrootsNostrServiceConfig;
     use radroots_runtime_paths::{
@@ -723,6 +772,79 @@ bearer_token = "change-me"
             PathBuf::from(
                 "/home/treesap/.radroots/data/services/radrootsd/bridge/bridge-jobs.json"
             )
+        );
+    }
+
+    #[test]
+    fn runtime_contract_output_matches_interactive_user_contract() {
+        let contract = runtime_contract_with_resolver(
+            &linux_resolver("/home/treesap"),
+            RadrootsPathProfile::InteractiveUser,
+            None,
+        )
+        .expect("interactive-user contract");
+
+        assert_eq!(contract.active_profile, "interactive_user");
+        assert_eq!(
+            contract.allowed_profiles,
+            vec![
+                "interactive_user".to_owned(),
+                "service_host".to_owned(),
+                "repo_local".to_owned(),
+            ]
+        );
+        assert_eq!(contract.default_shared_secret_backend, "encrypted_file");
+        assert_eq!(
+            contract.allowed_shared_secret_backends,
+            vec!["encrypted_file".to_owned()]
+        );
+        assert_eq!(
+            contract.canonical_config_path,
+            PathBuf::from("/home/treesap/.radroots/config/services/radrootsd/config.toml")
+        );
+        assert_eq!(
+            contract.canonical_logs_dir,
+            PathBuf::from("/home/treesap/.radroots/logs/services/radrootsd")
+        );
+        assert_eq!(
+            contract.canonical_identity_path,
+            PathBuf::from(
+                "/home/treesap/.radroots/secrets/services/radrootsd/identity.secret.json"
+            )
+        );
+        assert_eq!(
+            contract.canonical_bridge_state_path,
+            PathBuf::from(
+                "/home/treesap/.radroots/data/services/radrootsd/bridge/bridge-jobs.json"
+            )
+        );
+    }
+
+    #[test]
+    fn runtime_contract_output_matches_service_host_contract() {
+        let contract = runtime_contract_with_resolver(
+            &linux_resolver("/home/treesap"),
+            RadrootsPathProfile::ServiceHost,
+            None,
+        )
+        .expect("service-host contract");
+
+        assert_eq!(contract.active_profile, "service_host");
+        assert_eq!(
+            contract.canonical_config_path,
+            PathBuf::from("/etc/radroots/services/radrootsd/config.toml")
+        );
+        assert_eq!(
+            contract.canonical_logs_dir,
+            PathBuf::from("/var/log/radroots/services/radrootsd")
+        );
+        assert_eq!(
+            contract.canonical_identity_path,
+            PathBuf::from("/etc/radroots/secrets/services/radrootsd/identity.secret.json")
+        );
+        assert_eq!(
+            contract.canonical_bridge_state_path,
+            PathBuf::from("/var/lib/radroots/services/radrootsd/bridge/bridge-jobs.json")
         );
     }
 }

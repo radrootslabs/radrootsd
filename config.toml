@@ -3,6 +3,17 @@
 #   launch with RADROOTSD_PATHS_PROFILE=service_host
 # manual operator runs may instead place the same file at:
 #   ~/.radroots/config/services/radrootsd/config.toml
+# when path-like values are omitted, the active profile derives:
+#   interactive_user:
+#     logs_dir = ~/.radroots/logs/services/radrootsd
+#     service identity = ~/.radroots/secrets/services/radrootsd/identity.secret.json
+#     bridge state = ~/.radroots/data/services/radrootsd/bridge/bridge-jobs.json
+#   service_host:
+#     logs_dir = /var/log/radroots/services/radrootsd
+#     service identity = /etc/radroots/secrets/services/radrootsd/identity.secret.json
+#     bridge state = /var/lib/radroots/services/radrootsd/bridge/bridge-jobs.json
+# the canonical live service identity is always an encrypted local envelope
+# only override logs_dir or config.bridge.state_path intentionally
 
 [metadata]
 name = "radrootsd"

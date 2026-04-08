@@ -20,6 +20,7 @@ use radroots_nostr::prelude::{
     RadrootsNostrApplicationHandlerSpec, RadrootsNostrKind,
     radroots_nostr_bootstrap_service_presence,
 };
+use std::path::PathBuf;
 
 #[cfg(test)]
 static RUN_LOAD_HOOK: std::sync::OnceLock<
@@ -43,6 +44,21 @@ static RUN_START_RPC_HOOK: std::sync::OnceLock<
 enum RunWaitOutcome {
     Shutdown,
     Stopped,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RadrootsdRuntimeStartupReport {
+    active_profile: String,
+    config_path: PathBuf,
+    canonical_config_path: PathBuf,
+    logs_dir: PathBuf,
+    canonical_logs_dir: PathBuf,
+    identity_path: PathBuf,
+    canonical_identity_path: PathBuf,
+    bridge_state_path: PathBuf,
+    canonical_bridge_state_path: PathBuf,
+    default_shared_secret_backend: String,
+    allowed_shared_secret_backends: Vec<String>,
 }
 
 #[cfg(test)]
@@ -123,9 +139,58 @@ fn load_args_and_settings() -> Result<(cli::Args, config::Settings)> {
             .unwrap_or_else(config::default_config_path_for_process)?;
         let settings =
             config::load_settings_from_path(&config_path).context("load configuration")?;
-        radroots_runtime::init_with(settings.config.service.logs_dir.as_str(), None)?;
+        radroots_runtime::init_with_logs_dir(
+            std::path::Path::new(settings.config.service.logs_dir.as_str()),
+            None,
+        )?;
         Ok((args, settings))
     }
+}
+
+fn runtime_startup_report(
+    args: &cli::Args,
+    settings: &config::Settings,
+    contract: &config::RadrootsdRuntimeContractOutput,
+) -> RadrootsdRuntimeStartupReport {
+    RadrootsdRuntimeStartupReport {
+        active_profile: contract.active_profile.clone(),
+        config_path: args
+            .service
+            .config
+            .clone()
+            .unwrap_or_else(|| contract.canonical_config_path.clone()),
+        canonical_config_path: contract.canonical_config_path.clone(),
+        logs_dir: PathBuf::from(settings.config.service.logs_dir.as_str()),
+        canonical_logs_dir: contract.canonical_logs_dir.clone(),
+        identity_path: args
+            .service
+            .identity
+            .clone()
+            .unwrap_or_else(|| contract.canonical_identity_path.clone()),
+        canonical_identity_path: contract.canonical_identity_path.clone(),
+        bridge_state_path: settings.config.bridge.state_path.clone(),
+        canonical_bridge_state_path: contract.canonical_bridge_state_path.clone(),
+        default_shared_secret_backend: contract.default_shared_secret_backend.clone(),
+        allowed_shared_secret_backends: contract.allowed_shared_secret_backends.clone(),
+    }
+}
+
+#[cfg(not(test))]
+fn log_runtime_startup_report(report: &RadrootsdRuntimeStartupReport) {
+    info!(
+        active_profile = report.active_profile.as_str(),
+        config_path = %report.config_path.display(),
+        canonical_config_path = %report.canonical_config_path.display(),
+        logs_dir = %report.logs_dir.display(),
+        canonical_logs_dir = %report.canonical_logs_dir.display(),
+        identity_path = %report.identity_path.display(),
+        canonical_identity_path = %report.canonical_identity_path.display(),
+        bridge_state_path = %report.bridge_state_path.display(),
+        canonical_bridge_state_path = %report.canonical_bridge_state_path.display(),
+        default_shared_secret_backend = report.default_shared_secret_backend.as_str(),
+        allowed_shared_secret_backends = ?report.allowed_shared_secret_backends,
+        "radrootsd runtime contract"
+    );
 }
 
 #[cfg_attr(coverage_nightly, coverage(off))]
@@ -274,6 +339,14 @@ pub async fn run() -> Result<()> {
     let (args, settings): (cli::Args, config::Settings) = load_args_and_settings()?;
     settings.config.validate()?;
 
+    #[cfg(not(test))]
+    {
+        let contract =
+            config::runtime_contract_for_process().context("resolve runtime contract")?;
+        let report = runtime_startup_report(&args, &settings, &contract);
+        log_runtime_startup_report(&report);
+    }
+
     info!("Starting radrootsd");
 
     let identity = load_service_identity(
@@ -337,7 +410,8 @@ fn service_presence_kinds(bridge_config: &config::BridgeConfig) -> Vec<u32> {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::{
-        RunWaitOutcome, run, run_bootstrap_hook, run_load_hook, run_start_rpc_hook, run_wait_hook,
+        RadrootsdRuntimeStartupReport, RunWaitOutcome, run, run_bootstrap_hook, run_load_hook,
+        run_start_rpc_hook, run_wait_hook, runtime_startup_report,
     };
     use crate::app::{cli, config};
     use crate::core::Radrootsd;
@@ -415,6 +489,29 @@ mod tests {
                 bridge: config::BridgeConfig::default(),
                 nip46: config::Nip46Config::default(),
             },
+        }
+    }
+
+    fn sample_runtime_contract() -> config::RadrootsdRuntimeContractOutput {
+        config::RadrootsdRuntimeContractOutput {
+            active_profile: "interactive_user".to_string(),
+            allowed_profiles: vec![
+                "interactive_user".to_string(),
+                "service_host".to_string(),
+                "repo_local".to_string(),
+            ],
+            default_shared_secret_backend: "encrypted_file".to_string(),
+            allowed_shared_secret_backends: vec!["encrypted_file".to_string()],
+            canonical_config_path: PathBuf::from(
+                "/home/treesap/.radroots/config/services/radrootsd/config.toml",
+            ),
+            canonical_logs_dir: PathBuf::from("/home/treesap/.radroots/logs/services/radrootsd"),
+            canonical_identity_path: PathBuf::from(
+                "/home/treesap/.radroots/secrets/services/radrootsd/identity.secret.json",
+            ),
+            canonical_bridge_state_path: PathBuf::from(
+                "/home/treesap/.radroots/data/services/radrootsd/bridge/bridge-jobs.json",
+            ),
         }
     }
 
@@ -639,5 +736,76 @@ mod tests {
             )
         );
         assert!(kinds.contains(&KIND_LISTING));
+    }
+
+    #[test]
+    fn runtime_startup_report_prefers_explicit_cli_paths() {
+        let args = cli::Args {
+            service: radroots_runtime::RadrootsServiceCliArgs {
+                config: Some(PathBuf::from("/tmp/radrootsd/config.toml")),
+                identity: Some(PathBuf::from("/tmp/radrootsd/identity.secret.json")),
+                allow_generate_identity: false,
+            },
+        };
+        let mut settings = settings_with_relays(Vec::new());
+        settings.config.service.logs_dir = "/tmp/radrootsd/logs".to_string();
+        settings.config.bridge.state_path = PathBuf::from("/tmp/radrootsd/bridge-jobs.json");
+
+        let report = runtime_startup_report(&args, &settings, &sample_runtime_contract());
+
+        assert_eq!(
+            report,
+            RadrootsdRuntimeStartupReport {
+                active_profile: "interactive_user".to_string(),
+                config_path: PathBuf::from("/tmp/radrootsd/config.toml"),
+                canonical_config_path: PathBuf::from(
+                    "/home/treesap/.radroots/config/services/radrootsd/config.toml"
+                ),
+                logs_dir: PathBuf::from("/tmp/radrootsd/logs"),
+                canonical_logs_dir: PathBuf::from(
+                    "/home/treesap/.radroots/logs/services/radrootsd"
+                ),
+                identity_path: PathBuf::from("/tmp/radrootsd/identity.secret.json"),
+                canonical_identity_path: PathBuf::from(
+                    "/home/treesap/.radroots/secrets/services/radrootsd/identity.secret.json"
+                ),
+                bridge_state_path: PathBuf::from("/tmp/radrootsd/bridge-jobs.json"),
+                canonical_bridge_state_path: PathBuf::from(
+                    "/home/treesap/.radroots/data/services/radrootsd/bridge/bridge-jobs.json"
+                ),
+                default_shared_secret_backend: "encrypted_file".to_string(),
+                allowed_shared_secret_backends: vec!["encrypted_file".to_string()],
+            }
+        );
+    }
+
+    #[test]
+    fn runtime_startup_report_falls_back_to_canonical_contract_paths() {
+        let args = cli::Args {
+            service: radroots_runtime::RadrootsServiceCliArgs {
+                config: None,
+                identity: None,
+                allow_generate_identity: false,
+            },
+        };
+        let contract = sample_runtime_contract();
+        let mut settings = settings_with_relays(Vec::new());
+        settings.config.service.logs_dir = contract.canonical_logs_dir.display().to_string();
+        settings.config.bridge.state_path = contract.canonical_bridge_state_path.clone();
+
+        let report = runtime_startup_report(&args, &settings, &contract);
+
+        assert_eq!(report.config_path, contract.canonical_config_path);
+        assert_eq!(report.logs_dir, contract.canonical_logs_dir);
+        assert_eq!(report.identity_path, contract.canonical_identity_path);
+        assert_eq!(
+            report.bridge_state_path,
+            contract.canonical_bridge_state_path
+        );
+        assert_eq!(report.default_shared_secret_backend, "encrypted_file");
+        assert_eq!(
+            report.allowed_shared_secret_backends,
+            vec!["encrypted_file".to_string()]
+        );
     }
 }
