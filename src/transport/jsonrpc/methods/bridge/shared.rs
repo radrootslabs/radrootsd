@@ -32,6 +32,8 @@ pub(super) struct BridgeJobView {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub completed_at_unix: Option<u64>,
     pub signer_mode: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signer_session_id: Option<String>,
     pub event_kind: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub event_id: Option<String>,
@@ -53,6 +55,7 @@ pub(super) struct BridgeJobView {
 
 impl From<BridgeJobRecord> for BridgeJobView {
     fn from(record: BridgeJobRecord) -> Self {
+        let (signer_mode, signer_session_id) = split_signer_usage(record.signer_mode.as_str());
         Self {
             terminal: record.is_terminal(),
             recovered_after_restart: record.recovered_after_restart(),
@@ -62,7 +65,8 @@ impl From<BridgeJobRecord> for BridgeJobView {
             status: record.status,
             requested_at_unix: record.requested_at_unix,
             completed_at_unix: record.completed_at_unix,
-            signer_mode: record.signer_mode,
+            signer_mode,
+            signer_session_id,
             event_kind: record.event_kind,
             event_id: record.event_id,
             event_addr: record.event_addr,
@@ -76,6 +80,15 @@ impl From<BridgeJobRecord> for BridgeJobView {
             relay_results: record.relay_results,
             relay_outcome_summary: record.relay_outcome_summary,
         }
+    }
+}
+
+fn split_signer_usage(value: &str) -> (String, Option<String>) {
+    match value.split_once(':') {
+        Some(("nip46_session", session_id)) if !session_id.trim().is_empty() => {
+            ("nip46_session".to_owned(), Some(session_id.to_owned()))
+        }
+        _ => (value.to_owned(), None),
     }
 }
 
@@ -482,5 +495,22 @@ mod tests {
         let view = BridgeJobView::from(job);
         assert!(view.terminal);
         assert!(view.recovered_after_restart);
+    }
+
+    #[test]
+    fn bridge_job_view_exposes_signer_session_separately() {
+        let job = new_listing_publish_job(
+            "job-1".to_string(),
+            Some("same".to_string()),
+            "nip46_session:session-1".to_string(),
+            30402,
+            Some("event-1".to_string()),
+            "30402:author:listing".to_string(),
+            BridgeDeliveryPolicy::Any,
+            None,
+        );
+        let view = BridgeJobView::from(job);
+        assert_eq!(view.signer_mode, "nip46_session");
+        assert_eq!(view.signer_session_id.as_deref(), Some("session-1"));
     }
 }
