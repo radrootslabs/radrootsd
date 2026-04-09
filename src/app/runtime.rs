@@ -5,7 +5,7 @@ use std::time::Duration;
 use tracing::{info, warn};
 
 use crate::app::identity_storage::load_service_identity;
-use crate::app::{cli, config};
+use crate::app::{cli, config, paths};
 use crate::core::Radrootsd;
 use crate::transport::jsonrpc;
 #[cfg(not(test))]
@@ -136,7 +136,7 @@ fn load_args_and_settings() -> Result<(cli::Args, config::Settings)> {
             .config
             .clone()
             .map(Ok)
-            .unwrap_or_else(config::default_config_path_for_process)?;
+            .unwrap_or_else(paths::default_config_path_for_process)?;
         let settings =
             config::load_settings_from_path(&config_path).context("load configuration")?;
         radroots_runtime::init_with_logs_dir(
@@ -150,7 +150,7 @@ fn load_args_and_settings() -> Result<(cli::Args, config::Settings)> {
 fn runtime_startup_report(
     args: &cli::Args,
     settings: &config::Settings,
-    contract: &config::RadrootsdRuntimeContractOutput,
+    contract: &paths::RadrootsdRuntimeContractOutput,
 ) -> RadrootsdRuntimeStartupReport {
     RadrootsdRuntimeStartupReport {
         active_profile: contract.active_profile.clone(),
@@ -341,8 +341,7 @@ pub async fn run() -> Result<()> {
 
     #[cfg(not(test))]
     {
-        let contract =
-            config::runtime_contract_for_process().context("resolve runtime contract")?;
+        let contract = paths::runtime_contract_for_process().context("resolve runtime contract")?;
         let report = runtime_startup_report(&args, &settings, &contract);
         log_runtime_startup_report(&report);
     }
@@ -413,7 +412,7 @@ mod tests {
         RadrootsdRuntimeStartupReport, RunWaitOutcome, run, run_bootstrap_hook, run_load_hook,
         run_start_rpc_hook, run_wait_hook, runtime_startup_report,
     };
-    use crate::app::{cli, config};
+    use crate::app::{cli, config, paths};
     use crate::core::Radrootsd;
     use crate::transport::jsonrpc;
     use radroots_events::kinds::KIND_LISTING;
@@ -492,8 +491,8 @@ mod tests {
         }
     }
 
-    fn sample_runtime_contract() -> config::RadrootsdRuntimeContractOutput {
-        config::RadrootsdRuntimeContractOutput {
+    fn sample_runtime_contract() -> paths::RadrootsdRuntimeContractOutput {
+        paths::RadrootsdRuntimeContractOutput {
             active_profile: "interactive_user".to_string(),
             allowed_profiles: vec![
                 "interactive_user".to_string(),

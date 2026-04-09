@@ -1,6 +1,7 @@
 pub mod cli;
 pub mod config;
 mod identity_storage;
+mod paths;
 mod runtime;
 
 pub use cli::Args;
