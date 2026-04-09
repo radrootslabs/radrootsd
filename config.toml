@@ -3,6 +3,8 @@
 #   launch with RADROOTSD_PATHS_PROFILE=service_host
 # manual operator runs may instead place the same file at:
 #   ~/.radroots/config/services/radrootsd/config.toml
+# repo-owned local runs should prefer the root .env.local control plane, which derives
+# RADROOTSD_PATHS_PROFILE=repo_local and RADROOTSD_PATHS_REPO_LOCAL_ROOT automatically
 # when path-like values are omitted, the active profile derives:
 #   interactive_user:
 #     logs_dir = ~/.radroots/logs/services/radrootsd
