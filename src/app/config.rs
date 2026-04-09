@@ -389,13 +389,13 @@ impl Settings {
 mod tests {
     use std::path::PathBuf;
 
-    use crate::app::paths::{
-        default_runtime_paths_for_process, resolve_runtime_paths_with_resolver,
-        runtime_contract_with_resolver,
-    };
     use super::{
         BridgeConfig, BridgeDeliveryPolicy, Configuration, Nip46Config, RpcConfig,
         load_settings_from_path_with_resolver,
+    };
+    use crate::app::paths::{
+        default_runtime_paths_for_process, resolve_runtime_paths_with_resolver,
+        runtime_contract_with_resolver,
     };
     use radroots_runtime::RadrootsNostrServiceConfig;
     use radroots_runtime_paths::{
@@ -642,6 +642,21 @@ bearer_token = "change-me"
         .expect("interactive-user contract");
 
         assert_eq!(contract.active_profile, "interactive_user");
+        assert_eq!(contract.path_overrides.profile_source, "caller");
+        assert_eq!(contract.path_overrides.root_source, "host_defaults");
+        assert_eq!(contract.path_overrides.repo_local_root, None);
+        assert_eq!(contract.path_overrides.repo_local_root_source, None);
+        assert_eq!(
+            contract.path_overrides.subordinate_path_override_source,
+            "config_artifact"
+        );
+        assert_eq!(
+            contract.path_overrides.subordinate_path_override_keys,
+            vec![
+                "config.service.logs_dir".to_owned(),
+                "config.bridge.state_path".to_owned(),
+            ]
+        );
         assert_eq!(
             contract.allowed_profiles,
             vec![
