@@ -7,7 +7,9 @@ use tokio::sync::broadcast;
 use tokio::time::sleep;
 use uuid::Uuid;
 
-use crate::core::nip46::session::{Nip46Session, filter_perms, session_expires_at};
+use crate::core::nip46::session::{
+    Nip46Session, Nip46SessionAuthority, filter_perms, session_expires_at,
+};
 use crate::transport::jsonrpc::nip46::connection::{
     Nip46ConnectInfo, Nip46ConnectMode, parse_connect_url,
 };
@@ -26,6 +28,8 @@ use radroots_nostr::prelude::{
 struct Nip46ConnectParams {
     url: String,
     client_secret_key: Option<String>,
+    #[serde(default)]
+    signer_authority: Option<Nip46SessionAuthority>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -40,13 +44,15 @@ struct Nip46ConnectResponse {
 pub fn register(m: &mut RpcModule<RpcContext>, registry: &MethodRegistry) -> Result<()> {
     registry.track("nip46.connect");
     m.register_async_method("nip46.connect", |params, ctx, _| async move {
-        let Nip46ConnectParams {
-            url,
-            client_secret_key,
-        } = params
-            .parse()
-            .map_err(|e| RpcError::InvalidParams(e.to_string()))?;
-        let response = connect_nip46(ctx.as_ref().clone(), url, client_secret_key).await?;
+    let Nip46ConnectParams {
+        url,
+        client_secret_key,
+        signer_authority,
+    } = params
+        .parse()
+        .map_err(|e| RpcError::InvalidParams(e.to_string()))?;
+        let response =
+            connect_nip46(ctx.as_ref().clone(), url, client_secret_key, signer_authority).await?;
         Ok::<Nip46ConnectResponse, RpcError>(response)
     })?;
     Ok(())
@@ -56,17 +62,23 @@ async fn connect_nip46(
     ctx: RpcContext,
     url: String,
     client_secret_key: Option<String>,
+    signer_authority: Option<Nip46SessionAuthority>,
 ) -> Result<Nip46ConnectResponse, RpcError> {
+    let signer_authority = Nip46Session::normalize_authority(signer_authority)
+        .map_err(RpcError::InvalidParams)?;
     let info = parse_connect_url(&url)?;
     match info.mode {
-        Nip46ConnectMode::Bunker => connect_bunker(ctx, info).await,
-        Nip46ConnectMode::Nostrconnect => connect_nostrconnect(ctx, info, client_secret_key).await,
+        Nip46ConnectMode::Bunker => connect_bunker(ctx, info, signer_authority).await,
+        Nip46ConnectMode::Nostrconnect => {
+            connect_nostrconnect(ctx, info, client_secret_key, signer_authority).await
+        }
     }
 }
 
 async fn connect_bunker(
     ctx: RpcContext,
     info: Nip46ConnectInfo,
+    signer_authority: Option<Nip46SessionAuthority>,
 ) -> Result<Nip46ConnectResponse, RpcError> {
     if info.relays.is_empty() {
         return Err(RpcError::InvalidParams("missing relay".to_string()));
@@ -147,6 +159,7 @@ async fn connect_bunker(
         authorized: true,
         auth_url: None,
         pending_request: None,
+        signer_authority,
     };
     ctx.state.nip46_sessions.insert(session).await;
 
@@ -163,6 +176,7 @@ async fn connect_nostrconnect(
     ctx: RpcContext,
     info: Nip46ConnectInfo,
     client_secret_key: Option<String>,
+    signer_authority: Option<Nip46SessionAuthority>,
 ) -> Result<Nip46ConnectResponse, RpcError> {
     if info.relays.is_empty() {
         return Err(RpcError::InvalidParams("missing relay".to_string()));
@@ -224,6 +238,7 @@ async fn connect_nostrconnect(
         authorized: true,
         auth_url: None,
         pending_request: None,
+        signer_authority,
     };
     ctx.state.nip46_sessions.insert(session).await;
 

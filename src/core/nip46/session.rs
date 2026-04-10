@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
 use nostr::nips::nip46::NostrConnectRequest;
@@ -50,6 +50,16 @@ pub struct Nip46SessionView {
     pub authorized: bool,
     pub auth_url: Option<String>,
     pub expires_in_secs: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signer_authority: Option<Nip46SessionAuthority>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct Nip46SessionAuthority {
+    pub provider_runtime_id: String,
+    pub account_identity_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_signer_session_id: Option<String>,
 }
 
 #[derive(Clone)]
@@ -70,6 +80,7 @@ pub struct Nip46Session {
     pub authorized: bool,
     pub auth_url: Option<String>,
     pub pending_request: Option<PendingNostrRequest>,
+    pub signer_authority: Option<Nip46SessionAuthority>,
 }
 
 impl Nip46SessionStore {
@@ -191,6 +202,14 @@ impl Nip46SessionStore {
 }
 
 impl Nip46Session {
+    pub fn normalize_authority(
+        authority: Option<Nip46SessionAuthority>,
+    ) -> Result<Option<Nip46SessionAuthority>, String> {
+        authority
+            .map(|authority| authority.normalized())
+            .transpose()
+    }
+
     pub fn is_expired(&self) -> bool {
         self.expires_at
             .map(|expires_at| expires_at <= Instant::now())
@@ -221,7 +240,28 @@ impl Nip46Session {
             authorized: self.authorized,
             auth_url: self.auth_url.clone(),
             expires_in_secs: self.expires_at.map(remaining_secs),
+            signer_authority: self.signer_authority.clone(),
         }
+    }
+}
+
+impl Nip46SessionAuthority {
+    pub fn normalized(mut self) -> Result<Self, String> {
+        self.provider_runtime_id = self.provider_runtime_id.trim().to_owned();
+        self.account_identity_id = self.account_identity_id.trim().to_owned();
+        self.provider_signer_session_id = self
+            .provider_signer_session_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned);
+        if self.provider_runtime_id.is_empty() {
+            return Err("signer_authority.provider_runtime_id cannot be empty".to_owned());
+        }
+        if self.account_identity_id.is_empty() {
+            return Err("signer_authority.account_identity_id cannot be empty".to_owned());
+        }
+        Ok(self)
     }
 }
 
@@ -296,6 +336,7 @@ mod tests {
             authorized: true,
             auth_url: None,
             pending_request: None,
+            signer_authority: None,
         }
     }
 
@@ -344,6 +385,7 @@ mod tests {
             authorized: false,
             auth_url: Some("https://signer.example.com/auth".to_string()),
             pending_request: None,
+            signer_authority: None,
         };
 
         let view = session.public_view();

@@ -142,6 +142,7 @@ pub(crate) async fn handle_request(
                 authorized: true,
                 auth_url: None,
                 pending_request: None,
+                signer_authority: None,
             };
             radrootsd.nip46_sessions.insert(session).await;
             NostrConnectResponse::with_result(ResponseResult::Ack)

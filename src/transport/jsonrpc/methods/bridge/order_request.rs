@@ -23,10 +23,12 @@ use crate::core::bridge::publish::{
     BridgePublishSettings, connect_and_publish_event, failed_prepublish_execution,
 };
 use crate::core::bridge::store::new_order_request_job;
+use crate::core::nip46::session::Nip46SessionAuthority;
 use crate::transport::jsonrpc::auth::require_bridge_auth;
 use crate::transport::jsonrpc::methods::bridge::shared::{
-    BridgePublishResponse, ensure_bridge_enabled, fingerprint_bridge_request, normalize_idempotency_key,
-    reserve_bridge_job, resolve_actor_bridge_signer, sign_bridge_event_builder,
+    BridgePublishResponse, ensure_bridge_enabled, fingerprint_bridge_request,
+    normalize_idempotency_key, reserve_bridge_job, resolve_actor_bridge_signer,
+    sign_bridge_event_builder,
 };
 use crate::transport::jsonrpc::{MethodRegistry, RpcContext, RpcError};
 
@@ -35,6 +37,8 @@ struct BridgeOrderRequestParams {
     order: TradeOrder,
     #[serde(default)]
     signer_session_id: Option<String>,
+    #[serde(default)]
+    signer_authority: Option<Nip46SessionAuthority>,
     #[serde(default)]
     idempotency_key: Option<String>,
 }
@@ -65,6 +69,7 @@ async fn publish_order_request(
     let signer = resolve_actor_bridge_signer(
         &ctx,
         params.signer_session_id.as_deref(),
+        params.signer_authority.as_ref(),
         u32::from(TradeListingMessageType::OrderRequest.kind()),
         "bridge.order.request",
     )
@@ -370,6 +375,7 @@ mod tests {
         let params = BridgeOrderRequestParams {
             order: base_order("", ""),
             signer_session_id: Some(session_id.clone()),
+            signer_authority: None,
             idempotency_key: Some("same-key".to_string()),
         };
 
@@ -385,6 +391,7 @@ mod tests {
             BridgeOrderRequestParams {
                 order: base_order("", ""),
                 signer_session_id: Some(session_id),
+                signer_authority: None,
                 idempotency_key: Some("same-key".to_string()),
             },
         )
@@ -417,6 +424,7 @@ mod tests {
             BridgeOrderRequestParams {
                 order: base_order("", ""),
                 signer_session_id: Some(session_id.clone()),
+                signer_authority: None,
                 idempotency_key: Some("same-key".to_string()),
             },
         )
@@ -430,6 +438,7 @@ mod tests {
             BridgeOrderRequestParams {
                 order: conflicting,
                 signer_session_id: Some(session_id),
+                signer_authority: None,
                 idempotency_key: Some("same-key".to_string()),
             },
         )
@@ -461,6 +470,7 @@ mod tests {
             BridgeOrderRequestParams {
                 order: base_order("", ""),
                 signer_session_id: None,
+                signer_authority: None,
                 idempotency_key: Some("missing-session".to_string()),
             },
         )
@@ -494,6 +504,7 @@ mod tests {
             authorized: true,
             auth_url: None,
             pending_request: None,
+            signer_authority: None,
         }).await;
         session_id.to_string()
     }

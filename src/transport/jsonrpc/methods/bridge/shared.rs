@@ -9,7 +9,7 @@ use crate::core::bridge::publish::BridgeRelayPublishResult;
 use crate::core::bridge::store::{
     BridgeJobRecord, BridgeJobReservation, BridgeJobStatus, BridgeJobStoreError,
 };
-use crate::core::nip46::session::Nip46SessionRole;
+use crate::core::nip46::session::{Nip46SessionAuthority, Nip46SessionRole};
 use crate::transport::jsonrpc::nip46::{client as nip46_client, session as nip46_session};
 use crate::transport::jsonrpc::{RpcContext, RpcError};
 
@@ -162,6 +162,7 @@ pub(super) async fn resolve_bridge_signer(
 pub(super) async fn resolve_actor_bridge_signer(
     ctx: &RpcContext,
     signer_session_id: Option<&str>,
+    signer_authority: Option<&Nip46SessionAuthority>,
     event_kind: u32,
     command: &str,
 ) -> Result<BridgeSignerSelection, RpcError> {
@@ -184,10 +185,51 @@ pub(super) async fn resolve_actor_bridge_signer(
             error
         ))
     })?;
+    require_signer_authority(&session, signer_authority).map_err(|reason| {
+        RpcError::Unauthorized(format!("{command} signer_session_id `{session_id}` {reason}"))
+    })?;
     Ok(BridgeSignerSelection::Nip46Session {
         session_id: session_id.to_string(),
         session,
     })
+}
+
+fn require_signer_authority(
+    session: &crate::core::nip46::session::Nip46Session,
+    signer_authority: Option<&Nip46SessionAuthority>,
+) -> Result<(), String> {
+    let Some(expected) = signer_authority else {
+        return Ok(());
+    };
+    let Some(actual) = session.signer_authority.as_ref() else {
+        return Err("is missing signer authority continuity metadata".to_owned());
+    };
+    if actual.provider_runtime_id != expected.provider_runtime_id {
+        return Err(format!(
+            "provider `{}` does not match required provider `{}`",
+            actual.provider_runtime_id, expected.provider_runtime_id
+        ));
+    }
+    if actual.account_identity_id != expected.account_identity_id {
+        return Err(format!(
+            "account identity `{}` does not match required account `{}`",
+            actual.account_identity_id, expected.account_identity_id
+        ));
+    }
+    if actual.provider_signer_session_id != expected.provider_signer_session_id {
+        return Err(format!(
+            "provider signer session `{}` does not match required provider session `{}`",
+            actual
+                .provider_signer_session_id
+                .as_deref()
+                .unwrap_or("<none>"),
+            expected
+                .provider_signer_session_id
+                .as_deref()
+                .unwrap_or("<none>")
+        ));
+    }
+    Ok(())
 }
 
 pub(super) async fn sign_bridge_event_builder(
@@ -275,7 +317,7 @@ mod tests {
     use crate::core::bridge::store::{
         BRIDGE_PENDING_RECOVERY_SUMMARY, BridgeJobStatus, new_listing_publish_job,
     };
-    use crate::core::nip46::session::Nip46Session;
+    use crate::core::nip46::session::{Nip46Session, Nip46SessionAuthority};
     use crate::transport::jsonrpc::{MethodRegistry, RpcContext};
 
     use super::{
@@ -322,6 +364,7 @@ mod tests {
                 authorized: true,
                 auth_url: None,
                 pending_request: None,
+                signer_authority: None,
             })
             .await;
         let ctx = RpcContext::new(state, MethodRegistry::default());
@@ -350,9 +393,10 @@ mod tests {
         .expect("state");
         let ctx = RpcContext::new(state, MethodRegistry::default());
 
-        let err = match resolve_actor_bridge_signer(&ctx, None, 30402, "bridge.listing.publish")
-            .await
-        {
+        let err =
+            match resolve_actor_bridge_signer(&ctx, None, None, 30402, "bridge.listing.publish")
+                .await
+            {
             Ok(_) => panic!("expected missing session to fail"),
             Err(err) => err,
         };
@@ -391,6 +435,7 @@ mod tests {
                 authorized: true,
                 auth_url: None,
                 pending_request: None,
+                signer_authority: None,
             })
             .await;
         let ctx = RpcContext::new(state, MethodRegistry::default());
@@ -398,6 +443,7 @@ mod tests {
         let err = match resolve_actor_bridge_signer(
             &ctx,
             Some("session-1"),
+            None,
             30402,
             "bridge.listing.publish",
         )
@@ -408,6 +454,67 @@ mod tests {
         };
         assert!(err.to_string().contains("unauthorized"));
         assert!(err.to_string().contains("sign_event:30402"));
+    }
+
+    #[tokio::test]
+    async fn resolve_actor_bridge_signer_rejects_mismatched_authority() {
+        let identity = RadrootsIdentity::generate();
+        let metadata: RadrootsNostrMetadata =
+            serde_json::from_str(r#"{"name":"radrootsd-test"}"#).expect("metadata");
+        let state = Radrootsd::new(
+            identity.clone(),
+            metadata,
+            BridgeConfig::default(),
+            Nip46Config::default(),
+        )
+        .expect("state");
+        let session_keys = RadrootsNostrKeys::generate();
+        state
+            .nip46_sessions
+            .insert(Nip46Session {
+                id: "session-1".to_string(),
+                client: RadrootsNostrClient::new(session_keys.clone()),
+                client_keys: session_keys.clone(),
+                client_pubkey: session_keys.public_key(),
+                remote_signer_pubkey: session_keys.public_key(),
+                user_pubkey: None,
+                relays: vec!["wss://relay.example.com".to_string()],
+                perms: vec!["sign_event".to_string()],
+                name: None,
+                url: None,
+                image: None,
+                expires_at: Some(Instant::now() + std::time::Duration::from_secs(60)),
+                auth_required: false,
+                authorized: true,
+                auth_url: None,
+                pending_request: None,
+                signer_authority: Some(Nip46SessionAuthority {
+                    provider_runtime_id: "myc".to_owned(),
+                    account_identity_id: "acct-authorized".to_owned(),
+                    provider_signer_session_id: Some("conn-authorized".to_owned()),
+                }),
+            })
+            .await;
+        let ctx = RpcContext::new(state, MethodRegistry::default());
+
+        let err = match resolve_actor_bridge_signer(
+            &ctx,
+            Some("session-1"),
+            Some(&Nip46SessionAuthority {
+                provider_runtime_id: "myc".to_owned(),
+                account_identity_id: "acct-other".to_owned(),
+                provider_signer_session_id: Some("conn-authorized".to_owned()),
+            }),
+            30402,
+            "bridge.listing.publish",
+        )
+        .await
+        {
+            Ok(_) => panic!("expected authority mismatch to fail"),
+            Err(err) => err,
+        };
+        assert!(err.to_string().contains("account identity"));
+        assert!(err.to_string().contains("acct-other"));
     }
 
     #[test]
@@ -451,6 +558,7 @@ mod tests {
             authorized: true,
             auth_url: None,
             pending_request: None,
+            signer_authority: None,
         };
         let renewed_session = Nip46Session {
             id: "session-2".to_string(),
