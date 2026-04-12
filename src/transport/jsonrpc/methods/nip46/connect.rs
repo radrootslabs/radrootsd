@@ -44,15 +44,20 @@ struct Nip46ConnectResponse {
 pub fn register(m: &mut RpcModule<RpcContext>, registry: &MethodRegistry) -> Result<()> {
     registry.track("nip46.connect");
     m.register_async_method("nip46.connect", |params, ctx, _| async move {
-    let Nip46ConnectParams {
-        url,
-        client_secret_key,
-        signer_authority,
-    } = params
-        .parse()
-        .map_err(|e| RpcError::InvalidParams(e.to_string()))?;
-        let response =
-            connect_nip46(ctx.as_ref().clone(), url, client_secret_key, signer_authority).await?;
+        let Nip46ConnectParams {
+            url,
+            client_secret_key,
+            signer_authority,
+        } = params
+            .parse()
+            .map_err(|e| RpcError::InvalidParams(e.to_string()))?;
+        let response = connect_nip46(
+            ctx.as_ref().clone(),
+            url,
+            client_secret_key,
+            signer_authority,
+        )
+        .await?;
         Ok::<Nip46ConnectResponse, RpcError>(response)
     })?;
     Ok(())
@@ -64,8 +69,8 @@ async fn connect_nip46(
     client_secret_key: Option<String>,
     signer_authority: Option<Nip46SessionAuthority>,
 ) -> Result<Nip46ConnectResponse, RpcError> {
-    let signer_authority = Nip46Session::normalize_authority(signer_authority)
-        .map_err(RpcError::InvalidParams)?;
+    let signer_authority =
+        Nip46Session::normalize_authority(signer_authority).map_err(RpcError::InvalidParams)?;
     let info = parse_connect_url(&url)?;
     match info.mode {
         Nip46ConnectMode::Bunker => connect_bunker(ctx, info, signer_authority).await,

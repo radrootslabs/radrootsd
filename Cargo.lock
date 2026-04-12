@@ -1813,6 +1813,7 @@ dependencies = [
  "hex",
  "nostr",
  "radroots_identity",
+ "radroots_nostr",
  "radroots_nostr_connect",
  "radroots_runtime",
  "serde",

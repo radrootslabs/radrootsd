@@ -174,11 +174,16 @@ pub(super) async fn resolve_actor_bridge_signer(
                 "{command} requires signer_session_id for actor-authored bridge writes"
             ))
         })?;
-    let session = ctx.state.nip46_sessions.get(session_id).await.ok_or_else(|| {
-        RpcError::Unauthorized(format!(
-            "{command} signer_session_id `{session_id}` was not found"
-        ))
-    })?;
+    let session = ctx
+        .state
+        .nip46_sessions
+        .get(session_id)
+        .await
+        .ok_or_else(|| {
+            RpcError::Unauthorized(format!(
+                "{command} signer_session_id `{session_id}` was not found"
+            ))
+        })?;
     nip46_session::require_sign_event_permission(&session, event_kind).map_err(|error| {
         RpcError::Unauthorized(format!(
             "{command} signer_session_id `{session_id}` {}",
@@ -186,7 +191,9 @@ pub(super) async fn resolve_actor_bridge_signer(
         ))
     })?;
     require_signer_authority(&session, signer_authority).map_err(|reason| {
-        RpcError::Unauthorized(format!("{command} signer_session_id `{session_id}` {reason}"))
+        RpcError::Unauthorized(format!(
+            "{command} signer_session_id `{session_id}` {reason}"
+        ))
     })?;
     Ok(BridgeSignerSelection::Nip46Session {
         session_id: session_id.to_string(),
@@ -397,9 +404,9 @@ mod tests {
             match resolve_actor_bridge_signer(&ctx, None, None, 30402, "bridge.listing.publish")
                 .await
             {
-            Ok(_) => panic!("expected missing session to fail"),
-            Err(err) => err,
-        };
+                Ok(_) => panic!("expected missing session to fail"),
+                Err(err) => err,
+            };
         assert!(err.to_string().contains("requires signer_session_id"));
     }
 
