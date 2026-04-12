@@ -1863,6 +1863,7 @@ dependencies = [
 name = "radroots_runtime_paths"
 version = "0.1.0-alpha.2"
 dependencies = [
+ "serde",
  "thiserror 1.0.69",
 ]
 

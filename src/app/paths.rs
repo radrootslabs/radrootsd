@@ -2,9 +2,11 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use radroots_runtime_paths::{
-    inspect_legacy_paths, RadrootsLegacyPathCandidate, RadrootsMigrationReport,
-    RadrootsPathProfile, RadrootsPathResolver, RadrootsRuntimePathSelection,
-    DEFAULT_CONFIG_FILE_NAME, DEFAULT_SERVICE_IDENTITY_FILE_NAME,
+    DEFAULT_CONFIG_FILE_NAME, DEFAULT_SERVICE_IDENTITY_FILE_NAME, RadrootsLegacyPathCandidate,
+    RadrootsMigrationReport, RadrootsPathProfile, RadrootsPathResolver,
+    RadrootsRuntimeMigrationContract, RadrootsRuntimePathSelection,
+    RadrootsRuntimeSelectionContract, RadrootsRuntimeSelectionOverrideContract,
+    inspect_legacy_paths, runtime_migration_contract,
 };
 use serde::Serialize;
 
@@ -43,36 +45,8 @@ pub struct RadrootsdRuntimeContractOutput {
     pub canonical_bridge_state_path: PathBuf,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct RadrootsdRuntimeMigrationContractOutput {
-    pub posture: String,
-    pub state: String,
-    pub silent_startup_relocation: bool,
-    pub compatibility_window: String,
-    pub detected_legacy_paths: Vec<RadrootsdRuntimeLegacyPathOutput>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct RadrootsdRuntimeLegacyPathOutput {
-    pub id: String,
-    pub description: String,
-    pub path: PathBuf,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub destination: Option<PathBuf>,
-    pub import_hint: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct RadrootsdRuntimePathOverrideContractOutput {
-    pub profile_source: String,
-    pub root_source: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub repo_local_root: Option<PathBuf>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub repo_local_root_source: Option<String>,
-    pub subordinate_path_override_source: String,
-    pub subordinate_path_override_keys: Vec<String>,
-}
+pub type RadrootsdRuntimeMigrationContractOutput = RadrootsRuntimeMigrationContract;
+pub type RadrootsdRuntimePathOverrideContractOutput = RadrootsRuntimeSelectionOverrideContract;
 
 pub(crate) fn process_path_selection() -> Result<(RadrootsPathProfile, Option<PathBuf>)> {
     let selection = process_path_selection_with_sources()?;
@@ -144,6 +118,7 @@ pub fn runtime_contract_for_process() -> Result<RadrootsdRuntimeContractOutput> 
     runtime_contract_with_selection(&RadrootsPathResolver::current(), &selection)
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn runtime_contract_with_resolver(
     resolver: &RadrootsPathResolver,
     profile: RadrootsPathProfile,
@@ -162,29 +137,21 @@ fn runtime_contract_with_selection(
     let profile = selection.profile;
     let repo_local_root = selection.repo_local_root.as_deref();
     let paths = resolve_runtime_paths_with_resolver(resolver, profile, repo_local_root)?;
+    let base_contract: RadrootsRuntimeSelectionContract = selection.contract(
+        &RADROOTSD_ALLOWED_PROFILES,
+        SUBORDINATE_PATH_OVERRIDE_SOURCE,
+        &SUBORDINATE_PATH_OVERRIDE_KEYS,
+    );
     Ok(RadrootsdRuntimeContractOutput {
-        active_profile: profile.to_string(),
-        allowed_profiles: RADROOTSD_ALLOWED_PROFILES
-            .into_iter()
-            .map(str::to_owned)
-            .collect(),
-        path_overrides: RadrootsdRuntimePathOverrideContractOutput {
-            profile_source: selection.profile_source.clone(),
-            root_source: selection.root_source().to_owned(),
-            repo_local_root: selection.repo_local_root.clone(),
-            repo_local_root_source: selection.repo_local_root_source.clone(),
-            subordinate_path_override_source: SUBORDINATE_PATH_OVERRIDE_SOURCE.to_owned(),
-            subordinate_path_override_keys: SUBORDINATE_PATH_OVERRIDE_KEYS
-                .into_iter()
-                .map(str::to_owned)
-                .collect(),
-        },
+        active_profile: base_contract.active_profile,
+        allowed_profiles: base_contract.allowed_profiles,
+        path_overrides: base_contract.path_overrides,
         default_shared_secret_backend: RADROOTSD_DEFAULT_SHARED_SECRET_BACKEND.to_owned(),
         allowed_shared_secret_backends: RADROOTSD_ALLOWED_SHARED_SECRET_BACKENDS
             .into_iter()
             .map(str::to_owned)
             .collect(),
-        migration: migration_contract_output(RadrootsMigrationReport::empty()),
+        migration: runtime_migration_contract(RadrootsMigrationReport::empty()),
         canonical_config_path: paths.config_path,
         canonical_logs_dir: paths.logs_dir,
         canonical_identity_path: paths.identity_path,
@@ -192,6 +159,7 @@ fn runtime_contract_with_selection(
     })
 }
 
+#[allow(dead_code)]
 pub(crate) fn runtime_migration_for_process(
     contract: &RadrootsdRuntimeContractOutput,
 ) -> Result<RadrootsdRuntimeMigrationContractOutput> {
@@ -242,23 +210,7 @@ fn legacy_path_candidates(
 fn migration_contract_output(
     report: RadrootsMigrationReport,
 ) -> RadrootsdRuntimeMigrationContractOutput {
-    RadrootsdRuntimeMigrationContractOutput {
-        posture: report.posture.to_owned(),
-        state: report.state.to_owned(),
-        silent_startup_relocation: report.silent_startup_relocation,
-        compatibility_window: report.compatibility_window.to_owned(),
-        detected_legacy_paths: report
-            .detected_legacy_paths
-            .into_iter()
-            .map(|path| RadrootsdRuntimeLegacyPathOutput {
-                id: path.id,
-                description: path.description,
-                path: path.path,
-                destination: path.destination,
-                import_hint: path.import_hint,
-            })
-            .collect(),
-    }
+    runtime_migration_contract(report)
 }
 
 #[cfg(test)]
