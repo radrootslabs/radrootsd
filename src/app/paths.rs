@@ -1,10 +1,10 @@
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use radroots_runtime_paths::{
-    DEFAULT_CONFIG_FILE_NAME, DEFAULT_SERVICE_IDENTITY_FILE_NAME, RadrootsLegacyPathCandidate,
-    RadrootsMigrationReport, RadrootsPathOverrides, RadrootsPathProfile, RadrootsPathResolver,
-    RadrootsRuntimeNamespace, inspect_legacy_paths,
+    inspect_legacy_paths, RadrootsLegacyPathCandidate, RadrootsMigrationReport,
+    RadrootsPathProfile, RadrootsPathResolver, RadrootsRuntimePathSelection,
+    DEFAULT_CONFIG_FILE_NAME, DEFAULT_SERVICE_IDENTITY_FILE_NAME,
 };
 use serde::Serialize;
 
@@ -74,67 +74,18 @@ pub struct RadrootsdRuntimePathOverrideContractOutput {
     pub subordinate_path_override_keys: Vec<String>,
 }
 
-struct RadrootsdRuntimePathSelection {
-    profile: RadrootsPathProfile,
-    profile_source: String,
-    repo_local_root: Option<PathBuf>,
-    repo_local_root_source: Option<String>,
-}
-
-fn parse_path_profile(value: &str) -> Result<RadrootsPathProfile> {
-    match value {
-        "interactive_user" => Ok(RadrootsPathProfile::InteractiveUser),
-        "service_host" => Ok(RadrootsPathProfile::ServiceHost),
-        "repo_local" => Ok(RadrootsPathProfile::RepoLocal),
-        _ => bail!(
-            "{RADROOTSD_PATHS_PROFILE_ENV} must be `interactive_user`, `service_host`, or `repo_local`"
-        ),
-    }
-}
-
 pub(crate) fn process_path_selection() -> Result<(RadrootsPathProfile, Option<PathBuf>)> {
     let selection = process_path_selection_with_sources()?;
     Ok((selection.profile, selection.repo_local_root))
 }
 
-fn process_path_selection_with_sources() -> Result<RadrootsdRuntimePathSelection> {
-    let profile = match std::env::var(RADROOTSD_PATHS_PROFILE_ENV) {
-        Ok(value) => (
-            parse_path_profile(&value)?,
-            format!("process_env:{RADROOTSD_PATHS_PROFILE_ENV}"),
-        ),
-        Err(std::env::VarError::NotPresent) => {
-            (RadrootsPathProfile::InteractiveUser, "default".to_owned())
-        }
-        Err(std::env::VarError::NotUnicode(_)) => {
-            bail!("{RADROOTSD_PATHS_PROFILE_ENV} must be valid utf-8 when set")
-        }
-    };
-    let repo_local_root_raw = std::env::var_os(RADROOTSD_PATHS_REPO_LOCAL_ROOT_ENV);
-    let repo_local_root = repo_local_root_raw.as_ref().map(PathBuf::from);
-    Ok(RadrootsdRuntimePathSelection {
-        profile: profile.0,
-        profile_source: profile.1,
-        repo_local_root,
-        repo_local_root_source: repo_local_root_raw
-            .as_ref()
-            .map(|_| format!("process_env:{RADROOTSD_PATHS_REPO_LOCAL_ROOT_ENV}")),
-    })
-}
-
-fn path_overrides_for(
-    profile: RadrootsPathProfile,
-    repo_local_root: Option<&Path>,
-) -> Result<RadrootsPathOverrides> {
-    match profile {
-        RadrootsPathProfile::RepoLocal => {
-            let repo_local_root = repo_local_root.context(format!(
-                "{RADROOTSD_PATHS_REPO_LOCAL_ROOT_ENV} must be set when {RADROOTSD_PATHS_PROFILE_ENV}=repo_local"
-            ))?;
-            Ok(RadrootsPathOverrides::repo_local(repo_local_root))
-        }
-        _ => Ok(RadrootsPathOverrides::default()),
-    }
+fn process_path_selection_with_sources() -> Result<RadrootsRuntimePathSelection> {
+    RadrootsRuntimePathSelection::from_env(
+        RADROOTSD_PATHS_PROFILE_ENV,
+        RADROOTSD_PATHS_REPO_LOCAL_ROOT_ENV,
+        RadrootsPathProfile::InteractiveUser,
+    )
+    .map_err(|error| anyhow::anyhow!(error.to_string()))
 }
 
 pub(crate) fn resolve_runtime_paths_with_resolver(
@@ -142,13 +93,16 @@ pub(crate) fn resolve_runtime_paths_with_resolver(
     profile: RadrootsPathProfile,
     repo_local_root: Option<&Path>,
 ) -> Result<RadrootsdRuntimePaths> {
-    let namespace = RadrootsRuntimeNamespace::service(RADROOTSD_RUNTIME_ID)
-        .map_err(|error| anyhow::anyhow!("resolve radrootsd namespace: {error}"))?;
-    let overrides = path_overrides_for(profile, repo_local_root)?;
-    let namespaced = resolver
-        .resolve(profile, &overrides)
-        .map_err(|error| anyhow::anyhow!("resolve radrootsd runtime paths: {error}"))?
-        .namespaced(&namespace);
+    let selection =
+        RadrootsRuntimePathSelection::caller(profile, repo_local_root.map(Path::to_path_buf));
+    let namespaced = selection
+        .resolve_service_roots(
+            resolver,
+            RADROOTSD_RUNTIME_ID,
+            RADROOTSD_PATHS_PROFILE_ENV,
+            RADROOTSD_PATHS_REPO_LOCAL_ROOT_ENV,
+        )
+        .map_err(|error| anyhow::anyhow!("resolve radrootsd runtime paths: {error}"))?;
     Ok(RadrootsdRuntimePaths {
         config_path: namespaced.config.join(DEFAULT_CONFIG_FILE_NAME),
         logs_dir: namespaced.logs,
@@ -197,18 +151,13 @@ pub(crate) fn runtime_contract_with_resolver(
 ) -> Result<RadrootsdRuntimeContractOutput> {
     runtime_contract_with_selection(
         resolver,
-        &RadrootsdRuntimePathSelection {
-            profile,
-            profile_source: "caller".to_owned(),
-            repo_local_root: repo_local_root.map(Path::to_path_buf),
-            repo_local_root_source: repo_local_root.map(|_| "caller".to_owned()),
-        },
+        &RadrootsRuntimePathSelection::caller(profile, repo_local_root.map(Path::to_path_buf)),
     )
 }
 
 fn runtime_contract_with_selection(
     resolver: &RadrootsPathResolver,
-    selection: &RadrootsdRuntimePathSelection,
+    selection: &RadrootsRuntimePathSelection,
 ) -> Result<RadrootsdRuntimeContractOutput> {
     let profile = selection.profile;
     let repo_local_root = selection.repo_local_root.as_deref();
@@ -221,7 +170,7 @@ fn runtime_contract_with_selection(
             .collect(),
         path_overrides: RadrootsdRuntimePathOverrideContractOutput {
             profile_source: selection.profile_source.clone(),
-            root_source: root_source_for_profile(profile).to_owned(),
+            root_source: selection.root_source().to_owned(),
             repo_local_root: selection.repo_local_root.clone(),
             repo_local_root_source: selection.repo_local_root_source.clone(),
             subordinate_path_override_source: SUBORDINATE_PATH_OVERRIDE_SOURCE.to_owned(),
@@ -309,15 +258,6 @@ fn migration_contract_output(
                 import_hint: path.import_hint,
             })
             .collect(),
-    }
-}
-
-fn root_source_for_profile(profile: RadrootsPathProfile) -> &'static str {
-    match profile {
-        RadrootsPathProfile::InteractiveUser => "host_defaults",
-        RadrootsPathProfile::ServiceHost => "service_host_defaults",
-        RadrootsPathProfile::RepoLocal => "repo_local_root",
-        RadrootsPathProfile::MobileNative => "mobile_native_defaults",
     }
 }
 
