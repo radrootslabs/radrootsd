@@ -1,7 +1,6 @@
 use anyhow::Result;
 use jsonrpsee::server::RpcModule;
 use radroots_events::RadrootsNostrEventPtr;
-use radroots_events::kinds::KIND_LISTING;
 use radroots_events::trade::{
     RadrootsTradeDiscountDecision as TradeDiscountDecision,
     RadrootsTradeMessagePayload as TradeListingMessagePayload,
@@ -16,6 +15,7 @@ use radroots_nostr::prelude::{
     radroots_nostr_parse_pubkey,
 };
 use radroots_trade::listing::validation::validate_listing_event;
+use radroots_trade::public_trade::canonicalize_public_trade_context;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use uuid::Uuid;
 
@@ -61,13 +61,6 @@ struct CanonicalBridgePublicTradeRequest<T> {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     prev_event_id: Option<String>,
     payload: T,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ExpectedPublicTradeAuthor {
-    Buyer,
-    Seller,
-    Either,
 }
 
 pub fn register(m: &mut RpcModule<RpcContext>, registry: &MethodRegistry) -> Result<()> {
@@ -295,34 +288,19 @@ fn canonicalize_public_trade_params<T>(
     signer_pubkey: &str,
     message_type: TradeListingMessageType,
 ) -> Result<(CanonicalBridgePublicTradeRequest<T>, TradeListingAddress), RpcError> {
-    let listing_addr = normalized_required_string(params.listing_addr, "listing_addr")?;
-    let parsed_listing_addr = TradeListingAddress::parse(&listing_addr)
-        .map_err(|error| RpcError::InvalidParams(format!("invalid listing_addr: {error}")))?;
-    if u32::from(parsed_listing_addr.kind) != KIND_LISTING {
-        return Err(RpcError::InvalidParams(
-            "listing_addr must reference a public NIP-99 listing".to_string(),
-        ));
-    }
-
-    let order_id = normalized_required_string(params.order_id, "order_id")?;
-    let counterparty_pubkey =
-        normalized_required_string(params.counterparty_pubkey, "counterparty_pubkey")?;
-    radroots_nostr_parse_pubkey(&counterparty_pubkey).map_err(|error| {
+    let context = canonicalize_public_trade_context(
+        params.listing_addr,
+        params.order_id,
+        params.counterparty_pubkey,
+        signer_pubkey,
+        message_type,
+    )
+    .map_err(|error| RpcError::InvalidParams(error.to_string()))?;
+    radroots_nostr_parse_pubkey(&context.counterparty_pubkey).map_err(|error| {
         RpcError::InvalidParams(format!("invalid counterparty_pubkey: {error}"))
     })?;
-
-    if counterparty_pubkey == signer_pubkey {
-        return Err(RpcError::InvalidParams(
-            "counterparty_pubkey must not match the requested bridge signer identity".to_string(),
-        ));
-    }
-
-    validate_expected_author(
-        &parsed_listing_addr,
-        message_type,
-        signer_pubkey,
-        &counterparty_pubkey,
-    )?;
+    let parsed_listing_addr = TradeListingAddress::parse(&context.listing_addr)
+        .map_err(|error| RpcError::InvalidParams(format!("invalid listing_addr: {error}")))?;
 
     let listing_event = if message_type.requires_listing_snapshot() {
         Some(normalize_listing_event_ptr(
@@ -353,9 +331,9 @@ fn canonicalize_public_trade_params<T>(
 
     Ok((
         CanonicalBridgePublicTradeRequest {
-            listing_addr,
-            order_id,
-            counterparty_pubkey,
+            listing_addr: context.listing_addr,
+            order_id: context.order_id,
+            counterparty_pubkey: context.counterparty_pubkey,
             listing_event,
             root_event_id,
             prev_event_id,
@@ -363,59 +341,6 @@ fn canonicalize_public_trade_params<T>(
         },
         parsed_listing_addr,
     ))
-}
-
-fn validate_expected_author(
-    listing_addr: &TradeListingAddress,
-    message_type: TradeListingMessageType,
-    signer_pubkey: &str,
-    counterparty_pubkey: &str,
-) -> Result<(), RpcError> {
-    match expected_author(message_type) {
-        ExpectedPublicTradeAuthor::Seller => {
-            if signer_pubkey != listing_addr.seller_pubkey {
-                return Err(RpcError::InvalidParams(format!(
-                    "{message_type:?} must be authored by the listing seller"
-                )));
-            }
-        }
-        ExpectedPublicTradeAuthor::Buyer => {
-            if signer_pubkey == listing_addr.seller_pubkey {
-                return Err(RpcError::InvalidParams(format!(
-                    "{message_type:?} must be authored by the buyer, not the listing seller"
-                )));
-            }
-            if counterparty_pubkey != listing_addr.seller_pubkey {
-                return Err(RpcError::InvalidParams(
-                    "counterparty_pubkey must match the listing seller for buyer-authored trade messages"
-                        .to_string(),
-                ));
-            }
-        }
-        ExpectedPublicTradeAuthor::Either => {}
-    }
-    Ok(())
-}
-
-fn expected_author(message_type: TradeListingMessageType) -> ExpectedPublicTradeAuthor {
-    match message_type {
-        TradeListingMessageType::OrderResponse
-        | TradeListingMessageType::OrderRevision
-        | TradeListingMessageType::Answer
-        | TradeListingMessageType::DiscountOffer
-        | TradeListingMessageType::FulfillmentUpdate => ExpectedPublicTradeAuthor::Seller,
-        TradeListingMessageType::OrderRequest
-        | TradeListingMessageType::OrderRevisionAccept
-        | TradeListingMessageType::OrderRevisionDecline
-        | TradeListingMessageType::Question
-        | TradeListingMessageType::DiscountRequest
-        | TradeListingMessageType::DiscountAccept
-        | TradeListingMessageType::DiscountDecline
-        | TradeListingMessageType::Receipt => ExpectedPublicTradeAuthor::Buyer,
-        TradeListingMessageType::Cancel => ExpectedPublicTradeAuthor::Either,
-        TradeListingMessageType::ListingValidateRequest
-        | TradeListingMessageType::ListingValidateResult => ExpectedPublicTradeAuthor::Either,
-    }
 }
 
 fn normalize_listing_event_ptr(
@@ -532,6 +457,7 @@ fn normalized_required_string(value: String, field: &str) -> Result<String, RpcE
 #[cfg(test)]
 mod tests {
     use radroots_core::{RadrootsCoreDecimal, RadrootsCoreDiscountValue, RadrootsCorePercent};
+    use radroots_events::kinds::KIND_LISTING;
     use radroots_events::trade::{
         RadrootsTradeDiscountRequest as TradeDiscountRequest,
         RadrootsTradeOrderResponse as TradeOrderResponse,
@@ -731,15 +657,15 @@ mod tests {
 
     #[tokio::test]
     async fn publish_revision_accept_rejects_decline_payload() {
-        let ctx = buyer_ctx().expect("ctx");
+        let (ctx, seller_pubkey) = signer_ctx().expect("ctx");
         let err = publish_public_trade(
             ctx,
             "bridge.order.revision.accept",
             TradeListingMessageType::OrderRevisionAccept,
             BridgePublicTradeParams {
-                listing_addr: base_listing_addr(base_seller_pubkey()),
+                listing_addr: base_listing_addr(&seller_pubkey),
                 order_id: "order-1".to_string(),
-                counterparty_pubkey: base_seller_pubkey().to_string(),
+                counterparty_pubkey: base_buyer_pubkey().to_string(),
                 listing_event: None,
                 root_event_id: Some("root".to_string()),
                 prev_event_id: Some("prev".to_string()),
@@ -758,7 +684,12 @@ mod tests {
     }
 
     fn buyer_ctx() -> Result<RpcContext, RpcError> {
+        signer_ctx().map(|(ctx, _)| ctx)
+    }
+
+    fn signer_ctx() -> Result<(RpcContext, String), RpcError> {
         let identity = RadrootsIdentity::generate();
+        let signer_pubkey = identity.public_key_hex();
         let metadata: RadrootsNostrMetadata =
             serde_json::from_str(r#"{"name":"radrootsd-test"}"#).expect("metadata");
         let state = Radrootsd::new(
@@ -772,7 +703,10 @@ mod tests {
             Nip46Config::default(),
         )
         .map_err(|error| RpcError::Other(format!("build state: {error}")))?;
-        Ok(RpcContext::new(state, MethodRegistry::default()))
+        Ok((
+            RpcContext::new(state, MethodRegistry::default()),
+            signer_pubkey,
+        ))
     }
 
     fn base_seller_pubkey() -> &'static str {

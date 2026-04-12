@@ -15,6 +15,7 @@ use radroots_nostr::prelude::{
     RadrootsNostrFilter, RadrootsNostrKind, radroots_event_ptr_from_nostr,
     radroots_nostr_build_event, radroots_nostr_filter_tag, radroots_nostr_parse_pubkey,
 };
+use radroots_trade::order::canonicalize_order_request_for_signer;
 use serde::Deserialize;
 use std::time::Duration;
 use uuid::Uuid;
@@ -75,7 +76,13 @@ async fn publish_order_request(
     )
     .await?;
     let signer_pubkey = signer.signer_pubkey_hex();
-    let order = canonicalize_order_request_for_signer(params.order, signer_pubkey.as_str())?;
+    let order = canonicalize_order_request_for_signer(params.order, signer_pubkey.as_str())
+        .map_err(|error| RpcError::InvalidParams(error.to_string()))?;
+    radroots_nostr_parse_pubkey(&order.buyer_pubkey)
+        .map_err(|error| RpcError::InvalidParams(format!("invalid order.buyer_pubkey: {error}")))?;
+    radroots_nostr_parse_pubkey(&order.seller_pubkey).map_err(|error| {
+        RpcError::InvalidParams(format!("invalid order.seller_pubkey: {error}"))
+    })?;
     let request_fingerprint = fingerprint_bridge_request("bridge.order.request", &signer, &order)?;
     let envelope = TradeListingEnvelope::new(
         TradeListingMessageType::OrderRequest,
@@ -202,90 +209,6 @@ fn synthetic_listing_snapshot(listing_addr: &TradeListingAddress) -> RadrootsNos
     }
 }
 
-fn canonicalize_order_request_for_signer(
-    mut order: TradeOrder,
-    signer_pubkey: &str,
-) -> Result<TradeOrder, RpcError> {
-    let order_id =
-        normalized_required_string(std::mem::take(&mut order.order_id), "order.order_id")?;
-    let listing_addr_raw = normalized_required_string(
-        std::mem::take(&mut order.listing_addr),
-        "order.listing_addr",
-    )?;
-    let listing_addr = TradeListingAddress::parse(&listing_addr_raw)
-        .map_err(|error| RpcError::InvalidParams(format!("invalid order.listing_addr: {error}")))?;
-    if u32::from(listing_addr.kind) != KIND_LISTING {
-        return Err(RpcError::InvalidParams(
-            "order.listing_addr must reference a public NIP-99 listing".to_string(),
-        ));
-    }
-
-    let buyer_pubkey = if order.buyer_pubkey.trim().is_empty() {
-        signer_pubkey.to_string()
-    } else {
-        normalized_required_string(
-            std::mem::take(&mut order.buyer_pubkey),
-            "order.buyer_pubkey",
-        )?
-    };
-    if buyer_pubkey != signer_pubkey {
-        return Err(RpcError::InvalidParams(
-            "order.buyer_pubkey must match the requested bridge signer identity".to_string(),
-        ));
-    }
-
-    let seller_pubkey = if order.seller_pubkey.trim().is_empty() {
-        listing_addr.seller_pubkey.clone()
-    } else {
-        normalized_required_string(
-            std::mem::take(&mut order.seller_pubkey),
-            "order.seller_pubkey",
-        )?
-    };
-    if seller_pubkey != listing_addr.seller_pubkey {
-        return Err(RpcError::InvalidParams(
-            "order.seller_pubkey must match order.listing_addr seller".to_string(),
-        ));
-    }
-
-    radroots_nostr_parse_pubkey(&buyer_pubkey)
-        .map_err(|error| RpcError::InvalidParams(format!("invalid order.buyer_pubkey: {error}")))?;
-    radroots_nostr_parse_pubkey(&seller_pubkey).map_err(|error| {
-        RpcError::InvalidParams(format!("invalid order.seller_pubkey: {error}"))
-    })?;
-
-    if order.items.is_empty() {
-        return Err(RpcError::InvalidParams(
-            "order.items must contain at least one item".to_string(),
-        ));
-    }
-    for (index, item) in order.items.iter_mut().enumerate() {
-        item.bin_id = normalized_required_string(item.bin_id.clone(), "order.items[].bin_id")?;
-        if item.bin_count == 0 {
-            return Err(RpcError::InvalidParams(format!(
-                "order.items[{index}].bin_count must be greater than zero"
-            )));
-        }
-    }
-
-    order.order_id = order_id;
-    order.listing_addr = listing_addr.as_str();
-    order.buyer_pubkey = buyer_pubkey;
-    order.seller_pubkey = seller_pubkey;
-    if order.discounts.as_ref().is_some_and(Vec::is_empty) {
-        order.discounts = None;
-    }
-    Ok(order)
-}
-
-fn normalized_required_string(value: String, field: &str) -> Result<String, RpcError> {
-    let value = value.trim().to_string();
-    if value.is_empty() {
-        return Err(RpcError::InvalidParams(format!("{field} cannot be empty")));
-    }
-    Ok(value)
-}
-
 #[cfg(test)]
 mod tests {
     use radroots_core::RadrootsCoreDiscountValue;
@@ -302,10 +225,9 @@ mod tests {
     use crate::core::Radrootsd;
     use crate::core::nip46::session::Nip46Session;
     use crate::transport::jsonrpc::{MethodRegistry, RpcContext};
+    use radroots_trade::order::canonicalize_order_request_for_signer;
 
-    use super::{
-        BridgeOrderRequestParams, canonicalize_order_request_for_signer, publish_order_request,
-    };
+    use super::{BridgeOrderRequestParams, publish_order_request};
 
     #[test]
     fn canonicalize_order_request_sets_missing_buyer_and_seller_pubkeys() {
@@ -487,25 +409,28 @@ mod tests {
         let client = RadrootsNostrClient::new(signer_keys.clone());
         let client_keys = signer_keys.clone();
         let client_pubkey = client_keys.public_key();
-        ctx.state.nip46_sessions.insert(Nip46Session {
-            id: session_id.to_string(),
-            client,
-            client_keys,
-            client_pubkey,
-            remote_signer_pubkey,
-            user_pubkey: None,
-            relays: Vec::new(),
-            perms: vec!["sign_event".to_string()],
-            name: None,
-            url: None,
-            image: None,
-            expires_at: Some(Instant::now() + std::time::Duration::from_secs(60)),
-            auth_required: false,
-            authorized: true,
-            auth_url: None,
-            pending_request: None,
-            signer_authority: None,
-        }).await;
+        ctx.state
+            .nip46_sessions
+            .insert(Nip46Session {
+                id: session_id.to_string(),
+                client,
+                client_keys,
+                client_pubkey,
+                remote_signer_pubkey,
+                user_pubkey: None,
+                relays: Vec::new(),
+                perms: vec!["sign_event".to_string()],
+                name: None,
+                url: None,
+                image: None,
+                expires_at: Some(Instant::now() + std::time::Duration::from_secs(60)),
+                auth_required: false,
+                authorized: true,
+                auth_url: None,
+                pending_request: None,
+                signer_authority: None,
+            })
+            .await;
         session_id.to_string()
     }
 
