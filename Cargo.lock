@@ -1761,8 +1761,10 @@ version = "0.1.0-alpha.2"
 dependencies = [
  "nostr",
  "radroots_events",
+ "radroots_protected_store",
  "radroots_runtime",
  "radroots_runtime_paths",
+ "radroots_secret_vault",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
