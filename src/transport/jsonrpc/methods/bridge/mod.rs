@@ -3,10 +3,12 @@ use jsonrpsee::server::RpcModule;
 
 use crate::transport::jsonrpc::{MethodRegistry, RpcContext};
 
+mod farm_publish;
 mod job_list;
 mod job_status;
 mod listing_publish;
 mod order_request;
+mod profile_publish;
 mod public_trade;
 mod shared;
 mod status;
@@ -16,6 +18,8 @@ pub fn module(ctx: RpcContext, registry: MethodRegistry) -> Result<RpcModule<Rpc
     status::register(&mut m, &registry)?;
     job_list::register(&mut m, &registry)?;
     job_status::register(&mut m, &registry)?;
+    profile_publish::register(&mut m, &registry)?;
+    farm_publish::register(&mut m, &registry)?;
     listing_publish::register(&mut m, &registry)?;
     order_request::register(&mut m, &registry)?;
     public_trade::register(&mut m, &registry)?;
