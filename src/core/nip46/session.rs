@@ -402,6 +402,43 @@ mod tests {
         assert!(view.expires_in_secs.is_some());
     }
 
+    #[test]
+    fn public_view_keeps_remote_signer_and_user_pubkeys_distinct() {
+        let client_keys = RadrootsNostrKeys::generate();
+        let remote_signer_keys = RadrootsNostrKeys::generate();
+        let user_keys = RadrootsNostrKeys::generate();
+        let session = Nip46Session {
+            id: "hydrated-outbound".to_string(),
+            client: RadrootsNostrClient::new(client_keys.clone()),
+            client_keys: client_keys.clone(),
+            client_pubkey: client_keys.public_key(),
+            remote_signer_pubkey: remote_signer_keys.public_key(),
+            user_pubkey: Some(user_keys.public_key()),
+            relays: vec!["wss://relay.example.com".to_string()],
+            perms: vec!["sign_event:30402".to_string()],
+            name: Some("remote signer".to_string()),
+            url: None,
+            image: None,
+            expires_at: Some(Instant::now() + Duration::from_secs(30)),
+            auth_required: false,
+            authorized: true,
+            auth_url: None,
+            pending_request: None,
+            signer_authority: None,
+        };
+
+        let view = session.public_view();
+        let expected_user_pubkey = user_keys.public_key().to_hex();
+
+        assert_eq!(view.role, Nip46SessionRole::OutboundRemoteSigner);
+        assert_eq!(view.signer_pubkey, remote_signer_keys.public_key().to_hex());
+        assert_eq!(
+            view.user_pubkey.as_deref(),
+            Some(expected_user_pubkey.as_str())
+        );
+        assert_ne!(view.signer_pubkey, expected_user_pubkey);
+    }
+
     #[tokio::test]
     async fn session_store_keeps_active() {
         let store = Nip46SessionStore::new();
