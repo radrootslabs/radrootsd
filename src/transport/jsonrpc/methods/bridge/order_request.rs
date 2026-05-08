@@ -1,23 +1,12 @@
 use anyhow::Result;
 use jsonrpsee::server::RpcModule;
 use radroots_events::RadrootsNostrEventPtr;
-use radroots_events::kinds::KIND_LISTING;
-use radroots_events::trade::{
-    RadrootsTradeEnvelope as TradeListingEnvelope,
-    RadrootsTradeMessagePayload as TradeListingMessagePayload,
-    RadrootsTradeMessageType as TradeListingMessageType, RadrootsTradeOrder as TradeOrder,
-};
-use radroots_events_codec::trade::{
-    RadrootsTradeListingAddress as TradeListingAddress,
-    trade_envelope_event_build as trade_listing_envelope_event_build,
-};
-use radroots_nostr::prelude::{
-    RadrootsNostrFilter, RadrootsNostrKind, radroots_event_ptr_from_nostr,
-    radroots_nostr_build_event, radroots_nostr_filter_tag, radroots_nostr_parse_pubkey,
-};
-use radroots_trade::order::canonicalize_order_request_for_signer;
-use serde::Deserialize;
-use std::time::Duration;
+use radroots_events::kinds::KIND_TRADE_ORDER_REQUEST;
+use radroots_events::trade::RadrootsTradeOrderRequested as TradeOrder;
+use radroots_events_codec::trade::active_trade_order_request_event_build;
+use radroots_nostr::prelude::{radroots_nostr_build_event, radroots_nostr_parse_pubkey};
+use radroots_trade::order::canonicalize_active_order_request_for_signer;
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::core::bridge::publish::{
@@ -36,12 +25,19 @@ use crate::transport::jsonrpc::{MethodRegistry, RpcContext, RpcError};
 #[derive(Debug, Deserialize)]
 struct BridgeOrderRequestParams {
     order: TradeOrder,
+    listing_event: RadrootsNostrEventPtr,
     #[serde(default)]
     signer_session_id: Option<String>,
     #[serde(default)]
     signer_authority: Option<Nip46SessionAuthority>,
     #[serde(default)]
     idempotency_key: Option<String>,
+}
+
+#[derive(Serialize)]
+struct CanonicalBridgeOrderRequest<'a> {
+    order: &'a TradeOrder,
+    listing_event: &'a RadrootsNostrEventPtr,
 }
 
 pub fn register(m: &mut RpcModule<RpcContext>, registry: &MethodRegistry) -> Result<()> {
@@ -71,42 +67,33 @@ async fn publish_order_request(
         &ctx,
         params.signer_session_id.as_deref(),
         params.signer_authority.as_ref(),
-        u32::from(TradeListingMessageType::OrderRequest.kind()),
+        KIND_TRADE_ORDER_REQUEST,
         "bridge.order.request",
     )
     .await?;
     let signer_pubkey = signer.signer_pubkey_hex();
-    let order = canonicalize_order_request_for_signer(params.order, signer_pubkey.as_str())
+    let listing_event = params.listing_event;
+    let order = canonicalize_active_order_request_for_signer(params.order, signer_pubkey.as_str())
         .map_err(|error| RpcError::InvalidParams(error.to_string()))?;
     radroots_nostr_parse_pubkey(&order.buyer_pubkey)
         .map_err(|error| RpcError::InvalidParams(format!("invalid order.buyer_pubkey: {error}")))?;
     radroots_nostr_parse_pubkey(&order.seller_pubkey).map_err(|error| {
         RpcError::InvalidParams(format!("invalid order.seller_pubkey: {error}"))
     })?;
-    let request_fingerprint = fingerprint_bridge_request("bridge.order.request", &signer, &order)?;
-    let envelope = TradeListingEnvelope::new(
-        TradeListingMessageType::OrderRequest,
-        order.listing_addr.clone(),
-        Some(order.order_id.clone()),
-        order.clone(),
-    );
-    envelope.validate().map_err(|error| {
-        RpcError::InvalidParams(format!("invalid order request envelope: {error}"))
-    })?;
-    let listing_snapshot = fetch_listing_snapshot(&ctx, &order.listing_addr).await?;
-    let built = trade_listing_envelope_event_build(
-        order.seller_pubkey.clone(),
-        TradeListingMessageType::OrderRequest,
-        order.listing_addr.clone(),
-        Some(order.order_id.clone()),
-        Some(&listing_snapshot),
-        None,
-        None,
-        &TradeListingMessagePayload::OrderRequest(order.clone()),
-    )
-    .map_err(|error| RpcError::Other(format!("failed to build order request event: {error}")))?;
-    let builder = radroots_nostr_build_event(u32::from(built.kind), built.content, built.tags)
-        .map_err(|error| {
+    let request_fingerprint = fingerprint_bridge_request(
+        "bridge.order.request",
+        &signer,
+        &CanonicalBridgeOrderRequest {
+            order: &order,
+            listing_event: &listing_event,
+        },
+    )?;
+    let built =
+        active_trade_order_request_event_build(&listing_event, &order).map_err(|error| {
+            RpcError::Other(format!("failed to build order request event: {error}"))
+        })?;
+    let builder =
+        radroots_nostr_build_event(built.kind, built.content, built.tags).map_err(|error| {
             RpcError::Other(format!("failed to build order request event: {error}"))
         })?;
 
@@ -116,7 +103,7 @@ async fn publish_order_request(
             Uuid::new_v4().to_string(),
             idempotency_key,
             signer.signer_mode(),
-            u32::from(TradeListingMessageType::OrderRequest.kind()),
+            KIND_TRADE_ORDER_REQUEST,
             None,
             order.listing_addr.clone(),
             ctx.state.bridge_config.delivery_policy,
@@ -163,57 +150,18 @@ async fn publish_order_request(
     })
 }
 
-async fn fetch_listing_snapshot(
-    ctx: &RpcContext,
-    listing_addr: &str,
-) -> Result<RadrootsNostrEventPtr, RpcError> {
-    let listing_addr = TradeListingAddress::parse(listing_addr)
-        .map_err(|error| RpcError::InvalidParams(format!("invalid order.listing_addr: {error}")))?;
-    if ctx.state.client.relays().await.is_empty() {
-        return Ok(synthetic_listing_snapshot(&listing_addr));
-    }
-    let filter = RadrootsNostrFilter::new()
-        .author(
-            radroots_nostr_parse_pubkey(&listing_addr.seller_pubkey).map_err(|error| {
-                RpcError::InvalidParams(format!("invalid order.seller_pubkey: {error}"))
-            })?,
-        )
-        .kind(RadrootsNostrKind::Custom(KIND_LISTING as u16));
-    let filter = radroots_nostr_filter_tag(filter, "d", vec![listing_addr.listing_id.clone()])
-        .map_err(|error| {
-            RpcError::Other(format!("failed to build listing snapshot filter: {error}"))
-        })?;
-    let mut events = ctx
-        .state
-        .client
-        .fetch_events(filter, Duration::from_secs(10))
-        .await
-        .map_err(|error| {
-            RpcError::Other(format!(
-                "failed to fetch listing snapshot for bridge.order.request: {error}"
-            ))
-        })?;
-    events.sort_by_key(|event| event.created_at);
-    let event = events.pop().ok_or_else(|| {
-        RpcError::InvalidParams(
-            "order.listing_addr must reference an existing public NIP-99 listing".to_string(),
-        )
-    })?;
-    Ok(radroots_event_ptr_from_nostr(&event))
-}
-
-fn synthetic_listing_snapshot(listing_addr: &TradeListingAddress) -> RadrootsNostrEventPtr {
-    RadrootsNostrEventPtr {
-        id: format!("listing:{}", listing_addr.as_str()),
-        relays: None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use radroots_core::RadrootsCoreDiscountValue;
+    use radroots_core::{
+        RadrootsCoreCurrency, RadrootsCoreDecimal, RadrootsCoreMoney, RadrootsCoreUnit,
+    };
+    use radroots_events::RadrootsNostrEventPtr;
     use radroots_events::trade::{
-        RadrootsTradeOrder as TradeOrder, RadrootsTradeOrderItem as TradeOrderItem,
+        RadrootsTradeOrderEconomicItem as TradeOrderEconomicItem,
+        RadrootsTradeOrderEconomicLine as TradeOrderEconomicLine,
+        RadrootsTradeOrderEconomics as TradeOrderEconomics,
+        RadrootsTradeOrderItem as TradeOrderItem, RadrootsTradeOrderRequested as TradeOrder,
+        RadrootsTradePricingBasis as TradePricingBasis,
     };
     use radroots_identity::RadrootsIdentity;
     use radroots_nostr::prelude::{
@@ -225,13 +173,13 @@ mod tests {
     use crate::core::Radrootsd;
     use crate::core::nip46::session::Nip46Session;
     use crate::transport::jsonrpc::{MethodRegistry, RpcContext};
-    use radroots_trade::order::canonicalize_order_request_for_signer;
+    use radroots_trade::order::canonicalize_active_order_request_for_signer;
 
     use super::{BridgeOrderRequestParams, publish_order_request};
 
     #[test]
     fn canonicalize_order_request_sets_missing_buyer_and_seller_pubkeys() {
-        let order = canonicalize_order_request_for_signer(
+        let order = canonicalize_active_order_request_for_signer(
             base_order("", ""),
             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         )
@@ -254,26 +202,12 @@ mod tests {
             "",
         );
         order.items[0].bin_count = 0;
-        let err = canonicalize_order_request_for_signer(
+        let err = canonicalize_active_order_request_for_signer(
             order,
             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         )
         .expect_err("zero bin count");
         assert!(err.to_string().contains("bin_count"));
-    }
-
-    #[test]
-    fn canonicalize_order_request_drops_empty_discounts() {
-        let order = canonicalize_order_request_for_signer(
-            base_order(
-                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                "",
-            ),
-            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        )
-        .expect("canonicalize");
-
-        assert_eq!(order.discounts, None);
     }
 
     #[tokio::test]
@@ -296,6 +230,7 @@ mod tests {
         let session_id = insert_signer_session(&ctx, "session-1").await;
         let params = BridgeOrderRequestParams {
             order: base_order("", ""),
+            listing_event: base_listing_event(),
             signer_session_id: Some(session_id.clone()),
             signer_authority: None,
             idempotency_key: Some("same-key".to_string()),
@@ -312,6 +247,7 @@ mod tests {
             ctx,
             BridgeOrderRequestParams {
                 order: base_order("", ""),
+                listing_event: base_listing_event(),
                 signer_session_id: Some(session_id),
                 signer_authority: None,
                 idempotency_key: Some("same-key".to_string()),
@@ -345,6 +281,7 @@ mod tests {
             ctx.clone(),
             BridgeOrderRequestParams {
                 order: base_order("", ""),
+                listing_event: base_listing_event(),
                 signer_session_id: Some(session_id.clone()),
                 signer_authority: None,
                 idempotency_key: Some("same-key".to_string()),
@@ -359,6 +296,7 @@ mod tests {
             ctx,
             BridgeOrderRequestParams {
                 order: conflicting,
+                listing_event: base_listing_event(),
                 signer_session_id: Some(session_id),
                 signer_authority: None,
                 idempotency_key: Some("same-key".to_string()),
@@ -391,6 +329,7 @@ mod tests {
             ctx,
             BridgeOrderRequestParams {
                 order: base_order("", ""),
+                listing_event: base_listing_event(),
                 signer_session_id: None,
                 signer_authority: None,
                 idempotency_key: Some("missing-session".to_string()),
@@ -438,6 +377,52 @@ mod tests {
         "30402:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:AAAAAAAAAAAAAAAAAAAAAg"
     }
 
+    fn base_listing_event() -> RadrootsNostrEventPtr {
+        RadrootsNostrEventPtr {
+            id: "listing-event-1".to_string(),
+            relays: None,
+        }
+    }
+
+    fn base_order_economics() -> TradeOrderEconomics {
+        TradeOrderEconomics {
+            quote_id: "quote-1".to_string(),
+            quote_version: 1,
+            pricing_basis: TradePricingBasis::ListingEvent,
+            currency: RadrootsCoreCurrency::USD,
+            items: vec![TradeOrderEconomicItem {
+                bin_id: "bin-1".to_string(),
+                bin_count: 2,
+                quantity_amount: RadrootsCoreDecimal::from(1u32),
+                quantity_unit: RadrootsCoreUnit::Each,
+                unit_price_amount: RadrootsCoreDecimal::from(5u32),
+                unit_price_currency: RadrootsCoreCurrency::USD,
+                line_subtotal: RadrootsCoreMoney::new(
+                    RadrootsCoreDecimal::from(10u32),
+                    RadrootsCoreCurrency::USD,
+                ),
+            }],
+            discounts: Vec::<TradeOrderEconomicLine>::new(),
+            adjustments: Vec::<TradeOrderEconomicLine>::new(),
+            subtotal: RadrootsCoreMoney::new(
+                RadrootsCoreDecimal::from(10u32),
+                RadrootsCoreCurrency::USD,
+            ),
+            discount_total: RadrootsCoreMoney::new(
+                RadrootsCoreDecimal::from(0u32),
+                RadrootsCoreCurrency::USD,
+            ),
+            adjustment_total: RadrootsCoreMoney::new(
+                RadrootsCoreDecimal::from(0u32),
+                RadrootsCoreCurrency::USD,
+            ),
+            total: RadrootsCoreMoney::new(
+                RadrootsCoreDecimal::from(10u32),
+                RadrootsCoreCurrency::USD,
+            ),
+        }
+    }
+
     fn base_order(buyer_pubkey: &str, seller_pubkey: &str) -> TradeOrder {
         TradeOrder {
             order_id: "order-1".to_string(),
@@ -448,7 +433,7 @@ mod tests {
                 bin_id: "bin-1".to_string(),
                 bin_count: 2,
             }],
-            discounts: Some(Vec::<RadrootsCoreDiscountValue>::new()),
+            economics: base_order_economics(),
         }
     }
 }

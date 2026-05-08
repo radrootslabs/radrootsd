@@ -167,8 +167,8 @@ mod tests {
         RadrootsCoreCurrency, RadrootsCoreDecimal, RadrootsCoreMoney, RadrootsCoreQuantity,
         RadrootsCoreQuantityPrice, RadrootsCoreUnit,
     };
-    use radroots_events::kinds::{KIND_LISTING, KIND_LISTING_DRAFT};
     use radroots_events::farm::RadrootsFarmRef;
+    use radroots_events::kinds::{KIND_LISTING, KIND_LISTING_DRAFT};
     use radroots_events::listing::{
         RadrootsListing, RadrootsListingAvailability, RadrootsListingBin,
         RadrootsListingDeliveryMethod, RadrootsListingLocation, RadrootsListingProduct,

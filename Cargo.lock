@@ -1877,11 +1877,13 @@ version = "0.1.0-alpha.2"
 name = "radroots_trade"
 version = "0.1.0-alpha.2"
 dependencies = [
+ "hex",
  "radroots_core",
  "radroots_events",
  "radroots_events_codec",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror 1.0.69",
  "ts-rs",
 ]
