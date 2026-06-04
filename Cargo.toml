@@ -7,9 +7,6 @@ rust-version = "1.92.0"
 license = "AGPL-3.0-or-later"
 description = "Radroots local runtime daemon for storage, sync, and relay publishing"
 
-[package.metadata.radroots_release.build]
-backend = "cross"
-
 [workspace]
 resolver = "2"
 
