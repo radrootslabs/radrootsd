@@ -1,7 +1,6 @@
 use anyhow::Result;
 use nostr::Event;
 use radroots_nostr::prelude::RadrootsNostrEventBuilder;
-use radroots_nostr_signer::prelude::RadrootsNostrSignerBackend;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
@@ -101,9 +100,6 @@ pub(super) fn ensure_bridge_enabled(ctx: &RpcContext) -> Result<(), RpcError> {
 
 #[derive(Clone)]
 pub(super) enum BridgeSignerSelection {
-    EmbeddedServiceIdentity {
-        signer_pubkey_hex: String,
-    },
     Nip46Session {
         session_id: String,
         session: crate::core::nip46::session::Nip46Session,
@@ -113,49 +109,14 @@ pub(super) enum BridgeSignerSelection {
 impl BridgeSignerSelection {
     pub(super) fn signer_pubkey_hex(&self) -> String {
         match self {
-            Self::EmbeddedServiceIdentity { signer_pubkey_hex } => signer_pubkey_hex.clone(),
             Self::Nip46Session { session, .. } => session.remote_signer_pubkey.to_hex(),
         }
     }
 
     pub(super) fn signer_mode(&self) -> String {
         match self {
-            Self::EmbeddedServiceIdentity { .. } => "embedded_service_identity".to_string(),
             Self::Nip46Session { session_id, .. } => format!("nip46_session:{session_id}"),
         }
-    }
-}
-
-pub(super) fn bridge_signer_pubkey_hex(ctx: &RpcContext) -> Result<String, RpcError> {
-    Ok(ctx
-        .state
-        .bridge_signer
-        .signer_identity()
-        .map_err(|error| RpcError::Other(format!("bridge signer unavailable: {error}")))?
-        .ok_or_else(|| RpcError::Other("bridge signer identity is missing".to_string()))?
-        .public_key_hex)
-}
-
-pub(super) async fn resolve_bridge_signer(
-    ctx: &RpcContext,
-    signer_session_id: Option<&str>,
-    event_kind: u32,
-) -> Result<BridgeSignerSelection, RpcError> {
-    match signer_session_id
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        Some(session_id) => {
-            let session = nip46_session::get_session(ctx, session_id).await?;
-            nip46_session::require_sign_event_permission(&session, event_kind)?;
-            Ok(BridgeSignerSelection::Nip46Session {
-                session_id: session_id.to_string(),
-                session,
-            })
-        }
-        None => Ok(BridgeSignerSelection::EmbeddedServiceIdentity {
-            signer_pubkey_hex: bridge_signer_pubkey_hex(ctx)?,
-        }),
     }
 }
 
@@ -240,18 +201,12 @@ fn require_signer_authority(
 }
 
 pub(super) async fn sign_bridge_event_builder(
-    ctx: &RpcContext,
+    _ctx: &RpcContext,
     signer: &BridgeSignerSelection,
     builder: RadrootsNostrEventBuilder,
     label: &str,
 ) -> Result<Event, RpcError> {
     match signer {
-        BridgeSignerSelection::EmbeddedServiceIdentity { .. } => ctx
-            .state
-            .bridge_signer
-            .sign_event_builder(builder)
-            .map(|signed| signed.event)
-            .map_err(|error| RpcError::Other(format!("failed to sign {label} event: {error}"))),
         BridgeSignerSelection::Nip46Session { session, .. } => match session.role() {
             Nip46SessionRole::InboundLocalSigner => builder
                 .sign_with_keys(&session.client_keys)
@@ -329,7 +284,7 @@ mod tests {
 
     use super::{
         BridgeJobView, fingerprint_bridge_request, normalize_idempotency_key,
-        resolve_actor_bridge_signer, resolve_bridge_signer,
+        resolve_actor_bridge_signer,
     };
     use std::time::Instant;
 
@@ -337,53 +292,6 @@ mod tests {
     fn normalize_idempotency_key_rejects_empty_values() {
         let err = normalize_idempotency_key(Some("   ".to_string())).expect_err("empty key");
         assert!(err.to_string().contains("idempotency_key"));
-    }
-
-    #[tokio::test]
-    async fn resolve_bridge_signer_prefers_requested_nip46_session() {
-        let identity = RadrootsIdentity::generate();
-        let metadata: RadrootsNostrMetadata =
-            serde_json::from_str(r#"{"name":"radrootsd-test"}"#).expect("metadata");
-        let state = Radrootsd::new(
-            identity.clone(),
-            metadata,
-            BridgeConfig::default(),
-            Nip46Config::default(),
-        )
-        .expect("state");
-        let session_keys = RadrootsNostrKeys::generate();
-        state
-            .nip46_sessions
-            .insert(Nip46Session {
-                id: "session-1".to_string(),
-                client: RadrootsNostrClient::new(session_keys.clone()),
-                client_keys: session_keys.clone(),
-                client_pubkey: session_keys.public_key(),
-                remote_signer_pubkey: session_keys.public_key(),
-                user_pubkey: None,
-                relays: vec!["wss://relay.example.com".to_string()],
-                perms: vec!["sign_event".to_string()],
-                name: None,
-                url: None,
-                image: None,
-                expires_at: Some(Instant::now() + std::time::Duration::from_secs(60)),
-                auth_required: false,
-                authorized: true,
-                auth_url: None,
-                pending_request: None,
-                signer_authority: None,
-            })
-            .await;
-        let ctx = RpcContext::new(state, MethodRegistry::default());
-
-        let signer = resolve_bridge_signer(&ctx, Some("session-1"), 30402)
-            .await
-            .expect("session signer");
-        assert_eq!(
-            signer.signer_pubkey_hex(),
-            session_keys.public_key().to_hex()
-        );
-        assert_eq!(signer.signer_mode(), "nip46_session:session-1");
     }
 
     #[tokio::test]
@@ -526,9 +434,28 @@ mod tests {
 
     #[test]
     fn fingerprint_bridge_request_changes_when_request_changes() {
-        let signer = super::BridgeSignerSelection::EmbeddedServiceIdentity {
-            signer_pubkey_hex: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-                .to_string(),
+        let session_keys = RadrootsNostrKeys::generate();
+        let signer = super::BridgeSignerSelection::Nip46Session {
+            session_id: "session-1".to_string(),
+            session: Nip46Session {
+                id: "session-1".to_string(),
+                client: RadrootsNostrClient::new(session_keys.clone()),
+                client_keys: session_keys.clone(),
+                client_pubkey: session_keys.public_key(),
+                remote_signer_pubkey: session_keys.public_key(),
+                user_pubkey: None,
+                relays: vec!["wss://relay.example.com".to_string()],
+                perms: vec!["sign_event".to_string()],
+                name: None,
+                url: None,
+                image: None,
+                expires_at: None,
+                auth_required: false,
+                authorized: true,
+                auth_url: None,
+                pending_request: None,
+                signer_authority: None,
+            },
         };
         let first = fingerprint_bridge_request(
             "bridge.order.request",

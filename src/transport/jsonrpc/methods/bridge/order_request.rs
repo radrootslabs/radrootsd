@@ -1,11 +1,11 @@
 use anyhow::Result;
 use jsonrpsee::server::RpcModule;
 use radroots_events::RadrootsNostrEventPtr;
-use radroots_events::kinds::KIND_TRADE_ORDER_REQUEST;
-use radroots_events::trade::RadrootsTradeOrderRequested as TradeOrder;
-use radroots_events_codec::trade::active_trade_order_request_event_build;
+use radroots_events::kinds::KIND_ORDER_REQUEST;
+use radroots_events::order::RadrootsOrderRequest as TradeOrder;
+use radroots_events_codec::order::order_request_event_build;
 use radroots_nostr::prelude::{radroots_nostr_build_event, radroots_nostr_parse_pubkey};
-use radroots_trade::order::canonicalize_active_order_request_for_signer;
+use radroots_trade::order::canonicalize_order_request_for_signer;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -67,13 +67,13 @@ async fn publish_order_request(
         &ctx,
         params.signer_session_id.as_deref(),
         params.signer_authority.as_ref(),
-        KIND_TRADE_ORDER_REQUEST,
+        KIND_ORDER_REQUEST,
         "bridge.order.request",
     )
     .await?;
     let signer_pubkey = signer.signer_pubkey_hex();
     let listing_event = params.listing_event;
-    let order = canonicalize_active_order_request_for_signer(params.order, signer_pubkey.as_str())
+    let order = canonicalize_order_request_for_signer(params.order, signer_pubkey.as_str())
         .map_err(|error| RpcError::InvalidParams(error.to_string()))?;
     radroots_nostr_parse_pubkey(&order.buyer_pubkey)
         .map_err(|error| RpcError::InvalidParams(format!("invalid order.buyer_pubkey: {error}")))?;
@@ -88,10 +88,9 @@ async fn publish_order_request(
             listing_event: &listing_event,
         },
     )?;
-    let built =
-        active_trade_order_request_event_build(&listing_event, &order).map_err(|error| {
-            RpcError::Other(format!("failed to build order request event: {error}"))
-        })?;
+    let built = order_request_event_build(&listing_event, &order).map_err(|error| {
+        RpcError::Other(format!("failed to build order request event: {error}"))
+    })?;
     let builder =
         radroots_nostr_build_event(built.kind, built.content, built.tags).map_err(|error| {
             RpcError::Other(format!("failed to build order request event: {error}"))
@@ -103,7 +102,7 @@ async fn publish_order_request(
             Uuid::new_v4().to_string(),
             idempotency_key,
             signer.signer_mode(),
-            KIND_TRADE_ORDER_REQUEST,
+            KIND_ORDER_REQUEST,
             None,
             order.listing_addr.clone(),
             ctx.state.bridge_config.delivery_policy,
@@ -156,12 +155,11 @@ mod tests {
         RadrootsCoreCurrency, RadrootsCoreDecimal, RadrootsCoreMoney, RadrootsCoreUnit,
     };
     use radroots_events::RadrootsNostrEventPtr;
-    use radroots_events::trade::{
-        RadrootsTradeOrderEconomicItem as TradeOrderEconomicItem,
-        RadrootsTradeOrderEconomicLine as TradeOrderEconomicLine,
-        RadrootsTradeOrderEconomics as TradeOrderEconomics,
-        RadrootsTradeOrderItem as TradeOrderItem, RadrootsTradeOrderRequested as TradeOrder,
-        RadrootsTradePricingBasis as TradePricingBasis,
+    use radroots_events::order::{
+        RadrootsOrderEconomicItem as TradeOrderEconomicItem,
+        RadrootsOrderEconomicLine as TradeOrderEconomicLine,
+        RadrootsOrderEconomics as TradeOrderEconomics, RadrootsOrderItem as TradeOrderItem,
+        RadrootsOrderPricingBasis as TradePricingBasis, RadrootsOrderRequest as TradeOrder,
     };
     use radroots_identity::RadrootsIdentity;
     use radroots_nostr::prelude::{
@@ -173,13 +171,13 @@ mod tests {
     use crate::core::Radrootsd;
     use crate::core::nip46::session::Nip46Session;
     use crate::transport::jsonrpc::{MethodRegistry, RpcContext};
-    use radroots_trade::order::canonicalize_active_order_request_for_signer;
+    use radroots_trade::order::canonicalize_order_request_for_signer;
 
     use super::{BridgeOrderRequestParams, publish_order_request};
 
     #[test]
     fn canonicalize_order_request_sets_missing_buyer_and_seller_pubkeys() {
-        let order = canonicalize_active_order_request_for_signer(
+        let order = canonicalize_order_request_for_signer(
             base_order("", ""),
             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         )
@@ -202,7 +200,7 @@ mod tests {
             "",
         );
         order.items[0].bin_count = 0;
-        let err = canonicalize_active_order_request_for_signer(
+        let err = canonicalize_order_request_for_signer(
             order,
             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         )

@@ -9,7 +9,6 @@ mod job_status;
 mod listing_publish;
 mod order_request;
 mod profile_publish;
-mod public_trade;
 mod shared;
 mod status;
 
@@ -22,6 +21,5 @@ pub fn module(ctx: RpcContext, registry: MethodRegistry) -> Result<RpcModule<Rpc
     farm_publish::register(&mut m, &registry)?;
     listing_publish::register(&mut m, &registry)?;
     order_request::register(&mut m, &registry)?;
-    public_trade::register(&mut m, &registry)?;
     Ok(m)
 }

@@ -458,6 +458,7 @@ mod tests {
                 geohash: None,
             }),
             images: None,
+            published_at: None,
         }
     }
 }

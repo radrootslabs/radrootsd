@@ -24,7 +24,7 @@ radroots_trade = { path = "../lib/crates/trade" }
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage_nightly)'] }
 
 [dependencies]
-radroots_core = { workspace = true, features = ["std", "serde", "typeshare"]  }
+radroots_core = { workspace = true, features = ["std", "serde"]  }
 radroots_events = { workspace = true, features = ["serde"] }
 radroots_events_codec = { workspace = true, features = ["nostr", "serde_json"] }
 radroots_identity = { workspace = true }
