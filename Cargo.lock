@@ -1737,8 +1737,11 @@ dependencies = [
 name = "radroots_events"
 version = "0.1.0-alpha.2"
 dependencies = [
+ "hex",
  "radroots_core",
  "serde",
+ "serde_json",
+ "sha2",
 ]
 
 [[package]]

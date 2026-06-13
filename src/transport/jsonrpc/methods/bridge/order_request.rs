@@ -104,7 +104,7 @@ async fn publish_order_request(
             signer.signer_mode(),
             KIND_ORDER_REQUEST,
             None,
-            order.listing_addr.clone(),
+            order.listing_addr.to_string(),
             ctx.state.bridge_config.delivery_policy,
             ctx.state.bridge_config.delivery_quorum,
         ),
