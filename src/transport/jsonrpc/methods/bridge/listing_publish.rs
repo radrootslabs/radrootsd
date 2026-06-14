@@ -1,13 +1,12 @@
 use anyhow::Result;
 use jsonrpsee::server::RpcModule;
+use radroots_events::RadrootsNostrEvent;
+use radroots_events::kinds::{KIND_LISTING, KIND_LISTING_DRAFT, is_listing_kind};
 use radroots_events::listing::RadrootsListing;
 use radroots_events_codec::listing::encode::to_wire_parts_with_kind;
 use radroots_events_codec::wire::WireEventParts;
 use radroots_nostr::prelude::radroots_nostr_build_event;
-use radroots_trade::listing::publish::{
-    RadrootsTradeListingPublishError, canonicalize_listing_for_seller, resolve_listing_kind,
-    validate_listing_for_seller,
-};
+use radroots_trade::listing::validation::{RadrootsTradeListing, validate_listing_event};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -65,7 +64,7 @@ async fn publish_listing(
 ) -> Result<BridgePublishResponse, RpcError> {
     ensure_bridge_enabled(&ctx)?;
     let idempotency_key = normalize_idempotency_key(params.idempotency_key)?;
-    let kind = resolve_listing_kind(params.kind).map_err(map_listing_publish_error)?;
+    let kind = resolve_bridge_listing_kind(params.kind)?;
     let signer = resolve_actor_bridge_signer(
         &ctx,
         params.signer_session_id.as_deref(),
@@ -75,7 +74,7 @@ async fn publish_listing(
     )
     .await?;
     let signer_pubkey = signer.signer_pubkey_hex();
-    let listing = canonicalize_listing_for_seller(params.listing, signer_pubkey.as_str());
+    let listing = canonicalize_bridge_listing_for_signer(params.listing, signer_pubkey.as_str());
     let canonical = CanonicalBridgeListingPublishRequest { kind, listing };
     let request_fingerprint =
         fingerprint_bridge_request("bridge.listing.publish", &signer, &canonical)?;
@@ -150,15 +149,40 @@ fn validate_canonical_listing_contract_for_signer(
     listing: &RadrootsListing,
     signer_pubkey: &str,
     parts: &WireEventParts,
-) -> Result<radroots_trade::listing::validation::RadrootsTradeListing, RpcError> {
-    let validated = validate_listing_for_seller(listing.clone(), signer_pubkey, parts.kind)
-        .map_err(map_listing_publish_error)?;
+) -> Result<RadrootsTradeListing, RpcError> {
+    let event = RadrootsNostrEvent {
+        id: String::new(),
+        author: signer_pubkey.to_string(),
+        created_at: 0,
+        kind: parts.kind,
+        tags: parts.tags.clone(),
+        content: parts.content.clone(),
+        sig: String::new(),
+    };
+    let validated = validate_listing_event(&event)
+        .map_err(|error| RpcError::InvalidParams(format!("invalid listing contract: {error}")))?;
     debug_assert_eq!(validated.listing.d_tag, listing.d_tag);
     Ok(validated)
 }
 
-fn map_listing_publish_error(error: RadrootsTradeListingPublishError) -> RpcError {
-    RpcError::InvalidParams(error.to_string())
+fn resolve_bridge_listing_kind(kind: Option<u32>) -> Result<u32, RpcError> {
+    let kind = kind.unwrap_or(KIND_LISTING);
+    if !is_listing_kind(kind) {
+        return Err(RpcError::InvalidParams(format!(
+            "listing kind must be {KIND_LISTING} or {KIND_LISTING_DRAFT}"
+        )));
+    }
+    Ok(kind)
+}
+
+fn canonicalize_bridge_listing_for_signer(
+    mut listing: RadrootsListing,
+    signer_pubkey: &str,
+) -> RadrootsListing {
+    if listing.farm.pubkey.trim().is_empty() {
+        listing.farm.pubkey = signer_pubkey.to_string();
+    }
+    listing
 }
 
 #[cfg(test)]
@@ -168,6 +192,7 @@ mod tests {
         RadrootsCoreQuantityPrice, RadrootsCoreUnit,
     };
     use radroots_events::farm::RadrootsFarmRef;
+    use radroots_events::ids::{RadrootsDTag, RadrootsInventoryBinId};
     use radroots_events::kinds::{KIND_LISTING, KIND_LISTING_DRAFT};
     use radroots_events::listing::{
         RadrootsListing, RadrootsListingAvailability, RadrootsListingBin,
@@ -184,21 +209,21 @@ mod tests {
     use crate::core::Radrootsd;
     use crate::core::nip46::session::Nip46Session;
     use crate::transport::jsonrpc::{MethodRegistry, RpcContext};
-    use radroots_trade::listing::publish::canonicalize_listing_for_seller;
 
     use super::{
-        BridgeListingPublishParams, publish_listing, validate_canonical_listing_contract_for_signer,
+        BridgeListingPublishParams, canonicalize_bridge_listing_for_signer, publish_listing,
+        validate_canonical_listing_contract_for_signer,
     };
 
     #[test]
     fn canonicalize_listing_sets_missing_farm_pubkey() {
-        let listing = canonicalize_listing_for_seller(base_listing(), "abc123");
+        let listing = canonicalize_bridge_listing_for_signer(base_listing(), "abc123");
         assert_eq!(listing.farm.pubkey, "abc123");
     }
 
     #[test]
     fn validate_canonical_listing_contract_rejects_mismatched_seller_before_sign() {
-        let listing = canonicalize_listing_for_seller(base_listing(), "abc123");
+        let listing = canonicalize_bridge_listing_for_signer(base_listing(), "abc123");
         let mut invalid = listing.clone();
         invalid.farm.pubkey = "other".to_string();
         let parts = to_wire_parts_with_kind(&invalid, KIND_LISTING).expect("wire parts");
@@ -401,7 +426,7 @@ mod tests {
 
     fn base_listing() -> RadrootsListing {
         RadrootsListing {
-            d_tag: "AAAAAAAAAAAAAAAAAAAAAg".to_string(),
+            d_tag: RadrootsDTag::parse("AAAAAAAAAAAAAAAAAAAAAg").expect("listing d tag"),
             farm: RadrootsFarmRef {
                 pubkey: String::new(),
                 d_tag: "AAAAAAAAAAAAAAAAAAAAAw".to_string(),
@@ -417,9 +442,9 @@ mod tests {
                 profile: None,
                 year: None,
             },
-            primary_bin_id: "bin-1".to_string(),
+            primary_bin_id: RadrootsInventoryBinId::parse("bin-1").expect("primary bin id"),
             bins: vec![RadrootsListingBin {
-                bin_id: "bin-1".to_string(),
+                bin_id: RadrootsInventoryBinId::parse("bin-1").expect("bin id"),
                 quantity: RadrootsCoreQuantity::new(
                     RadrootsCoreDecimal::from(1000u32),
                     RadrootsCoreUnit::MassG,

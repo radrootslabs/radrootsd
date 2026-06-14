@@ -1725,6 +1725,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
 
 [[package]]
+name = "radroots_authority"
+version = "0.1.0-alpha.2"
+dependencies = [
+ "radroots_events",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "radroots_core"
 version = "0.1.0-alpha.2"
 dependencies = [
@@ -1879,6 +1887,7 @@ version = "0.1.0-alpha.2"
 dependencies = [
  "base64 0.22.1",
  "hex",
+ "radroots_authority",
  "radroots_core",
  "radroots_events",
  "radroots_events_codec",

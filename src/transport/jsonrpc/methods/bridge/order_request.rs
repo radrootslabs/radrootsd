@@ -155,6 +155,10 @@ mod tests {
         RadrootsCoreCurrency, RadrootsCoreDecimal, RadrootsCoreMoney, RadrootsCoreUnit,
     };
     use radroots_events::RadrootsNostrEventPtr;
+    use radroots_events::ids::{
+        RadrootsInventoryBinId, RadrootsListingAddress, RadrootsOrderId, RadrootsOrderQuoteId,
+        RadrootsPublicKey,
+    };
     use radroots_events::order::{
         RadrootsOrderEconomicItem as TradeOrderEconomicItem,
         RadrootsOrderEconomicLine as TradeOrderEconomicLine,
@@ -175,36 +179,26 @@ mod tests {
 
     use super::{BridgeOrderRequestParams, publish_order_request};
 
-    #[test]
-    fn canonicalize_order_request_sets_missing_buyer_and_seller_pubkeys() {
-        let order = canonicalize_order_request_for_signer(
-            base_order("", ""),
-            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        )
-        .expect("canonicalize");
+    const BUYER: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const SELLER: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 
-        assert_eq!(
-            order.buyer_pubkey,
-            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-        );
-        assert_eq!(
-            order.seller_pubkey,
-            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-        );
+    #[test]
+    fn canonicalize_order_request_accepts_matching_buyer_and_seller_pubkeys() {
+        let order = canonicalize_order_request_for_signer(base_order("", ""), BUYER)
+            .expect("canonicalize");
+
+        assert_eq!(order.buyer_pubkey, BUYER);
+        assert_eq!(order.seller_pubkey, SELLER);
     }
 
     #[test]
     fn canonicalize_order_request_rejects_items_with_zero_bin_count() {
         let mut order = base_order(
-            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "",
+            BUYER, "",
         );
         order.items[0].bin_count = 0;
-        let err = canonicalize_order_request_for_signer(
-            order,
-            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        )
-        .expect_err("zero bin count");
+        let err =
+            canonicalize_order_request_for_signer(order, BUYER).expect_err("zero bin count");
         assert!(err.to_string().contains("bin_count"));
     }
 
@@ -225,9 +219,9 @@ mod tests {
         )
         .expect("state");
         let ctx = RpcContext::new(state, MethodRegistry::default());
-        let session_id = insert_signer_session(&ctx, "session-1").await;
+        let (session_id, signer_pubkey) = insert_signer_session(&ctx, "session-1").await;
         let params = BridgeOrderRequestParams {
-            order: base_order("", ""),
+            order: base_order(signer_pubkey.as_str(), ""),
             listing_event: base_listing_event(),
             signer_session_id: Some(session_id.clone()),
             signer_authority: None,
@@ -244,7 +238,7 @@ mod tests {
         let second = publish_order_request(
             ctx,
             BridgeOrderRequestParams {
-                order: base_order("", ""),
+                order: base_order(signer_pubkey.as_str(), ""),
                 listing_event: base_listing_event(),
                 signer_session_id: Some(session_id),
                 signer_authority: None,
@@ -274,11 +268,11 @@ mod tests {
         )
         .expect("state");
         let ctx = RpcContext::new(state, MethodRegistry::default());
-        let session_id = insert_signer_session(&ctx, "session-1").await;
+        let (session_id, signer_pubkey) = insert_signer_session(&ctx, "session-1").await;
         publish_order_request(
             ctx.clone(),
             BridgeOrderRequestParams {
-                order: base_order("", ""),
+                order: base_order(signer_pubkey.as_str(), ""),
                 listing_event: base_listing_event(),
                 signer_session_id: Some(session_id.clone()),
                 signer_authority: None,
@@ -288,8 +282,8 @@ mod tests {
         .await
         .expect("first");
 
-        let mut conflicting = base_order("", "");
-        conflicting.order_id = "order-2".to_string();
+        let mut conflicting = base_order(signer_pubkey.as_str(), "");
+        conflicting.order_id = RadrootsOrderId::parse("order-2").expect("order id");
         let err = publish_order_request(
             ctx,
             BridgeOrderRequestParams {
@@ -338,7 +332,7 @@ mod tests {
         assert!(err.to_string().contains("requires signer_session_id"));
     }
 
-    async fn insert_signer_session(ctx: &RpcContext, session_id: &str) -> String {
+    async fn insert_signer_session(ctx: &RpcContext, session_id: &str) -> (String, String) {
         let signer_keys = RadrootsNostrKeys::generate();
         let signer_pubkey = signer_keys.public_key().to_hex();
         let remote_signer_pubkey =
@@ -368,7 +362,7 @@ mod tests {
                 signer_authority: None,
             })
             .await;
-        session_id.to_string()
+        (session_id.to_string(), signer_pubkey)
     }
 
     fn base_listing_addr() -> &'static str {
@@ -377,19 +371,19 @@ mod tests {
 
     fn base_listing_event() -> RadrootsNostrEventPtr {
         RadrootsNostrEventPtr {
-            id: "listing-event-1".to_string(),
+            id: "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc".to_string(),
             relays: None,
         }
     }
 
     fn base_order_economics() -> TradeOrderEconomics {
         TradeOrderEconomics {
-            quote_id: "quote-1".to_string(),
+            quote_id: RadrootsOrderQuoteId::parse("quote-1").expect("quote id"),
             quote_version: 1,
             pricing_basis: TradePricingBasis::ListingEvent,
             currency: RadrootsCoreCurrency::USD,
             items: vec![TradeOrderEconomicItem {
-                bin_id: "bin-1".to_string(),
+                bin_id: RadrootsInventoryBinId::parse("bin-1").expect("bin id"),
                 bin_count: 2,
                 quantity_amount: RadrootsCoreDecimal::from(1u32),
                 quantity_unit: RadrootsCoreUnit::Each,
@@ -423,15 +417,21 @@ mod tests {
 
     fn base_order(buyer_pubkey: &str, seller_pubkey: &str) -> TradeOrder {
         TradeOrder {
-            order_id: "order-1".to_string(),
-            listing_addr: base_listing_addr().to_string(),
-            buyer_pubkey: buyer_pubkey.to_string(),
-            seller_pubkey: seller_pubkey.to_string(),
+            order_id: RadrootsOrderId::parse("order-1").expect("order id"),
+            listing_addr: RadrootsListingAddress::parse(base_listing_addr())
+                .expect("listing address"),
+            buyer_pubkey: pubkey_or(BUYER, buyer_pubkey),
+            seller_pubkey: pubkey_or(SELLER, seller_pubkey),
             items: vec![TradeOrderItem {
-                bin_id: "bin-1".to_string(),
+                bin_id: RadrootsInventoryBinId::parse("bin-1").expect("bin id"),
                 bin_count: 2,
             }],
             economics: base_order_economics(),
         }
+    }
+
+    fn pubkey_or(default: &str, value: &str) -> RadrootsPublicKey {
+        let value = if value.is_empty() { default } else { value };
+        RadrootsPublicKey::parse(value).expect("pubkey")
     }
 }
