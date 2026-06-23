@@ -17,6 +17,7 @@ struct JobGetParams {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct JobListParams {
     limit: Option<usize>,
 }
@@ -386,6 +387,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn publish_job_list_rejects_unknown_fields() {
+        let (module, _ctx, _token, _event) = module_with_principal(false);
+        for params in [
+            r#"{"cursor":"next"}"#,
+            r#"{"status":"publishing"}"#,
+            r#"{"limit":1,"extra":true}"#,
+        ] {
+            let request = format!(
+                r#"{{
+                    "jsonrpc":"2.0",
+                    "method":"publish.job.list",
+                    "params":{params},
+                    "id":1
+                }}"#
+            );
+            let (response, _stream) = module
+                .raw_json_request(request.as_str(), 1)
+                .await
+                .expect("unknown field request");
+            assert!(
+                response.get().contains("\"code\":-32602"),
+                "{}",
+                response.get()
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn publish_job_list_uses_configured_limit_when_omitted_and_caps_positive_limits() {
         let mut config = PublishProxyConfig {
             daemon_default_publish_relays: vec!["wss://relay.example.com".to_owned()],
@@ -427,6 +456,20 @@ mod tests {
             .expect("omitted request");
         let value: serde_json::Value =
             serde_json::from_str(response.get()).expect("omitted response json");
+        assert_eq!(value["result"].as_array().expect("jobs").len(), 1);
+
+        let empty_array = r#"{
+            "jsonrpc":"2.0",
+            "method":"publish.job.list",
+            "params":[],
+            "id":1
+        }"#;
+        let (response, _stream) = module
+            .raw_json_request(empty_array, 1)
+            .await
+            .expect("empty array request");
+        let value: serde_json::Value =
+            serde_json::from_str(response.get()).expect("empty array response json");
         assert_eq!(value["result"].as_array().expect("jobs").len(), 1);
 
         let over_limit = r#"{
