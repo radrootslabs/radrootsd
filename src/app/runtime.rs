@@ -14,7 +14,6 @@ use crate::transport::nostr::listener::spawn_nip46_listener;
 use anyhow::Context;
 #[cfg(not(test))]
 use clap::Parser;
-use radroots_events::kinds::KIND_LISTING;
 use radroots_events::profile::RadrootsProfileType;
 use radroots_nostr::prelude::{
     RadrootsNostrApplicationHandlerSpec, RadrootsNostrKind,
@@ -58,9 +57,9 @@ struct RadrootsdRuntimeStartupReport {
     identity_path: PathBuf,
     identity_path_source: String,
     canonical_identity_path: PathBuf,
-    bridge_state_path: PathBuf,
-    bridge_state_path_source: String,
-    canonical_bridge_state_path: PathBuf,
+    publish_proxy_database_path: PathBuf,
+    publish_proxy_database_path_source: String,
+    canonical_publish_proxy_database_path: PathBuf,
     path_overrides: paths::RadrootsdRuntimePathOverrideContractOutput,
     migration: paths::RadrootsdRuntimeMigrationContractOutput,
     default_shared_secret_backend: String,
@@ -197,12 +196,14 @@ fn runtime_startup_report(
             &contract.canonical_identity_path,
         ),
         canonical_identity_path: contract.canonical_identity_path.clone(),
-        bridge_state_path: settings.config.bridge.state_path.clone(),
-        bridge_state_path_source: config_or_profile_path_source(
-            &settings.config.bridge.state_path,
-            &contract.canonical_bridge_state_path,
+        publish_proxy_database_path: settings.config.publish_proxy.database_path.clone(),
+        publish_proxy_database_path_source: config_or_profile_path_source(
+            &settings.config.publish_proxy.database_path,
+            &contract.canonical_publish_proxy_database_path,
         ),
-        canonical_bridge_state_path: contract.canonical_bridge_state_path.clone(),
+        canonical_publish_proxy_database_path: contract
+            .canonical_publish_proxy_database_path
+            .clone(),
         path_overrides: contract.path_overrides.clone(),
         migration,
         default_shared_secret_backend: contract.default_shared_secret_backend.clone(),
@@ -252,9 +253,9 @@ fn log_runtime_startup_report(report: &RadrootsdRuntimeStartupReport) {
         identity_path = %report.identity_path.display(),
         identity_path_source = report.identity_path_source.as_str(),
         canonical_identity_path = %report.canonical_identity_path.display(),
-        bridge_state_path = %report.bridge_state_path.display(),
-        bridge_state_path_source = report.bridge_state_path_source.as_str(),
-        canonical_bridge_state_path = %report.canonical_bridge_state_path.display(),
+        publish_proxy_database_path = %report.publish_proxy_database_path.display(),
+        publish_proxy_database_path_source = report.publish_proxy_database_path_source.as_str(),
+        canonical_publish_proxy_database_path = %report.canonical_publish_proxy_database_path.display(),
         default_shared_secret_backend = report.default_shared_secret_backend.as_str(),
         allowed_shared_secret_backends = ?report.allowed_shared_secret_backends,
         "radrootsd runtime contract"
@@ -292,10 +293,9 @@ async fn publish_service_presence(
     identity: RadrootsIdentity,
     metadata: radroots_nostr::prelude::RadrootsNostrMetadata,
     service_cfg: radroots_runtime::RadrootsNostrServiceConfig,
-    bridge_config: config::BridgeConfig,
     nip46_config: config::Nip46Config,
 ) -> Result<()> {
-    let kinds = service_presence_kinds(&bridge_config);
+    let kinds = service_presence_kinds();
     let handler_spec = RadrootsNostrApplicationHandlerSpec {
         kinds,
         identifier: service_cfg.nip89_identifier.clone(),
@@ -313,20 +313,12 @@ async fn maybe_publish_service_presence(
     identity: RadrootsIdentity,
     metadata: radroots_nostr::prelude::RadrootsNostrMetadata,
     service_cfg: radroots_runtime::RadrootsNostrServiceConfig,
-    bridge_config: config::BridgeConfig,
     nip46_config: config::Nip46Config,
 ) {
     #[cfg(test)]
     {
-        let result = publish_service_presence(
-            client,
-            identity,
-            metadata,
-            service_cfg,
-            bridge_config,
-            nip46_config,
-        )
-        .await;
+        let result =
+            publish_service_presence(client, identity, metadata, service_cfg, nip46_config).await;
         if let Err(err) = result {
             warn!("Failed to publish service presence on startup: {err}");
         } else {
@@ -337,15 +329,8 @@ async fn maybe_publish_service_presence(
 
     #[cfg(not(test))]
     tokio::spawn(async move {
-        let result = publish_service_presence(
-            client,
-            identity,
-            metadata,
-            service_cfg,
-            bridge_config,
-            nip46_config,
-        )
-        .await;
+        let result =
+            publish_service_presence(client, identity, metadata, service_cfg, nip46_config).await;
         if let Err(err) = result {
             warn!("Failed to publish service presence on startup: {err}");
         } else {
@@ -403,6 +388,51 @@ async fn wait_for_shutdown_or_stopped(handle: ServerHandle) -> RunWaitOutcome {
     }
 }
 
+async fn handle_command(command: cli::Command, settings: &config::Settings) -> Result<()> {
+    match command {
+        cli::Command::PublishProxy(command) => match command.command {
+            cli::PublishProxySubcommand::Principal(command) => match command.command {
+                cli::PrincipalSubcommand::Init(args) => {
+                    let token = crate::core::publish_proxy::generate_bearer_token();
+                    let token_hash = crate::core::publish_proxy::hash_bearer_token(token.as_str());
+                    let store = crate::core::publish_proxy::PublishProxyStore::open(
+                        settings.config.publish_proxy.database_path.clone(),
+                    )?;
+                    let principal = store.create_principal(
+                        crate::core::publish_proxy::PublishPrincipalInit {
+                            label: args.label,
+                            token_hash,
+                            allowed_pubkeys: args.allowed_pubkey,
+                            allowed_kinds: args.allowed_kind,
+                            allowed_relay_policies: args
+                                .allowed_relay_policy
+                                .iter()
+                                .map(|policy| {
+                                    crate::core::publish_proxy::parse_relay_policy(policy.as_str())
+                                })
+                                .collect::<Result<Vec<_>, _>>()?,
+                            allow_request_relays: args.allow_request_relays,
+                            job_visibility: args.job_visibility.parse()?,
+                            expires_at_unix: None,
+                        },
+                    )?;
+                    crate::core::publish_proxy::write_token_file(&args.token_file, token.as_str())?;
+                    println!(
+                        "{}",
+                        serde_json::json!({
+                            "principal_id": principal.principal_id,
+                            "label": principal.label,
+                            "token_file": args.token_file,
+                            "database_path": settings.config.publish_proxy.database_path,
+                        })
+                    );
+                    Ok(())
+                }
+            },
+        },
+    }
+}
+
 pub async fn run() -> Result<()> {
     let (args, settings): (cli::Args, config::Settings) = load_args_and_settings()?;
     settings.config.validate()?;
@@ -416,6 +446,10 @@ pub async fn run() -> Result<()> {
         log_runtime_startup_report(&report);
     }
 
+    if let Some(command) = args.command.clone() {
+        return handle_command(command, &settings).await;
+    }
+
     info!("Starting radrootsd");
 
     let identity = load_service_identity(
@@ -425,7 +459,7 @@ pub async fn run() -> Result<()> {
     let radrootsd = Radrootsd::new(
         identity.clone(),
         settings.metadata.clone(),
-        settings.config.bridge.clone(),
+        settings.config.publish_proxy.clone(),
         settings.config.nip46.clone(),
     );
     let radrootsd = radrootsd?;
@@ -440,7 +474,6 @@ pub async fn run() -> Result<()> {
             identity.clone(),
             settings.metadata.clone(),
             settings.config.service.clone(),
-            settings.config.bridge.clone(),
             settings.config.nip46.clone(),
         )
         .await;
@@ -465,11 +498,8 @@ pub async fn run() -> Result<()> {
     Ok(())
 }
 
-fn service_presence_kinds(bridge_config: &config::BridgeConfig) -> Vec<u32> {
+fn service_presence_kinds() -> Vec<u32> {
     let mut kinds = vec![RadrootsNostrKind::NostrConnect.as_u16() as u32];
-    if bridge_config.enabled {
-        kinds.push(KIND_LISTING);
-    }
     kinds.sort_unstable();
     kinds.dedup();
     kinds
@@ -485,7 +515,6 @@ mod tests {
     use crate::app::{cli, config, paths};
     use crate::core::Radrootsd;
     use crate::transport::jsonrpc;
-    use radroots_events::kinds::KIND_LISTING;
     use radroots_identity::RadrootsIdentity;
     use radroots_nostr::prelude::RadrootsNostrMetadata;
     use std::path::Path;
@@ -535,6 +564,7 @@ mod tests {
                 identity: Some(path),
                 allow_generate_identity: allow_generate,
             },
+            command: None,
         }
     }
 
@@ -555,8 +585,9 @@ mod tests {
                     ..config::RpcConfig::default()
                 },
                 rpc_addr: Some("127.0.0.1:0".to_string()),
-                bridge: config::BridgeConfig::default(),
                 nip46: config::Nip46Config::default(),
+                publish_proxy: config::PublishProxyConfig::default(),
+                obsolete_bridge_config_present: false,
             },
         }
     }
@@ -577,7 +608,7 @@ mod tests {
                 subordinate_path_override_source: "config_artifact".to_string(),
                 subordinate_path_override_keys: vec![
                     "config.service.logs_dir".to_string(),
-                    "config.bridge.state_path".to_string(),
+                    "config.publish_proxy.database_path".to_string(),
                 ],
             },
             default_shared_secret_backend: "encrypted_file".to_string(),
@@ -596,8 +627,8 @@ mod tests {
             canonical_identity_path: PathBuf::from(
                 "/home/treesap/.radroots/secrets/services/radrootsd/identity.secret.json",
             ),
-            canonical_bridge_state_path: PathBuf::from(
-                "/home/treesap/.radroots/data/services/radrootsd/bridge/bridge-jobs.json",
+            canonical_publish_proxy_database_path: PathBuf::from(
+                "/home/treesap/.radroots/data/services/radrootsd/publish_proxy.sqlite",
             ),
         }
     }
@@ -607,7 +638,7 @@ mod tests {
         let state = Radrootsd::new(
             identity,
             settings.metadata.clone(),
-            settings.config.bridge.clone(),
+            settings.config.publish_proxy.clone(),
             settings.config.nip46.clone(),
         )
         .expect("state");
@@ -639,21 +670,6 @@ mod tests {
         let err = run().await.expect_err("missing identity should error");
         let msg = format!("{err:#}");
         assert!(msg.contains("identity"));
-    }
-
-    #[tokio::test]
-    async fn run_returns_error_when_bridge_is_enabled_without_bearer_token() {
-        let _guard = test_guard();
-        let path = unique_identity_path("bridge-auth");
-        let args = args_for_identity(path, true);
-        let mut settings = settings_with_relays(Vec::new());
-        settings.config.bridge.enabled = true;
-        settings.config.bridge.bearer_token = None;
-        *run_load_hook()
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Ok((args, settings)));
-        let err = run().await.expect_err("invalid bridge config should error");
-        assert!(err.to_string().contains("bearer_token"));
     }
 
     #[tokio::test]
@@ -811,18 +827,15 @@ mod tests {
     }
 
     #[test]
-    fn service_presence_kinds_include_listing_when_bridge_is_enabled() {
-        let mut bridge = config::BridgeConfig::default();
-        bridge.enabled = true;
-
-        let kinds = super::service_presence_kinds(&bridge);
+    fn service_presence_kinds_include_nostr_connect_only() {
+        let kinds = super::service_presence_kinds();
 
         assert!(
             kinds.contains(
                 &(radroots_nostr::prelude::RadrootsNostrKind::NostrConnect.as_u16() as u32)
             )
         );
-        assert!(kinds.contains(&KIND_LISTING));
+        assert_eq!(kinds.len(), 1);
     }
 
     #[test]
@@ -833,10 +846,12 @@ mod tests {
                 identity: Some(PathBuf::from("/tmp/radrootsd/identity.secret.json")),
                 allow_generate_identity: false,
             },
+            command: None,
         };
         let mut settings = settings_with_relays(Vec::new());
         settings.config.service.logs_dir = "/tmp/radrootsd/logs".to_string();
-        settings.config.bridge.state_path = PathBuf::from("/tmp/radrootsd/bridge-jobs.json");
+        settings.config.publish_proxy.database_path =
+            PathBuf::from("/tmp/radrootsd/publish_proxy.sqlite");
 
         let contract = sample_runtime_contract();
         let report =
@@ -861,10 +876,10 @@ mod tests {
                 canonical_identity_path: PathBuf::from(
                     "/home/treesap/.radroots/secrets/services/radrootsd/identity.secret.json"
                 ),
-                bridge_state_path: PathBuf::from("/tmp/radrootsd/bridge-jobs.json"),
-                bridge_state_path_source: "config_artifact".to_string(),
-                canonical_bridge_state_path: PathBuf::from(
-                    "/home/treesap/.radroots/data/services/radrootsd/bridge/bridge-jobs.json"
+                publish_proxy_database_path: PathBuf::from("/tmp/radrootsd/publish_proxy.sqlite"),
+                publish_proxy_database_path_source: "config_artifact".to_string(),
+                canonical_publish_proxy_database_path: PathBuf::from(
+                    "/home/treesap/.radroots/data/services/radrootsd/publish_proxy.sqlite"
                 ),
                 path_overrides: sample_runtime_contract().path_overrides,
                 migration: sample_runtime_contract().migration,
@@ -882,11 +897,13 @@ mod tests {
                 identity: None,
                 allow_generate_identity: false,
             },
+            command: None,
         };
         let contract = sample_runtime_contract();
         let mut settings = settings_with_relays(Vec::new());
         settings.config.service.logs_dir = contract.canonical_logs_dir.display().to_string();
-        settings.config.bridge.state_path = contract.canonical_bridge_state_path.clone();
+        settings.config.publish_proxy.database_path =
+            contract.canonical_publish_proxy_database_path.clone();
 
         let report =
             runtime_startup_report(&args, &settings, &contract, contract.migration.clone());
@@ -898,10 +915,10 @@ mod tests {
         assert_eq!(report.identity_path, contract.canonical_identity_path);
         assert_eq!(report.identity_path_source, "profile_default");
         assert_eq!(
-            report.bridge_state_path,
-            contract.canonical_bridge_state_path
+            report.publish_proxy_database_path,
+            contract.canonical_publish_proxy_database_path
         );
-        assert_eq!(report.bridge_state_path_source, "profile_default");
+        assert_eq!(report.publish_proxy_database_path_source, "profile_default");
         assert_eq!(report.path_overrides, contract.path_overrides);
         assert_eq!(report.migration, contract.migration);
         assert_eq!(report.default_shared_secret_backend, "encrypted_file");

@@ -11,34 +11,29 @@ description = "Radroots local runtime daemon for storage, sync, and relay publis
 resolver = "2"
 
 [workspace.dependencies]
-radroots_core = { path = "../lib/crates/core" }
 radroots_events = { path = "../lib/crates/events" }
-radroots_events_codec = { path = "../lib/crates/events_codec" }
 radroots_identity = { path = "../lib/crates/identity" }
 radroots_nostr = { path = "../lib/crates/nostr" }
-radroots_nostr_signer = { path = "../lib/crates/nostr_signer" }
+radroots_publish_proxy_protocol = { path = "../lib/crates/publish_proxy_protocol" }
 radroots_runtime = { path = "../lib/crates/runtime" }
-radroots_trade = { path = "../lib/crates/trade" }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage_nightly)'] }
 
 [dependencies]
-radroots_core = { workspace = true, features = ["std", "serde"]  }
 radroots_events = { workspace = true, features = ["serde"] }
-radroots_events_codec = { workspace = true, features = ["nostr", "serde_json"] }
 radroots_identity = { workspace = true }
 radroots_nostr = { workspace = true, features = ["client", "codec", "events", "http"] }
-radroots_nostr_signer = { workspace = true }
+radroots_publish_proxy_protocol = { workspace = true, features = ["std", "serde"] }
 radroots_runtime = { workspace = true, features = ["cli"] }
 radroots_runtime_paths = { path = "../lib/crates/runtime_paths" }
-radroots_trade = { workspace = true }
 nostr = { version = "0.44.2", features = ["nip46"] }
 
 anyhow = { version = "1" }
 clap = { version = "4", features = ["derive"] }
 jsonrpsee = { version = "0.26", features = ["server"] }
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+rand = { version = "0.9" }
+rusqlite = { version = "0.32", features = ["bundled"] }
 serde = { version = "1", default-features = false, features = ["derive"] }
 serde_json = { version = "1", default-features = false }
 serde_qs = { version = "1.0" }

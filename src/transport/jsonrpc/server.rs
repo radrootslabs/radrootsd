@@ -8,14 +8,15 @@ use jsonrpsee::server::{
     ServerHandle,
 };
 
-use crate::app::config::{BridgeConfig, RpcConfig};
+use crate::app::config::RpcConfig;
+use crate::core::publish_proxy::PublishProxyStore;
 use crate::transport::jsonrpc::RpcContext;
 use crate::transport::jsonrpc::auth;
 
 pub async fn start_server(
     addr: SocketAddr,
     rpc_cfg: &RpcConfig,
-    bridge_cfg: &BridgeConfig,
+    publish_proxy_store: PublishProxyStore,
     root: RpcModule<RpcContext>,
 ) -> Result<ServerHandle> {
     let mut builder = ServerConfigBuilder::new()
@@ -35,18 +36,17 @@ pub async fn start_server(
     }
 
     let server_cfg = builder.build();
-    let bridge_bearer_token = bridge_cfg.bearer_token().map(str::to_owned);
     let server = ServerBuilder::with_config(server_cfg)
         .set_http_middleware(tower::ServiceBuilder::new().map_request(
             move |mut request: HttpRequest<HttpBody>| {
-                let bridge_auth = auth::authorize_bridge_request(
+                let publish_proxy_auth = auth::authorize_publish_proxy_request(
                     request
                         .headers()
                         .get("authorization")
                         .and_then(|value| value.to_str().ok()),
-                    bridge_bearer_token.as_deref(),
+                    &publish_proxy_store,
                 );
-                request.extensions_mut().insert(bridge_auth);
+                request.extensions_mut().insert(publish_proxy_auth);
                 request
             },
         ))

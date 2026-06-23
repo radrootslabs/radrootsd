@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 use super::paths::{
-    RadrootsdRuntimePaths, default_bridge_state_path, process_path_selection,
+    RadrootsdRuntimePaths, default_publish_proxy_database_path, process_path_selection,
     resolve_runtime_paths_with_resolver,
 };
 
@@ -33,6 +33,10 @@ fn default_message_buffer_capacity() -> u32 {
     1024
 }
 
+fn default_rpc_batch_request_limit() -> Option<u32> {
+    Some(0)
+}
+
 fn default_nip46_session_ttl_secs() -> u64 {
     900
 }
@@ -45,32 +49,24 @@ fn default_nip46_public_jsonrpc_enabled() -> bool {
     false
 }
 
-fn default_bridge_enabled() -> bool {
-    false
+fn default_publish_proxy_enabled() -> bool {
+    true
 }
 
-fn default_bridge_connect_timeout_secs() -> u64 {
+fn default_publish_proxy_connect_timeout_secs() -> u64 {
     10
 }
 
-fn default_bridge_delivery_policy() -> BridgeDeliveryPolicy {
-    BridgeDeliveryPolicy::Any
+fn default_publish_proxy_max_event_bytes() -> usize {
+    128 * 1024
 }
 
-fn default_bridge_publish_max_attempts() -> usize {
-    1
+fn default_publish_proxy_max_relays_per_request() -> usize {
+    20
 }
 
-fn default_bridge_publish_initial_backoff_millis() -> u64 {
-    250
-}
-
-fn default_bridge_publish_max_backoff_millis() -> u64 {
-    2_000
-}
-
-fn default_bridge_job_status_retention() -> usize {
-    256
+fn default_publish_proxy_job_list_limit() -> usize {
+    100
 }
 
 #[derive(Debug, Deserialize, Clone, Default)]
@@ -99,61 +95,45 @@ impl RawServiceConfig {
 }
 
 #[derive(Debug, Deserialize, Clone)]
-struct RawBridgeConfig {
-    #[serde(default = "default_bridge_enabled")]
+struct RawPublishProxyConfig {
+    #[serde(default = "default_publish_proxy_enabled")]
     pub enabled: bool,
-    #[serde(default)]
-    pub bearer_token: Option<String>,
-    #[serde(default = "default_bridge_connect_timeout_secs")]
+    #[serde(default = "default_publish_proxy_connect_timeout_secs")]
     pub connect_timeout_secs: u64,
-    #[serde(default = "default_bridge_delivery_policy")]
-    pub delivery_policy: BridgeDeliveryPolicy,
+    #[serde(default = "default_publish_proxy_max_event_bytes")]
+    pub max_event_bytes: usize,
+    #[serde(default = "default_publish_proxy_max_relays_per_request")]
+    pub max_relays_per_request: usize,
+    #[serde(default = "default_publish_proxy_job_list_limit")]
+    pub job_list_limit: usize,
     #[serde(default)]
-    pub delivery_quorum: Option<usize>,
-    #[serde(default = "default_bridge_publish_max_attempts")]
-    pub publish_max_attempts: usize,
-    #[serde(default = "default_bridge_publish_initial_backoff_millis")]
-    pub publish_initial_backoff_millis: u64,
-    #[serde(default = "default_bridge_publish_max_backoff_millis")]
-    pub publish_max_backoff_millis: u64,
-    #[serde(default = "default_bridge_job_status_retention")]
-    pub job_status_retention: usize,
-    #[serde(default)]
-    pub state_path: Option<PathBuf>,
+    pub database_path: Option<PathBuf>,
 }
 
-impl Default for RawBridgeConfig {
+impl Default for RawPublishProxyConfig {
     fn default() -> Self {
         Self {
-            enabled: default_bridge_enabled(),
-            bearer_token: None,
-            connect_timeout_secs: default_bridge_connect_timeout_secs(),
-            delivery_policy: default_bridge_delivery_policy(),
-            delivery_quorum: None,
-            publish_max_attempts: default_bridge_publish_max_attempts(),
-            publish_initial_backoff_millis: default_bridge_publish_initial_backoff_millis(),
-            publish_max_backoff_millis: default_bridge_publish_max_backoff_millis(),
-            job_status_retention: default_bridge_job_status_retention(),
-            state_path: None,
+            enabled: default_publish_proxy_enabled(),
+            connect_timeout_secs: default_publish_proxy_connect_timeout_secs(),
+            max_event_bytes: default_publish_proxy_max_event_bytes(),
+            max_relays_per_request: default_publish_proxy_max_relays_per_request(),
+            job_list_limit: default_publish_proxy_job_list_limit(),
+            database_path: None,
         }
     }
 }
 
-impl RawBridgeConfig {
-    fn into_bridge_config(self, paths: &RadrootsdRuntimePaths) -> BridgeConfig {
-        BridgeConfig {
+impl RawPublishProxyConfig {
+    fn into_publish_proxy_config(self, paths: &RadrootsdRuntimePaths) -> PublishProxyConfig {
+        PublishProxyConfig {
             enabled: self.enabled,
-            bearer_token: self.bearer_token,
             connect_timeout_secs: self.connect_timeout_secs,
-            delivery_policy: self.delivery_policy,
-            delivery_quorum: self.delivery_quorum,
-            publish_max_attempts: self.publish_max_attempts,
-            publish_initial_backoff_millis: self.publish_initial_backoff_millis,
-            publish_max_backoff_millis: self.publish_max_backoff_millis,
-            job_status_retention: self.job_status_retention,
-            state_path: self
-                .state_path
-                .unwrap_or_else(|| paths.bridge_state_path.clone()),
+            max_event_bytes: self.max_event_bytes,
+            max_relays_per_request: self.max_relays_per_request,
+            job_list_limit: self.job_list_limit,
+            database_path: self
+                .database_path
+                .unwrap_or_else(|| paths.publish_proxy_database_path.clone()),
         }
     }
 }
@@ -169,7 +149,9 @@ struct RawConfiguration {
     #[serde(default)]
     pub nip46: Nip46Config,
     #[serde(default)]
-    pub bridge: RawBridgeConfig,
+    pub publish_proxy: RawPublishProxyConfig,
+    #[serde(default)]
+    pub bridge: Option<serde::de::IgnoredAny>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -187,7 +169,8 @@ impl RawSettings {
                 rpc: self.config.rpc,
                 rpc_addr: self.config.rpc_addr,
                 nip46: self.config.nip46,
-                bridge: self.config.bridge.into_bridge_config(paths),
+                publish_proxy: self.config.publish_proxy.into_publish_proxy_config(paths),
+                obsolete_bridge_config_present: self.config.bridge.is_some(),
             },
         }
     }
@@ -241,76 +224,45 @@ impl Default for Nip46Config {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum BridgeDeliveryPolicy {
-    Any,
-    Quorum,
-    All,
-}
-
-impl BridgeDeliveryPolicy {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Any => "any",
-            Self::Quorum => "quorum",
-            Self::All => "all",
-        }
-    }
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct BridgeConfig {
-    #[serde(default = "default_bridge_enabled")]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+pub struct PublishProxyConfig {
+    #[serde(default = "default_publish_proxy_enabled")]
     pub enabled: bool,
-    #[serde(default)]
-    pub bearer_token: Option<String>,
-    #[serde(default = "default_bridge_connect_timeout_secs")]
+    #[serde(default = "default_publish_proxy_connect_timeout_secs")]
     pub connect_timeout_secs: u64,
-    #[serde(default = "default_bridge_delivery_policy")]
-    pub delivery_policy: BridgeDeliveryPolicy,
-    #[serde(default)]
-    pub delivery_quorum: Option<usize>,
-    #[serde(default = "default_bridge_publish_max_attempts")]
-    pub publish_max_attempts: usize,
-    #[serde(default = "default_bridge_publish_initial_backoff_millis")]
-    pub publish_initial_backoff_millis: u64,
-    #[serde(default = "default_bridge_publish_max_backoff_millis")]
-    pub publish_max_backoff_millis: u64,
-    #[serde(default = "default_bridge_job_status_retention")]
-    pub job_status_retention: usize,
-    #[serde(default = "default_bridge_state_path")]
-    pub state_path: PathBuf,
+    #[serde(default = "default_publish_proxy_max_event_bytes")]
+    pub max_event_bytes: usize,
+    #[serde(default = "default_publish_proxy_max_relays_per_request")]
+    pub max_relays_per_request: usize,
+    #[serde(default = "default_publish_proxy_job_list_limit")]
+    pub job_list_limit: usize,
+    #[serde(default = "default_publish_proxy_database_path")]
+    pub database_path: PathBuf,
 }
 
-impl Default for BridgeConfig {
+impl Default for PublishProxyConfig {
     fn default() -> Self {
         Self {
-            enabled: default_bridge_enabled(),
-            bearer_token: None,
-            connect_timeout_secs: default_bridge_connect_timeout_secs(),
-            delivery_policy: default_bridge_delivery_policy(),
-            delivery_quorum: None,
-            publish_max_attempts: default_bridge_publish_max_attempts(),
-            publish_initial_backoff_millis: default_bridge_publish_initial_backoff_millis(),
-            publish_max_backoff_millis: default_bridge_publish_max_backoff_millis(),
-            job_status_retention: default_bridge_job_status_retention(),
-            state_path: default_bridge_state_path(),
+            enabled: default_publish_proxy_enabled(),
+            connect_timeout_secs: default_publish_proxy_connect_timeout_secs(),
+            max_event_bytes: default_publish_proxy_max_event_bytes(),
+            max_relays_per_request: default_publish_proxy_max_relays_per_request(),
+            job_list_limit: default_publish_proxy_job_list_limit(),
+            database_path: default_publish_proxy_database_path(),
         }
     }
 }
 
-impl BridgeConfig {
-    pub fn bearer_token(&self) -> Option<&str> {
-        self.bearer_token
-            .as_deref()
-            .map(str::trim)
-            .filter(|token| !token.is_empty())
-    }
-
+impl PublishProxyConfig {
     pub fn validate(&self) -> Result<()> {
-        if self.enabled && self.bearer_token().is_none() {
-            bail!("bridge bearer_token is required when bridge ingress is enabled");
+        if self.max_event_bytes == 0 {
+            bail!("publish_proxy max_event_bytes must be greater than zero");
+        }
+        if self.max_relays_per_request == 0 {
+            bail!("publish_proxy max_relays_per_request must be greater than zero");
+        }
+        if self.job_list_limit == 0 {
+            bail!("publish_proxy job_list_limit must be greater than zero");
         }
         Ok(())
     }
@@ -330,7 +282,7 @@ pub struct RpcConfig {
     pub max_subscriptions_per_connection: u32,
     #[serde(default = "default_message_buffer_capacity")]
     pub message_buffer_capacity: u32,
-    #[serde(default)]
+    #[serde(default = "default_rpc_batch_request_limit")]
     pub batch_request_limit: Option<u32>,
 }
 
@@ -343,7 +295,7 @@ impl Default for RpcConfig {
             max_connections: default_max_connections(),
             max_subscriptions_per_connection: default_max_subscriptions_per_connection(),
             message_buffer_capacity: default_message_buffer_capacity(),
-            batch_request_limit: None,
+            batch_request_limit: default_rpc_batch_request_limit(),
         }
     }
 }
@@ -359,7 +311,9 @@ pub struct Configuration {
     #[serde(default)]
     pub nip46: Nip46Config,
     #[serde(default)]
-    pub bridge: BridgeConfig,
+    pub publish_proxy: PublishProxyConfig,
+    #[serde(default, skip_serializing)]
+    pub(crate) obsolete_bridge_config_present: bool,
 }
 
 impl Configuration {
@@ -368,7 +322,10 @@ impl Configuration {
     }
 
     pub fn validate(&self) -> Result<()> {
-        self.bridge.validate()?;
+        if self.obsolete_bridge_config_present {
+            bail!("config.bridge is obsolete; use config.publish_proxy");
+        }
+        self.publish_proxy.validate()?;
         Ok(())
     }
 }
@@ -390,7 +347,7 @@ mod tests {
     use std::path::PathBuf;
 
     use super::{
-        BridgeConfig, BridgeDeliveryPolicy, Configuration, Nip46Config, RpcConfig,
+        Configuration, Nip46Config, PublishProxyConfig, RpcConfig,
         load_settings_from_path_with_resolver,
     };
     use crate::app::paths::{
@@ -437,31 +394,22 @@ mod tests {
     }
 
     #[test]
-    fn rpc_defaults_are_expected() {
+    fn rpc_defaults_disable_batches() {
         let cfg = RpcConfig::default();
         assert_eq!(cfg.addr, "127.0.0.1:7070");
-        assert_eq!(cfg.max_request_body_size, 10 * 1024 * 1024);
-        assert_eq!(cfg.max_response_body_size, 10 * 1024 * 1024);
-        assert_eq!(cfg.max_connections, 100);
-        assert_eq!(cfg.max_subscriptions_per_connection, 1024);
-        assert_eq!(cfg.message_buffer_capacity, 1024);
-        assert!(cfg.batch_request_limit.is_none());
+        assert_eq!(cfg.batch_request_limit, Some(0));
     }
 
     #[test]
-    fn bridge_defaults_are_expected() {
+    fn publish_proxy_defaults_are_expected() {
         let paths = default_runtime_paths_for_process().expect("resolve process runtime paths");
-        let cfg = BridgeConfig::default();
-        assert!(!cfg.enabled);
-        assert!(cfg.bearer_token.is_none());
+        let cfg = PublishProxyConfig::default();
+        assert!(cfg.enabled);
         assert_eq!(cfg.connect_timeout_secs, 10);
-        assert_eq!(cfg.delivery_policy, BridgeDeliveryPolicy::Any);
-        assert_eq!(cfg.delivery_quorum, None);
-        assert_eq!(cfg.publish_max_attempts, 1);
-        assert_eq!(cfg.publish_initial_backoff_millis, 250);
-        assert_eq!(cfg.publish_max_backoff_millis, 2_000);
-        assert_eq!(cfg.job_status_retention, 256);
-        assert_eq!(cfg.state_path, paths.bridge_state_path);
+        assert_eq!(cfg.max_event_bytes, 128 * 1024);
+        assert_eq!(cfg.max_relays_per_request, 20);
+        assert_eq!(cfg.job_list_limit, 100);
+        assert_eq!(cfg.database_path, paths.publish_proxy_database_path);
     }
 
     #[test]
@@ -474,7 +422,8 @@ mod tests {
             },
             rpc_addr: None,
             nip46: Nip46Config::default(),
-            bridge: BridgeConfig::default(),
+            publish_proxy: PublishProxyConfig::default(),
+            obsolete_bridge_config_present: false,
         };
         assert_eq!(cfg.rpc_addr(), "127.0.0.1:1111");
         cfg.rpc_addr = Some("127.0.0.1:2222".to_string());
@@ -482,25 +431,16 @@ mod tests {
     }
 
     #[test]
-    fn bridge_validation_requires_bearer_token_when_enabled() {
-        let err = BridgeConfig {
-            enabled: true,
-            ..BridgeConfig::default()
-        }
-        .validate()
-        .expect_err("missing token should fail");
-        assert!(err.to_string().contains("bearer_token"));
-    }
-
-    #[test]
-    fn bridge_validation_accepts_enabled_bridge_with_bearer_token() {
-        BridgeConfig {
-            enabled: true,
-            bearer_token: Some("secret".to_string()),
-            ..BridgeConfig::default()
-        }
-        .validate()
-        .expect("valid bridge config");
+    fn publish_proxy_validation_rejects_zero_limits() {
+        let mut cfg = PublishProxyConfig::default();
+        cfg.max_event_bytes = 0;
+        assert!(cfg.validate().is_err());
+        let mut cfg = PublishProxyConfig::default();
+        cfg.max_relays_per_request = 0;
+        assert!(cfg.validate().is_err());
+        let mut cfg = PublishProxyConfig::default();
+        cfg.job_list_limit = 0;
+        assert!(cfg.validate().is_err());
     }
 
     #[test]
@@ -527,10 +467,8 @@ mod tests {
             )
         );
         assert_eq!(
-            paths.bridge_state_path,
-            PathBuf::from(
-                "/home/treesap/.radroots/data/services/radrootsd/bridge/bridge-jobs.json"
-            )
+            paths.publish_proxy_database_path,
+            PathBuf::from("/home/treesap/.radroots/data/services/radrootsd/publish_proxy.sqlite")
         );
     }
 
@@ -556,8 +494,8 @@ mod tests {
             PathBuf::from("/etc/radroots/secrets/services/radrootsd/identity.secret.json")
         );
         assert_eq!(
-            paths.bridge_state_path,
-            PathBuf::from("/var/lib/radroots/services/radrootsd/bridge/bridge-jobs.json")
+            paths.publish_proxy_database_path,
+            PathBuf::from("/var/lib/radroots/services/radrootsd/publish_proxy.sqlite")
         );
     }
 
@@ -584,8 +522,8 @@ mod tests {
             repo_local_root.join("secrets/services/radrootsd/identity.secret.json")
         );
         assert_eq!(
-            paths.bridge_state_path,
-            repo_local_root.join("data/services/radrootsd/bridge/bridge-jobs.json")
+            paths.publish_proxy_database_path,
+            repo_local_root.join("data/services/radrootsd/publish_proxy.sqlite")
         );
     }
 
@@ -604,10 +542,6 @@ relays = ["ws://127.0.0.1:8080"]
 
 [config.rpc]
 addr = "127.0.0.1:7070"
-
-[config.bridge]
-enabled = true
-bearer_token = "change-me"
 "#,
         )
         .expect("write config");
@@ -625,11 +559,38 @@ bearer_token = "change-me"
             "/home/treesap/.radroots/logs/services/radrootsd"
         );
         assert_eq!(
-            settings.config.bridge.state_path,
-            PathBuf::from(
-                "/home/treesap/.radroots/data/services/radrootsd/bridge/bridge-jobs.json"
-            )
+            settings.config.publish_proxy.database_path,
+            PathBuf::from("/home/treesap/.radroots/data/services/radrootsd/publish_proxy.sqlite")
         );
+    }
+
+    #[test]
+    fn obsolete_config_is_rejected() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let config_path = temp.path().join("radrootsd.toml");
+        std::fs::write(
+            &config_path,
+            r#"
+[metadata]
+name = "radrootsd-test"
+
+[config]
+relays = []
+
+[config.bridge]
+enabled = true
+"#,
+        )
+        .expect("write config");
+
+        let err = load_settings_from_path_with_resolver(
+            &config_path,
+            &linux_resolver("/home/treesap"),
+            RadrootsPathProfile::InteractiveUser,
+            None,
+        )
+        .expect_err("obsolete config should fail");
+        assert!(err.to_string().contains("config.bridge"));
     }
 
     #[test]
@@ -642,92 +603,16 @@ bearer_token = "change-me"
         .expect("interactive-user contract");
 
         assert_eq!(contract.active_profile, "interactive_user");
-        assert_eq!(contract.path_overrides.profile_source, "caller");
-        assert_eq!(contract.path_overrides.root_source, "host_defaults");
-        assert_eq!(contract.path_overrides.repo_local_root, None);
-        assert_eq!(contract.path_overrides.repo_local_root_source, None);
-        assert_eq!(
-            contract.path_overrides.subordinate_path_override_source,
-            "config_artifact"
-        );
         assert_eq!(
             contract.path_overrides.subordinate_path_override_keys,
             vec![
                 "config.service.logs_dir".to_owned(),
-                "config.bridge.state_path".to_owned(),
+                "config.publish_proxy.database_path".to_owned(),
             ]
         );
         assert_eq!(
-            contract.allowed_profiles,
-            vec![
-                "interactive_user".to_owned(),
-                "service_host".to_owned(),
-                "repo_local".to_owned(),
-            ]
-        );
-        assert_eq!(contract.default_shared_secret_backend, "encrypted_file");
-        assert_eq!(
-            contract.allowed_shared_secret_backends,
-            vec!["encrypted_file".to_owned()]
-        );
-        assert_eq!(
-            contract.migration.posture,
-            "explicit_operator_import_required"
-        );
-        assert_eq!(contract.migration.state, "ready");
-        assert_eq!(contract.migration.silent_startup_relocation, false);
-        assert_eq!(
-            contract.migration.compatibility_window,
-            "detect_and_report_only"
-        );
-        assert!(contract.migration.detected_legacy_paths.is_empty());
-        assert_eq!(
-            contract.canonical_config_path,
-            PathBuf::from("/home/treesap/.radroots/config/services/radrootsd/config.toml")
-        );
-        assert_eq!(
-            contract.canonical_logs_dir,
-            PathBuf::from("/home/treesap/.radroots/logs/services/radrootsd")
-        );
-        assert_eq!(
-            contract.canonical_identity_path,
-            PathBuf::from(
-                "/home/treesap/.radroots/secrets/services/radrootsd/identity.secret.json"
-            )
-        );
-        assert_eq!(
-            contract.canonical_bridge_state_path,
-            PathBuf::from(
-                "/home/treesap/.radroots/data/services/radrootsd/bridge/bridge-jobs.json"
-            )
-        );
-    }
-
-    #[test]
-    fn runtime_contract_output_matches_service_host_contract() {
-        let contract = runtime_contract_with_resolver(
-            &linux_resolver("/home/treesap"),
-            RadrootsPathProfile::ServiceHost,
-            None,
-        )
-        .expect("service-host contract");
-
-        assert_eq!(contract.active_profile, "service_host");
-        assert_eq!(
-            contract.canonical_config_path,
-            PathBuf::from("/etc/radroots/services/radrootsd/config.toml")
-        );
-        assert_eq!(
-            contract.canonical_logs_dir,
-            PathBuf::from("/var/log/radroots/services/radrootsd")
-        );
-        assert_eq!(
-            contract.canonical_identity_path,
-            PathBuf::from("/etc/radroots/secrets/services/radrootsd/identity.secret.json")
-        );
-        assert_eq!(
-            contract.canonical_bridge_state_path,
-            PathBuf::from("/var/lib/radroots/services/radrootsd/bridge/bridge-jobs.json")
+            contract.canonical_publish_proxy_database_path,
+            PathBuf::from("/home/treesap/.radroots/data/services/radrootsd/publish_proxy.sqlite")
         );
     }
 }

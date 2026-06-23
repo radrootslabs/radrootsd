@@ -11,16 +11,17 @@ use radroots_runtime_paths::{
 use serde::Serialize;
 
 const RADROOTSD_RUNTIME_ID: &str = "radrootsd";
-const BRIDGE_STATE_DIR_NAME: &str = "bridge";
-const BRIDGE_STATE_FILE_NAME: &str = "bridge-jobs.json";
+const PUBLISH_PROXY_DATABASE_FILE_NAME: &str = "publish_proxy.sqlite";
 const RADROOTSD_PATHS_PROFILE_ENV: &str = "RADROOTSD_PATHS_PROFILE";
 const RADROOTSD_PATHS_REPO_LOCAL_ROOT_ENV: &str = "RADROOTSD_PATHS_REPO_LOCAL_ROOT";
 const RADROOTSD_DEFAULT_SHARED_SECRET_BACKEND: &str = "encrypted_file";
 const RADROOTSD_ALLOWED_PROFILES: [&str; 3] = ["interactive_user", "service_host", "repo_local"];
 const RADROOTSD_ALLOWED_SHARED_SECRET_BACKENDS: [&str; 1] = ["encrypted_file"];
 const SUBORDINATE_PATH_OVERRIDE_SOURCE: &str = "config_artifact";
-const SUBORDINATE_PATH_OVERRIDE_KEYS: [&str; 2] =
-    ["config.service.logs_dir", "config.bridge.state_path"];
+const SUBORDINATE_PATH_OVERRIDE_KEYS: [&str; 2] = [
+    "config.service.logs_dir",
+    "config.publish_proxy.database_path",
+];
 const MIGRATION_IMPORT_HINT: &str = "stop the runtime, inspect this legacy path, then perform an explicit import or manual copy into the canonical destination; radrootsd will not move it on startup";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -28,7 +29,7 @@ pub(crate) struct RadrootsdRuntimePaths {
     pub(crate) config_path: PathBuf,
     pub(crate) logs_dir: PathBuf,
     pub(crate) identity_path: PathBuf,
-    pub(crate) bridge_state_path: PathBuf,
+    pub(crate) publish_proxy_database_path: PathBuf,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -42,7 +43,7 @@ pub struct RadrootsdRuntimeContractOutput {
     pub canonical_config_path: PathBuf,
     pub canonical_logs_dir: PathBuf,
     pub canonical_identity_path: PathBuf,
-    pub canonical_bridge_state_path: PathBuf,
+    pub canonical_publish_proxy_database_path: PathBuf,
 }
 
 pub type RadrootsdRuntimeMigrationContractOutput = RadrootsRuntimeMigrationContract;
@@ -81,10 +82,7 @@ pub(crate) fn resolve_runtime_paths_with_resolver(
         config_path: namespaced.config.join(DEFAULT_CONFIG_FILE_NAME),
         logs_dir: namespaced.logs,
         identity_path: namespaced.secrets.join(DEFAULT_SERVICE_IDENTITY_FILE_NAME),
-        bridge_state_path: namespaced
-            .data
-            .join(BRIDGE_STATE_DIR_NAME)
-            .join(BRIDGE_STATE_FILE_NAME),
+        publish_proxy_database_path: namespaced.data.join(PUBLISH_PROXY_DATABASE_FILE_NAME),
     })
 }
 
@@ -97,10 +95,10 @@ pub(crate) fn default_runtime_paths_for_process() -> Result<RadrootsdRuntimePath
     )
 }
 
-pub(crate) fn default_bridge_state_path() -> PathBuf {
+pub(crate) fn default_publish_proxy_database_path() -> PathBuf {
     default_runtime_paths_for_process()
         .expect("resolve canonical radrootsd runtime paths")
-        .bridge_state_path
+        .publish_proxy_database_path
 }
 
 #[cfg_attr(test, allow(dead_code))]
@@ -155,7 +153,7 @@ fn runtime_contract_with_selection(
         canonical_config_path: paths.config_path,
         canonical_logs_dir: paths.logs_dir,
         canonical_identity_path: paths.identity_path,
-        canonical_bridge_state_path: paths.bridge_state_path,
+        canonical_publish_proxy_database_path: paths.publish_proxy_database_path,
     })
 }
 
@@ -197,13 +195,6 @@ fn legacy_path_candidates(
             Some(contract.canonical_logs_dir.clone()),
             MIGRATION_IMPORT_HINT,
         ),
-        RadrootsLegacyPathCandidate::new(
-            "radrootsd_repo_bridge_state_v0",
-            "legacy radrootsd repo-relative bridge state",
-            current_dir.join("state/bridge-jobs.json"),
-            Some(contract.canonical_bridge_state_path.clone()),
-            MIGRATION_IMPORT_HINT,
-        ),
     ]
 }
 
@@ -241,9 +232,6 @@ mod tests {
             "[metadata]\nname = \"old\"\n",
         )
         .expect("write old config");
-        std::fs::create_dir_all(temp.path().join("state")).expect("state dir");
-        std::fs::write(temp.path().join("state/bridge-jobs.json"), "[]")
-            .expect("write old bridge state");
         let contract = runtime_contract_with_resolver(
             &linux_resolver(),
             RadrootsPathProfile::InteractiveUser,
@@ -256,7 +244,7 @@ mod tests {
         assert_eq!(report.posture, "explicit_operator_import_required");
         assert_eq!(report.state, "legacy_state_detected");
         assert!(!report.silent_startup_relocation);
-        assert_eq!(report.detected_legacy_paths.len(), 2);
+        assert_eq!(report.detected_legacy_paths.len(), 1);
         assert_eq!(
             report.detected_legacy_paths[0].id,
             "radrootsd_repo_config_v0"
@@ -264,10 +252,6 @@ mod tests {
         assert_eq!(
             report.detected_legacy_paths[0].destination,
             Some(contract.canonical_config_path)
-        );
-        assert_eq!(
-            report.detected_legacy_paths[1].id,
-            "radrootsd_repo_bridge_state_v0"
         );
     }
 }
