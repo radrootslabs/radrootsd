@@ -69,6 +69,10 @@ fn default_publish_proxy_job_list_limit() -> usize {
     100
 }
 
+fn default_publish_proxy_relay_url_policy() -> PublishProxyRelayUrlPolicy {
+    PublishProxyRelayUrlPolicy::Public
+}
+
 #[derive(Debug, Deserialize, Clone, Default)]
 struct RawServiceConfig {
     #[serde(default)]
@@ -108,6 +112,12 @@ struct RawPublishProxyConfig {
     pub job_list_limit: usize,
     #[serde(default)]
     pub database_path: Option<PathBuf>,
+    #[serde(default = "default_publish_proxy_relay_url_policy")]
+    pub relay_url_policy: PublishProxyRelayUrlPolicy,
+    #[serde(default)]
+    pub author_relay_discovery_relays: Vec<String>,
+    #[serde(default)]
+    pub daemon_default_publish_relays: Vec<String>,
 }
 
 impl Default for RawPublishProxyConfig {
@@ -119,6 +129,9 @@ impl Default for RawPublishProxyConfig {
             max_relays_per_request: default_publish_proxy_max_relays_per_request(),
             job_list_limit: default_publish_proxy_job_list_limit(),
             database_path: None,
+            relay_url_policy: default_publish_proxy_relay_url_policy(),
+            author_relay_discovery_relays: Vec::new(),
+            daemon_default_publish_relays: Vec::new(),
         }
     }
 }
@@ -134,6 +147,9 @@ impl RawPublishProxyConfig {
             database_path: self
                 .database_path
                 .unwrap_or_else(|| paths.publish_proxy_database_path.clone()),
+            relay_url_policy: self.relay_url_policy,
+            author_relay_discovery_relays: self.author_relay_discovery_relays,
+            daemon_default_publish_relays: self.daemon_default_publish_relays,
         }
     }
 }
@@ -225,6 +241,13 @@ impl Default for Nip46Config {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PublishProxyRelayUrlPolicy {
+    Public,
+    Localhost,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub struct PublishProxyConfig {
     #[serde(default = "default_publish_proxy_enabled")]
     pub enabled: bool,
@@ -238,6 +261,12 @@ pub struct PublishProxyConfig {
     pub job_list_limit: usize,
     #[serde(default = "default_publish_proxy_database_path")]
     pub database_path: PathBuf,
+    #[serde(default = "default_publish_proxy_relay_url_policy")]
+    pub relay_url_policy: PublishProxyRelayUrlPolicy,
+    #[serde(default)]
+    pub author_relay_discovery_relays: Vec<String>,
+    #[serde(default)]
+    pub daemon_default_publish_relays: Vec<String>,
 }
 
 impl Default for PublishProxyConfig {
@@ -249,6 +278,9 @@ impl Default for PublishProxyConfig {
             max_relays_per_request: default_publish_proxy_max_relays_per_request(),
             job_list_limit: default_publish_proxy_job_list_limit(),
             database_path: default_publish_proxy_database_path(),
+            relay_url_policy: default_publish_proxy_relay_url_policy(),
+            author_relay_discovery_relays: Vec::new(),
+            daemon_default_publish_relays: Vec::new(),
         }
     }
 }
@@ -263,6 +295,9 @@ impl PublishProxyConfig {
         }
         if self.job_list_limit == 0 {
             bail!("publish_proxy job_list_limit must be greater than zero");
+        }
+        if self.connect_timeout_secs == 0 {
+            bail!("publish_proxy connect_timeout_secs must be greater than zero");
         }
         Ok(())
     }
@@ -347,7 +382,7 @@ mod tests {
     use std::path::PathBuf;
 
     use super::{
-        Configuration, Nip46Config, PublishProxyConfig, RpcConfig,
+        Configuration, Nip46Config, PublishProxyConfig, PublishProxyRelayUrlPolicy, RpcConfig,
         load_settings_from_path_with_resolver,
     };
     use crate::app::paths::{
@@ -410,6 +445,9 @@ mod tests {
         assert_eq!(cfg.max_relays_per_request, 20);
         assert_eq!(cfg.job_list_limit, 100);
         assert_eq!(cfg.database_path, paths.publish_proxy_database_path);
+        assert_eq!(cfg.relay_url_policy, PublishProxyRelayUrlPolicy::Public);
+        assert!(cfg.author_relay_discovery_relays.is_empty());
+        assert!(cfg.daemon_default_publish_relays.is_empty());
     }
 
     #[test]
@@ -440,6 +478,9 @@ mod tests {
         assert!(cfg.validate().is_err());
         let mut cfg = PublishProxyConfig::default();
         cfg.job_list_limit = 0;
+        assert!(cfg.validate().is_err());
+        let mut cfg = PublishProxyConfig::default();
+        cfg.connect_timeout_secs = 0;
         assert!(cfg.validate().is_err());
     }
 

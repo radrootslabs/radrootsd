@@ -2,11 +2,12 @@ use anyhow::Result;
 use jsonrpsee::server::RpcModule;
 use radroots_publish_proxy_protocol::{
     METHOD_CAPABILITIES, METHOD_EVENT, METHOD_JOB_GET, METHOD_JOB_LIST, METHOD_RELAYS_RESOLVE,
-    PublishCapabilities, PublishEventRequest, PublishRelayOutcome,
+    PublishCapabilities, PublishDeliveryPolicy, PublishEventRequest, PublishRelayOutcome,
+    PublishRelaySource,
 };
 use serde::{Deserialize, Serialize};
 
-use crate::core::publish_proxy::PublishJobInsert;
+use crate::core::publish_proxy::PublishProxyError;
 use crate::transport::jsonrpc::auth::require_publish_principal;
 use crate::transport::jsonrpc::{MethodRegistry, RpcContext, RpcError};
 
@@ -30,7 +31,14 @@ struct RelaysResolveParams {
 
 #[derive(Clone, Debug, Serialize)]
 struct RelaysResolveResponse {
-    relays: Vec<PublishRelayOutcome>,
+    relays: Vec<ResolvedRelayResponseItem>,
+    rejected_relays: Vec<PublishRelayOutcome>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct ResolvedRelayResponseItem {
+    relay_url: String,
+    source: PublishRelaySource,
 }
 
 pub fn module(ctx: RpcContext, registry: MethodRegistry) -> Result<RpcModule<RpcContext>> {
@@ -65,38 +73,11 @@ fn register_event(module: &mut RpcModule<RpcContext>, registry: &MethodRegistry)
         let request: PublishEventRequest = params
             .parse()
             .map_err(|error| RpcError::InvalidParams(error.to_string()))?;
-        request
-            .validate(ctx.state.publish_proxy.config.max_relays_per_request)
-            .map_err(|error| RpcError::InvalidParams(error.to_string()))?;
-        let event_size = request.event.content.len()
-            + request.event.id.len()
-            + request.event.pubkey.len()
-            + request.event.sig.len()
-            + request
-                .event
-                .tags
-                .iter()
-                .flatten()
-                .map(String::len)
-                .sum::<usize>();
-        if event_size > ctx.state.publish_proxy.config.max_event_bytes {
-            return Err(RpcError::InvalidParams(
-                "signed event exceeds publish_proxy max_event_bytes".to_owned(),
-            ));
-        }
-        principal
-            .allows_event(&request)
-            .map_err(|error| RpcError::Unauthorized(error.to_string()))?;
-        let idempotency_key = request.idempotency_key.clone();
         ctx.state
             .publish_proxy
-            .store
-            .record_publish_job(PublishJobInsert {
-                principal_id: principal.principal_id,
-                idempotency_key,
-                request,
-            })
-            .map_err(|error| RpcError::Other(error.to_string()))
+            .publish_event(&principal, request)
+            .await
+            .map_err(rpc_error_from_publish_proxy)
     })?;
     Ok(())
 }
@@ -150,8 +131,8 @@ fn register_relays_resolve(
     registry.track(METHOD_RELAYS_RESOLVE);
     module.register_async_method(
         METHOD_RELAYS_RESOLVE,
-        |params, _ctx, extensions| async move {
-            require_publish_principal(&extensions)?;
+        |params, ctx, extensions| async move {
+            let principal = require_publish_principal(&extensions)?;
             let params: RelaysResolveParams = params
                 .parse()
                 .map_err(|error| RpcError::InvalidParams(error.to_string()))?;
@@ -159,17 +140,56 @@ fn register_relays_resolve(
                 .event
                 .validate()
                 .map_err(|error| RpcError::InvalidParams(error.to_string()))?;
-            let _ = params.relay_policy;
-            let _ = params.relays;
-            Ok::<RelaysResolveResponse, RpcError>(RelaysResolveResponse { relays: Vec::new() })
+            let request = PublishEventRequest {
+                event: params.event,
+                relays: params.relays,
+                relay_policy: params.relay_policy,
+                delivery_policy: PublishDeliveryPolicy::Any,
+                idempotency_key: None,
+                timeout_ms: None,
+            };
+            principal
+                .allows_event(&request)
+                .map_err(|error| RpcError::Unauthorized(error.to_string()))?;
+            let resolution = ctx
+                .state
+                .publish_proxy
+                .resolve_relays_for_request(request.event.pubkey.as_str(), &request)
+                .await
+                .map_err(rpc_error_from_publish_proxy)?;
+            Ok::<RelaysResolveResponse, RpcError>(RelaysResolveResponse {
+                relays: resolution
+                    .targets
+                    .into_iter()
+                    .map(|target| ResolvedRelayResponseItem {
+                        relay_url: target.url.into_string(),
+                        source: target.source,
+                    })
+                    .collect(),
+                rejected_relays: resolution.outcomes,
+            })
         },
     )?;
     Ok(())
 }
 
+fn rpc_error_from_publish_proxy(error: PublishProxyError) -> RpcError {
+    match error {
+        PublishProxyError::InvalidScope(message) => RpcError::Unauthorized(message),
+        PublishProxyError::InvalidSignedEvent(message) => RpcError::InvalidParams(message),
+        PublishProxyError::SignedEventVerification(_)
+        | PublishProxyError::Draft(_)
+        | PublishProxyError::Relay(_) => RpcError::InvalidParams(error.to_string()),
+        PublishProxyError::IdempotencyConflict(_) => RpcError::Other(error.to_string()),
+        other => RpcError::Other(other.to_string()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::module;
+    use std::sync::Arc;
+
     use crate::app::config::{Nip46Config, PublishProxyConfig};
     use crate::core::Radrootsd;
     use crate::core::publish_proxy::{
@@ -180,34 +200,55 @@ mod tests {
     };
     use crate::transport::jsonrpc::{MethodRegistry, RpcContext};
     use jsonrpsee::server::RpcModule;
+    use nostr::JsonUtil;
     use radroots_identity::RadrootsIdentity;
-    use radroots_nostr::prelude::RadrootsNostrMetadata;
-    use radroots_publish_proxy_protocol::PublishRelayPolicy;
+    use radroots_nostr::prelude::{
+        RadrootsNostrMetadata, RadrootsNostrTimestamp, radroots_nostr_build_event,
+    };
+    use radroots_publish_proxy_protocol::{PublishRelayPolicy, SignedNostrEventWire};
+    use radroots_relay_transport::RadrootsMockRelayPublishAdapter;
 
-    fn event_json(pubkey: &str) -> String {
-        serde_json::json!({
-            "id": "0".repeat(64),
-            "pubkey": pubkey,
-            "created_at": 1_700_000_000u64,
-            "kind": 30402u32,
-            "tags": [["d", "listing-1"]],
-            "content": "{}",
-            "sig": "1".repeat(128)
-        })
-        .to_string()
+    fn signed_event(identity: &RadrootsIdentity) -> SignedNostrEventWire {
+        let event = radroots_nostr_build_event(
+            30_402,
+            "{}",
+            vec![vec!["d".to_owned(), "listing-1".to_owned()]],
+        )
+        .expect("event builder")
+        .custom_created_at(RadrootsNostrTimestamp::from_secs(1_700_000_000))
+        .sign_with_keys(identity.keys())
+        .expect("signed event");
+        serde_json::from_str(event.as_json().as_str()).expect("event wire")
     }
 
-    fn module_with_principal(admin: bool) -> (RpcModule<RpcContext>, RpcContext, String, String) {
+    fn module_with_principal(
+        admin: bool,
+    ) -> (
+        RpcModule<RpcContext>,
+        RpcContext,
+        String,
+        SignedNostrEventWire,
+    ) {
         let identity = RadrootsIdentity::generate();
+        let signed_event = signed_event(&identity);
         let metadata: RadrootsNostrMetadata =
             serde_json::from_str(r#"{"name":"radrootsd-test"}"#).expect("metadata");
+        let publish_proxy_config = PublishProxyConfig {
+            daemon_default_publish_relays: vec!["wss://relay.example.com".to_owned()],
+            ..PublishProxyConfig::default()
+        };
         let state = Radrootsd::new(
-            identity,
+            identity.clone(),
             metadata,
-            PublishProxyConfig::default(),
+            publish_proxy_config,
             Nip46Config::default(),
         )
         .expect("state");
+        let mut state = state;
+        state.publish_proxy = state
+            .publish_proxy
+            .clone()
+            .with_publisher(Arc::new(RadrootsMockRelayPublishAdapter::new()));
         let token = generate_bearer_token();
         let principal = state
             .publish_proxy
@@ -215,7 +256,7 @@ mod tests {
             .create_principal(PublishPrincipalInit {
                 label: "tester".to_owned(),
                 token_hash: hash_bearer_token(token.as_str()),
-                allowed_pubkeys: vec!["a".repeat(64)],
+                allowed_pubkeys: vec![identity.public_key_hex()],
                 allowed_kinds: vec![30_402],
                 allowed_relay_policies: vec![PublishRelayPolicy::DaemonDefaultOnly],
                 allow_request_relays: false,
@@ -233,12 +274,12 @@ mod tests {
         module
             .extensions_mut()
             .insert(PublishProxyAuthorization::Authorized(principal));
-        (module, ctx, token, "a".repeat(64))
+        (module, ctx, token, signed_event)
     }
 
     #[tokio::test]
     async fn publish_event_records_job_and_deduplicates_idempotency() {
-        let (module, _ctx, _token, pubkey) = module_with_principal(false);
+        let (module, _ctx, _token, event) = module_with_principal(false);
         let request = format!(
             r#"{{
                 "jsonrpc":"2.0",
@@ -252,7 +293,7 @@ mod tests {
                 }},
                 "id":1
             }}"#,
-            event_json(pubkey.as_str())
+            serde_json::to_string(&event).expect("event json")
         );
         let (response, _stream) = module
             .raw_json_request(request.as_str(), 1)
@@ -269,6 +310,8 @@ mod tests {
     #[tokio::test]
     async fn publish_event_rejects_principal_scope_gap() {
         let (module, _ctx, _token, _pubkey) = module_with_principal(false);
+        let other_identity = RadrootsIdentity::generate();
+        let event = signed_event(&other_identity);
         let request = format!(
             r#"{{
                 "jsonrpc":"2.0",
@@ -281,13 +324,41 @@ mod tests {
                 }},
                 "id":1
             }}"#,
-            event_json("b".repeat(64).as_str())
+            serde_json::to_string(&event).expect("event json")
         );
         let (response, _stream) = module
             .raw_json_request(request.as_str(), 1)
             .await
             .expect("request");
         assert!(response.get().contains("unauthorized"));
+    }
+
+    #[tokio::test]
+    async fn publish_relays_resolve_returns_daemon_default_targets() {
+        let (module, _ctx, _token, event) = module_with_principal(false);
+        let request = format!(
+            r#"{{
+                "jsonrpc":"2.0",
+                "method":"publish.relays.resolve",
+                "params":{{
+                    "event":{},
+                    "relay_policy":"daemon_default_only",
+                    "relays":[]
+                }},
+                "id":1
+            }}"#,
+            serde_json::to_string(&event).expect("event json")
+        );
+        let (response, _stream) = module
+            .raw_json_request(request.as_str(), 1)
+            .await
+            .expect("request");
+        assert!(
+            response
+                .get()
+                .contains("\"relay_url\":\"wss://relay.example.com\"")
+        );
+        assert!(response.get().contains("\"source\":\"daemon_default\""));
     }
 
     #[test]
