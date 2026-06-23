@@ -31,6 +31,7 @@ use rusqlite::{Connection, OptionalExtension, Row, params};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use uuid::Uuid;
 
 use crate::app::config::PublishProxyConfig;
@@ -59,6 +60,8 @@ pub enum PublishProxyError {
     Relay(#[from] RadrootsRelayTransportError),
     #[error("publish proxy transport error: {0}")]
     Transport(String),
+    #[error("publish proxy concurrency limit reached")]
+    ConcurrencyLimit,
     #[error("publish proxy idempotency conflict for key `{0}`")]
     IdempotencyConflict(String),
 }
@@ -69,26 +72,31 @@ pub struct PublishProxy {
     pub store: PublishProxyStore,
     publisher: Option<Arc<dyn RadrootsRelayPublishAdapter>>,
     resolver: Arc<dyn PublishRelayResolver>,
+    publish_jobs: Arc<Semaphore>,
 }
 
 impl PublishProxy {
     pub fn open(config: PublishProxyConfig) -> Result<Self, PublishProxyError> {
         let store = PublishProxyStore::open(config.database_path.clone())?;
+        let publish_jobs = Arc::new(Semaphore::new(config.max_concurrent_publish_jobs));
         Ok(Self {
             config,
             store,
             publisher: None,
             resolver: Arc::new(SystemPublishRelayResolver),
+            publish_jobs,
         })
     }
 
     pub fn memory(config: PublishProxyConfig) -> Result<Self, PublishProxyError> {
         let store = PublishProxyStore::memory()?;
+        let publish_jobs = Arc::new(Semaphore::new(config.max_concurrent_publish_jobs));
         Ok(Self {
             config,
             store,
             publisher: None,
             resolver: Arc::new(SystemPublishRelayResolver),
+            publish_jobs,
         })
     }
 
@@ -101,6 +109,13 @@ impl PublishProxy {
     fn with_relay_resolver(mut self, resolver: Arc<dyn PublishRelayResolver>) -> Self {
         self.resolver = resolver;
         self
+    }
+
+    fn acquire_publish_permit(&self) -> Result<OwnedSemaphorePermit, PublishProxyError> {
+        self.publish_jobs
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| PublishProxyError::ConcurrencyLimit)
     }
 
     pub async fn publish_event(
@@ -122,10 +137,13 @@ impl PublishProxy {
                 "signed event exceeds publish_proxy max_event_bytes".to_owned(),
             ));
         }
+        let effective_timeout_ms = effective_publish_timeout_ms(&self.config, request.timeout_ms)?;
+        let _permit = self.acquire_publish_permit()?;
         let request_fingerprint = request_intent_fingerprint(
             principal.principal_id.as_str(),
             signed_event.raw_json.as_str(),
             &request,
+            effective_timeout_ms,
         )?;
         let resolution = self
             .resolve_relays_for_request(signed_event.pubkey.as_str(), &request)
@@ -145,7 +163,7 @@ impl PublishProxy {
                 response.job.job_id.as_str(),
                 signed_event,
                 request.delivery_policy.clone(),
-                request.timeout_ms,
+                effective_timeout_ms,
                 resolution,
             )
             .await?;
@@ -380,7 +398,7 @@ impl PublishProxy {
         job_id: &str,
         signed_event: RadrootsSignedNostrEvent,
         delivery_policy: PublishDeliveryPolicy,
-        timeout_ms: Option<u64>,
+        timeout_ms: u64,
         resolution: PublishRelayResolution,
     ) -> Result<PublishJobView, PublishProxyError> {
         if resolution.targets.is_empty() {
@@ -428,9 +446,7 @@ impl PublishProxy {
             RadrootsRelayPublishRequest::new(signed_event, target_set, current_unix_millis())
                 .with_accepted_quorum(required_ack_count);
         let started = Instant::now();
-        let publish_timeout = Duration::from_millis(
-            timeout_ms.unwrap_or_else(|| self.config.connect_timeout_secs.saturating_mul(1_000)),
-        );
+        let publish_timeout = Duration::from_millis(timeout_ms);
         let receipts =
             match tokio::time::timeout(publish_timeout, self.publish_with_adapter(publish_request))
                 .await
@@ -1395,6 +1411,7 @@ fn request_intent_fingerprint(
     principal_id: &str,
     canonical_event_json: &str,
     request: &PublishEventRequest,
+    effective_timeout_ms: u64,
 ) -> Result<String, PublishProxyError> {
     #[derive(Serialize)]
     struct FingerprintInput<'a> {
@@ -1403,6 +1420,7 @@ fn request_intent_fingerprint(
         relays: Vec<String>,
         relay_policy: &'a PublishRelayPolicy,
         delivery_policy: &'a PublishDeliveryPolicy,
+        effective_timeout_ms: u64,
     }
 
     let input = FingerprintInput {
@@ -1415,11 +1433,31 @@ fn request_intent_fingerprint(
             .collect(),
         relay_policy: &request.relay_policy,
         delivery_policy: &request.delivery_policy,
+        effective_timeout_ms,
     };
     let bytes = serde_json::to_vec(&input)?;
     let mut hasher = Sha256::new();
     hasher.update(bytes);
     Ok(hex_lower(&hasher.finalize()))
+}
+
+fn effective_publish_timeout_ms(
+    config: &PublishProxyConfig,
+    timeout_ms: Option<u64>,
+) -> Result<u64, PublishProxyError> {
+    let max_timeout_ms = config.connect_timeout_secs.saturating_mul(1_000);
+    match timeout_ms {
+        Some(0) => Err(PublishProxyError::InvalidSignedEvent(
+            "timeout_ms must be greater than zero".to_owned(),
+        )),
+        Some(timeout_ms) if timeout_ms > max_timeout_ms => {
+            Err(PublishProxyError::InvalidSignedEvent(format!(
+                "timeout_ms must be at most {max_timeout_ms}"
+            )))
+        }
+        Some(timeout_ms) => Ok(timeout_ms),
+        None => Ok(max_timeout_ms),
+    }
 }
 
 fn push_resolved_relay(
@@ -2357,6 +2395,176 @@ mod tests {
             conflict,
             PublishProxyError::IdempotencyConflict(_)
         ));
+    }
+
+    #[tokio::test]
+    async fn publish_event_rejects_zero_and_excessive_timeout_before_job_creation() {
+        let identity = RadrootsIdentity::generate();
+        let (proxy, adapter) = publish_proxy(config_with_defaults(vec![RELAY_PRIMARY]));
+        let principal = principal(
+            &proxy,
+            identity.public_key_hex(),
+            vec![PublishRelayPolicy::DaemonDefaultOnly],
+            false,
+            PublishJobVisibility::Own,
+        );
+        let mut zero = publish_request(
+            signed_event(&identity, "{}"),
+            Vec::new(),
+            PublishRelayPolicy::DaemonDefaultOnly,
+            PublishDeliveryPolicy::Any,
+            Some("idem-zero-timeout"),
+        );
+        zero.timeout_ms = Some(0);
+        let zero_error = proxy
+            .publish_event(&principal, zero)
+            .await
+            .expect_err("zero timeout should fail");
+        assert!(matches!(
+            zero_error,
+            PublishProxyError::InvalidSignedEvent(_)
+        ));
+
+        let mut excessive = publish_request(
+            signed_event(&identity, "changed"),
+            Vec::new(),
+            PublishRelayPolicy::DaemonDefaultOnly,
+            PublishDeliveryPolicy::Any,
+            Some("idem-excessive-timeout"),
+        );
+        excessive.timeout_ms = Some(10_001);
+        let excessive_error = proxy
+            .publish_event(&principal, excessive)
+            .await
+            .expect_err("excessive timeout should fail");
+        assert!(matches!(
+            excessive_error,
+            PublishProxyError::InvalidSignedEvent(_)
+        ));
+        assert!(
+            proxy
+                .store
+                .list_jobs_for_principal(&principal, 50)
+                .expect("jobs")
+                .is_empty()
+        );
+        assert!(adapter.captured_raw_events().is_empty());
+    }
+
+    #[tokio::test]
+    async fn publish_event_default_timeout_fingerprints_as_effective_timeout() {
+        let identity = RadrootsIdentity::generate();
+        let (proxy, _adapter) = publish_proxy(config_with_defaults(vec![RELAY_PRIMARY]));
+        let principal = principal(
+            &proxy,
+            identity.public_key_hex(),
+            vec![PublishRelayPolicy::DaemonDefaultOnly],
+            false,
+            PublishJobVisibility::Own,
+        );
+        let event = signed_event(&identity, "{}");
+        let mut default_timeout = publish_request(
+            event.clone(),
+            Vec::new(),
+            PublishRelayPolicy::DaemonDefaultOnly,
+            PublishDeliveryPolicy::Any,
+            Some("idem-default-timeout"),
+        );
+        default_timeout.timeout_ms = None;
+        let mut explicit_default = publish_request(
+            event,
+            Vec::new(),
+            PublishRelayPolicy::DaemonDefaultOnly,
+            PublishDeliveryPolicy::Any,
+            Some("idem-default-timeout"),
+        );
+        explicit_default.timeout_ms = Some(10_000);
+
+        let first = proxy
+            .publish_event(&principal, default_timeout)
+            .await
+            .expect("first");
+        let duplicate = proxy
+            .publish_event(&principal, explicit_default)
+            .await
+            .expect("duplicate");
+        assert!(!first.deduplicated);
+        assert!(duplicate.deduplicated);
+        assert_eq!(duplicate.job.job_id, first.job.job_id);
+    }
+
+    #[tokio::test]
+    async fn publish_event_fingerprint_conflicts_on_different_effective_timeout() {
+        let identity = RadrootsIdentity::generate();
+        let (proxy, _adapter) = publish_proxy(config_with_defaults(vec![RELAY_PRIMARY]));
+        let principal = principal(
+            &proxy,
+            identity.public_key_hex(),
+            vec![PublishRelayPolicy::DaemonDefaultOnly],
+            false,
+            PublishJobVisibility::Own,
+        );
+        let event = signed_event(&identity, "{}");
+        let first = publish_request(
+            event.clone(),
+            Vec::new(),
+            PublishRelayPolicy::DaemonDefaultOnly,
+            PublishDeliveryPolicy::Any,
+            Some("idem-timeout-conflict"),
+        );
+        let mut conflict = publish_request(
+            event,
+            Vec::new(),
+            PublishRelayPolicy::DaemonDefaultOnly,
+            PublishDeliveryPolicy::Any,
+            Some("idem-timeout-conflict"),
+        );
+        conflict.timeout_ms = Some(6_000);
+
+        proxy.publish_event(&principal, first).await.expect("first");
+        let error = proxy
+            .publish_event(&principal, conflict)
+            .await
+            .expect_err("timeout conflict");
+        assert!(matches!(error, PublishProxyError::IdempotencyConflict(_)));
+    }
+
+    #[tokio::test]
+    async fn publish_event_concurrency_limit_rejects_without_job_creation() {
+        let identity = RadrootsIdentity::generate();
+        let mut config = config_with_defaults(vec![RELAY_PRIMARY]);
+        config.max_concurrent_publish_jobs = 1;
+        let (proxy, adapter) = publish_proxy(config);
+        let principal = principal(
+            &proxy,
+            identity.public_key_hex(),
+            vec![PublishRelayPolicy::DaemonDefaultOnly],
+            false,
+            PublishJobVisibility::Own,
+        );
+        let _permit = proxy.acquire_publish_permit().expect("permit");
+        let error = proxy
+            .publish_event(
+                &principal,
+                publish_request(
+                    signed_event(&identity, "{}"),
+                    Vec::new(),
+                    PublishRelayPolicy::DaemonDefaultOnly,
+                    PublishDeliveryPolicy::Any,
+                    Some("idem-concurrency"),
+                ),
+            )
+            .await
+            .expect_err("concurrency limit");
+        assert!(matches!(error, PublishProxyError::ConcurrencyLimit));
+        assert!(
+            proxy
+                .store
+                .list_jobs_for_principal(&principal, 50)
+                .expect("jobs")
+                .is_empty()
+        );
+        assert!(adapter.captured_raw_events().is_empty());
     }
 
     #[tokio::test]

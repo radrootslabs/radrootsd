@@ -69,6 +69,10 @@ fn default_publish_proxy_job_list_limit() -> usize {
     100
 }
 
+fn default_publish_proxy_max_concurrent_publish_jobs() -> usize {
+    8
+}
+
 fn default_publish_proxy_relay_url_policy() -> PublishProxyRelayUrlPolicy {
     PublishProxyRelayUrlPolicy::Public
 }
@@ -110,6 +114,8 @@ struct RawPublishProxyConfig {
     pub max_relays_per_request: usize,
     #[serde(default = "default_publish_proxy_job_list_limit")]
     pub job_list_limit: usize,
+    #[serde(default = "default_publish_proxy_max_concurrent_publish_jobs")]
+    pub max_concurrent_publish_jobs: usize,
     #[serde(default)]
     pub database_path: Option<PathBuf>,
     #[serde(default = "default_publish_proxy_relay_url_policy")]
@@ -128,6 +134,7 @@ impl Default for RawPublishProxyConfig {
             max_event_bytes: default_publish_proxy_max_event_bytes(),
             max_relays_per_request: default_publish_proxy_max_relays_per_request(),
             job_list_limit: default_publish_proxy_job_list_limit(),
+            max_concurrent_publish_jobs: default_publish_proxy_max_concurrent_publish_jobs(),
             database_path: None,
             relay_url_policy: default_publish_proxy_relay_url_policy(),
             author_relay_discovery_relays: Vec::new(),
@@ -144,6 +151,7 @@ impl RawPublishProxyConfig {
             max_event_bytes: self.max_event_bytes,
             max_relays_per_request: self.max_relays_per_request,
             job_list_limit: self.job_list_limit,
+            max_concurrent_publish_jobs: self.max_concurrent_publish_jobs,
             database_path: self
                 .database_path
                 .unwrap_or_else(|| paths.publish_proxy_database_path.clone()),
@@ -262,6 +270,8 @@ pub struct PublishProxyConfig {
     pub max_relays_per_request: usize,
     #[serde(default = "default_publish_proxy_job_list_limit")]
     pub job_list_limit: usize,
+    #[serde(default = "default_publish_proxy_max_concurrent_publish_jobs")]
+    pub max_concurrent_publish_jobs: usize,
     #[serde(default = "default_publish_proxy_database_path")]
     pub database_path: PathBuf,
     #[serde(default = "default_publish_proxy_relay_url_policy")]
@@ -280,6 +290,7 @@ impl Default for PublishProxyConfig {
             max_event_bytes: default_publish_proxy_max_event_bytes(),
             max_relays_per_request: default_publish_proxy_max_relays_per_request(),
             job_list_limit: default_publish_proxy_job_list_limit(),
+            max_concurrent_publish_jobs: default_publish_proxy_max_concurrent_publish_jobs(),
             database_path: default_publish_proxy_database_path(),
             relay_url_policy: default_publish_proxy_relay_url_policy(),
             author_relay_discovery_relays: Vec::new(),
@@ -298,6 +309,9 @@ impl PublishProxyConfig {
         }
         if self.job_list_limit == 0 {
             bail!("publish_proxy job_list_limit must be greater than zero");
+        }
+        if self.max_concurrent_publish_jobs == 0 {
+            bail!("publish_proxy max_concurrent_publish_jobs must be greater than zero");
         }
         if self.connect_timeout_secs == 0 {
             bail!("publish_proxy connect_timeout_secs must be greater than zero");
@@ -447,6 +461,7 @@ mod tests {
         assert_eq!(cfg.max_event_bytes, 128 * 1024);
         assert_eq!(cfg.max_relays_per_request, 20);
         assert_eq!(cfg.job_list_limit, 100);
+        assert_eq!(cfg.max_concurrent_publish_jobs, 8);
         assert_eq!(cfg.database_path, paths.publish_proxy_database_path);
         assert_eq!(cfg.relay_url_policy, PublishProxyRelayUrlPolicy::Public);
         assert!(cfg.author_relay_discovery_relays.is_empty());
@@ -481,6 +496,9 @@ mod tests {
         assert!(cfg.validate().is_err());
         let mut cfg = PublishProxyConfig::default();
         cfg.job_list_limit = 0;
+        assert!(cfg.validate().is_err());
+        let mut cfg = PublishProxyConfig::default();
+        cfg.max_concurrent_publish_jobs = 0;
         assert!(cfg.validate().is_err());
         let mut cfg = PublishProxyConfig::default();
         cfg.connect_timeout_secs = 0;

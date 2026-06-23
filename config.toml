@@ -41,6 +41,7 @@ enabled = true
 max_event_bytes = 131072
 max_relays_per_request = 20
 job_list_limit = 100
+max_concurrent_publish_jobs = 8
 relay_url_policy = "localhost"
 author_relay_discovery_relays = []
 daemon_default_publish_relays = ["ws://127.0.0.1:8080"]
