@@ -81,7 +81,8 @@ mod tests {
     };
     use crate::core::Radrootsd;
     use crate::core::publish_proxy::{
-        PublishJobVisibility, PublishPrincipalInit, generate_bearer_token, hash_bearer_token,
+        PublishJobVisibility, PublishPrincipalInit, PublishRelayResolveFuture,
+        PublishRelayResolver, generate_bearer_token, hash_bearer_token,
     };
     use crate::transport::jsonrpc::methods;
     use crate::transport::jsonrpc::{MethodRegistry, RpcContext};
@@ -94,11 +95,12 @@ mod tests {
     use radroots_publish_proxy_protocol::PublishRelayPolicy;
     use radroots_relay_transport::RadrootsMockRelayPublishAdapter;
     use serde_json::Value;
-    use std::net::{SocketAddr, TcpListener};
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener};
     use std::sync::Arc;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     const RELAY_PRIMARY: &str = "ws://localhost:7777";
+    const RELAY_PUBLIC: &str = "wss://relay.example.com";
 
     fn unused_addr() -> SocketAddr {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind local addr");
@@ -136,7 +138,10 @@ mod tests {
         String::from_utf8(bytes).expect("response utf8")
     }
 
-    fn publish_server_state() -> (
+    fn publish_server_state_with_config(
+        publish_proxy_config: PublishProxyConfig,
+        resolver: Option<Arc<dyn PublishRelayResolver>>,
+    ) -> (
         Radrootsd,
         String,
         RadrootsIdentity,
@@ -145,11 +150,6 @@ mod tests {
         let identity = RadrootsIdentity::generate();
         let metadata: RadrootsNostrMetadata =
             serde_json::from_str(r#"{"name":"radrootsd-test"}"#).expect("metadata");
-        let publish_proxy_config = PublishProxyConfig {
-            daemon_default_publish_relays: vec![RELAY_PRIMARY.to_owned()],
-            relay_url_policy: PublishProxyRelayUrlPolicy::Localhost,
-            ..PublishProxyConfig::default()
-        };
         let mut state = Radrootsd::new(
             identity.clone(),
             metadata,
@@ -158,10 +158,11 @@ mod tests {
         )
         .expect("state");
         let adapter = RadrootsMockRelayPublishAdapter::new();
-        state.publish_proxy = state
-            .publish_proxy
-            .clone()
-            .with_publisher(Arc::new(adapter.clone()));
+        let mut publish_proxy = state.publish_proxy.clone();
+        if let Some(resolver) = resolver {
+            publish_proxy = publish_proxy.with_relay_resolver(resolver);
+        }
+        state.publish_proxy = publish_proxy.with_publisher(Arc::new(adapter.clone()));
         let token = generate_bearer_token();
         state
             .publish_proxy
@@ -178,6 +179,43 @@ mod tests {
             })
             .expect("principal");
         (state, token, identity, adapter)
+    }
+
+    fn publish_server_state() -> (
+        Radrootsd,
+        String,
+        RadrootsIdentity,
+        RadrootsMockRelayPublishAdapter,
+    ) {
+        publish_server_state_with_config(
+            PublishProxyConfig {
+                daemon_default_publish_relays: vec![RELAY_PRIMARY.to_owned()],
+                relay_url_policy: PublishProxyRelayUrlPolicy::Localhost,
+                ..PublishProxyConfig::default()
+            },
+            None,
+        )
+    }
+
+    struct StaticPublishRelayResolver {
+        addresses: Vec<IpAddr>,
+    }
+
+    impl StaticPublishRelayResolver {
+        fn forbidden_localhost() -> Self {
+            Self {
+                addresses: vec![IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))],
+            }
+        }
+    }
+
+    impl PublishRelayResolver for StaticPublishRelayResolver {
+        fn resolve<'a>(
+            &'a self,
+            _url: &'a radroots_relay_transport::RadrootsRelayUrl,
+        ) -> PublishRelayResolveFuture<'a> {
+            Box::pin(async move { Ok(self.addresses.clone()) })
+        }
     }
 
     async fn start_publish_server(
@@ -260,6 +298,50 @@ mod tests {
         handle.stop().expect("stop server");
 
         assert_eq!(adapter.captured_raw_events(), vec![event_json]);
+    }
+
+    #[tokio::test]
+    async fn raw_http_publish_event_rejects_public_relay_forbidden_dns_destination() {
+        let (state, token, identity, adapter) = publish_server_state_with_config(
+            PublishProxyConfig {
+                daemon_default_publish_relays: vec![RELAY_PUBLIC.to_owned()],
+                relay_url_policy: PublishProxyRelayUrlPolicy::Public,
+                ..PublishProxyConfig::default()
+            },
+            Some(Arc::new(StaticPublishRelayResolver::forbidden_localhost())),
+        );
+        let event_json = signed_event_json(&identity);
+        let (addr, handle) = start_publish_server(state, RpcConfig::default()).await;
+        let publish = format!(
+            r#"{{
+                "jsonrpc":"2.0",
+                "method":"publish.event",
+                "params":{{
+                    "event":{},
+                    "relays":[],
+                    "relay_policy":"daemon_default_only",
+                    "delivery_policy":{{"mode":"any"}},
+                    "idempotency_key":"raw-http-public-dns-reject"
+                }},
+                "id":1
+            }}"#,
+            event_json
+        );
+        let publish_response = post_json(addr, publish.as_str(), Some(token.as_str())).await;
+        handle.stop().expect("stop server");
+
+        let publish_value = json_response_body(publish_response.as_str());
+        let job = &publish_value["result"]["job"];
+        assert_eq!(publish_value["result"]["deduplicated"], false);
+        assert_eq!(job["status"], "rejected");
+        assert_eq!(job["last_error"], "no_publish_relays");
+        let relays = job["relays"].as_array().expect("relay outcomes");
+        assert_eq!(relays.len(), 1);
+        assert_eq!(relays[0]["relay_url"], RELAY_PUBLIC);
+        assert_eq!(relays[0]["source"], "daemon_default");
+        assert_eq!(relays[0]["outcome_kind"], "relay_url_rejected");
+        assert_eq!(relays[0]["attempted"], false);
+        assert!(adapter.captured_raw_events().is_empty());
     }
 
     #[tokio::test]

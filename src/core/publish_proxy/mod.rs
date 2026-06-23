@@ -109,7 +109,7 @@ impl PublishProxy {
     }
 
     #[cfg(test)]
-    fn with_relay_resolver(mut self, resolver: Arc<dyn PublishRelayResolver>) -> Self {
+    pub(crate) fn with_relay_resolver(mut self, resolver: Arc<dyn PublishRelayResolver>) -> Self {
         self.resolver = resolver;
         self
     }
@@ -617,10 +617,10 @@ impl PublishRelayResolution {
     }
 }
 
-type PublishRelayResolveFuture<'a> =
+pub(crate) type PublishRelayResolveFuture<'a> =
     Pin<Box<dyn Future<Output = Result<Vec<IpAddr>, std::io::Error>> + Send + 'a>>;
 
-trait PublishRelayResolver: Send + Sync {
+pub(crate) trait PublishRelayResolver: Send + Sync {
     fn resolve<'a>(&'a self, url: &'a RadrootsRelayUrl) -> PublishRelayResolveFuture<'a>;
 }
 
