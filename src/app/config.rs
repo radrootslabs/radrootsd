@@ -166,8 +166,8 @@ struct RawConfiguration {
     pub nip46: Nip46Config,
     #[serde(default)]
     pub publish_proxy: RawPublishProxyConfig,
-    #[serde(default)]
-    pub bridge: Option<serde::de::IgnoredAny>,
+    #[serde(default, rename = "bridge")]
+    pub obsolete_publish_bridge_config: Option<serde::de::IgnoredAny>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -186,7 +186,10 @@ impl RawSettings {
                 rpc_addr: self.config.rpc_addr,
                 nip46: self.config.nip46,
                 publish_proxy: self.config.publish_proxy.into_publish_proxy_config(paths),
-                obsolete_bridge_config_present: self.config.bridge.is_some(),
+                obsolete_bridge_config_present: self
+                    .config
+                    .obsolete_publish_bridge_config
+                    .is_some(),
             },
         }
     }

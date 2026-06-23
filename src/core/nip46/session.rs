@@ -59,7 +59,7 @@ pub struct Nip46SessionAuthority {
     pub provider_runtime_id: String,
     pub account_identity_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub provider_signer_session_id: Option<String>,
+    pub provider_session_id: Option<String>,
 }
 
 #[derive(Clone)]
@@ -249,8 +249,8 @@ impl Nip46SessionAuthority {
     pub fn normalized(mut self) -> Result<Self, String> {
         self.provider_runtime_id = self.provider_runtime_id.trim().to_owned();
         self.account_identity_id = self.account_identity_id.trim().to_owned();
-        self.provider_signer_session_id = self
-            .provider_signer_session_id
+        self.provider_session_id = self
+            .provider_session_id
             .as_deref()
             .map(str::trim)
             .filter(|value| !value.is_empty())
