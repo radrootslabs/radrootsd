@@ -107,9 +107,18 @@ fn register_job_list(module: &mut RpcModule<RpcContext>, registry: &MethodRegist
     registry.track(METHOD_JOB_LIST);
     module.register_async_method(METHOD_JOB_LIST, |params, ctx, extensions| async move {
         let principal = require_publish_principal(&extensions)?;
-        let params = params
-            .parse::<JobListParams>()
-            .unwrap_or(JobListParams { limit: None });
+        let params = if params.len_bytes() == 0 || params.as_str() == Some("[]") {
+            JobListParams { limit: None }
+        } else {
+            params
+                .parse::<JobListParams>()
+                .map_err(|error| RpcError::InvalidParams(error.to_string()))?
+        };
+        if params.limit == Some(0) {
+            return Err(RpcError::InvalidParams(
+                "limit must be greater than zero".to_owned(),
+            ));
+        }
         let configured_limit = ctx.state.publish_proxy.config.job_list_limit;
         let limit = params
             .limit
@@ -221,8 +230,9 @@ mod tests {
         serde_json::from_str(event.as_json().as_str()).expect("event wire")
     }
 
-    fn module_with_principal(
+    fn module_with_principal_and_config(
         admin: bool,
+        publish_proxy_config: PublishProxyConfig,
     ) -> (
         RpcModule<RpcContext>,
         RpcContext,
@@ -233,10 +243,6 @@ mod tests {
         let signed_event = signed_event(&identity);
         let metadata: RadrootsNostrMetadata =
             serde_json::from_str(r#"{"name":"radrootsd-test"}"#).expect("metadata");
-        let publish_proxy_config = PublishProxyConfig {
-            daemon_default_publish_relays: vec!["wss://relay.example.com".to_owned()],
-            ..PublishProxyConfig::default()
-        };
         let state = Radrootsd::new(
             identity.clone(),
             metadata,
@@ -275,6 +281,23 @@ mod tests {
             .extensions_mut()
             .insert(PublishProxyAuthorization::Authorized(principal));
         (module, ctx, token, signed_event)
+    }
+
+    fn module_with_principal(
+        admin: bool,
+    ) -> (
+        RpcModule<RpcContext>,
+        RpcContext,
+        String,
+        SignedNostrEventWire,
+    ) {
+        module_with_principal_and_config(
+            admin,
+            PublishProxyConfig {
+                daemon_default_publish_relays: vec!["wss://relay.example.com".to_owned()],
+                ..PublishProxyConfig::default()
+            },
+        )
     }
 
     #[tokio::test]
@@ -331,6 +354,94 @@ mod tests {
             .await
             .expect("request");
         assert!(response.get().contains("unauthorized"));
+    }
+
+    #[tokio::test]
+    async fn publish_job_list_rejects_malformed_and_zero_limits() {
+        let (module, _ctx, _token, _event) = module_with_principal(false);
+        let malformed = r#"{
+            "jsonrpc":"2.0",
+            "method":"publish.job.list",
+            "params":"bad",
+            "id":1
+        }"#;
+        let (response, _stream) = module
+            .raw_json_request(malformed, 1)
+            .await
+            .expect("malformed request");
+        assert!(response.get().contains("\"code\":-32602"));
+
+        let zero = r#"{
+            "jsonrpc":"2.0",
+            "method":"publish.job.list",
+            "params":{"limit":0},
+            "id":1
+        }"#;
+        let (response, _stream) = module
+            .raw_json_request(zero, 1)
+            .await
+            .expect("zero request");
+        assert!(response.get().contains("\"code\":-32602"));
+        assert!(response.get().contains("limit must be greater than zero"));
+    }
+
+    #[tokio::test]
+    async fn publish_job_list_uses_configured_limit_when_omitted_and_caps_positive_limits() {
+        let mut config = PublishProxyConfig {
+            daemon_default_publish_relays: vec!["wss://relay.example.com".to_owned()],
+            ..PublishProxyConfig::default()
+        };
+        config.job_list_limit = 1;
+        let (module, _ctx, _token, event) = module_with_principal_and_config(false, config);
+        for idempotency_key in ["idem-list-1", "idem-list-2"] {
+            let request = format!(
+                r#"{{
+                    "jsonrpc":"2.0",
+                    "method":"publish.event",
+                    "params":{{
+                        "event":{},
+                        "relays":[],
+                        "relay_policy":"daemon_default_only",
+                        "delivery_policy":{{"mode":"any"}},
+                        "idempotency_key":"{idempotency_key}"
+                    }},
+                    "id":1
+                }}"#,
+                serde_json::to_string(&event).expect("event json")
+            );
+            let (response, _stream) = module
+                .raw_json_request(request.as_str(), 1)
+                .await
+                .expect("publish request");
+            assert!(response.get().contains("\"deduplicated\":false"));
+        }
+
+        let omitted = r#"{
+            "jsonrpc":"2.0",
+            "method":"publish.job.list",
+            "id":1
+        }"#;
+        let (response, _stream) = module
+            .raw_json_request(omitted, 1)
+            .await
+            .expect("omitted request");
+        let value: serde_json::Value =
+            serde_json::from_str(response.get()).expect("omitted response json");
+        assert_eq!(value["result"].as_array().expect("jobs").len(), 1);
+
+        let over_limit = r#"{
+            "jsonrpc":"2.0",
+            "method":"publish.job.list",
+            "params":{"limit":50},
+            "id":1
+        }"#;
+        let (response, _stream) = module
+            .raw_json_request(over_limit, 1)
+            .await
+            .expect("over limit request");
+        let value: serde_json::Value =
+            serde_json::from_str(response.get()).expect("over limit response json");
+        assert_eq!(value["result"].as_array().expect("jobs").len(), 1);
     }
 
     #[tokio::test]

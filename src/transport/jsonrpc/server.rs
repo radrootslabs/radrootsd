@@ -76,7 +76,9 @@ where
 #[cfg(test)]
 mod tests {
     use super::start_server;
-    use crate::app::config::{Nip46Config, PublishProxyConfig, RpcConfig};
+    use crate::app::config::{
+        Nip46Config, PublishProxyConfig, PublishProxyRelayUrlPolicy, RpcConfig,
+    };
     use crate::core::Radrootsd;
     use crate::core::publish_proxy::{
         PublishJobVisibility, PublishPrincipalInit, generate_bearer_token, hash_bearer_token,
@@ -91,11 +93,12 @@ mod tests {
     };
     use radroots_publish_proxy_protocol::PublishRelayPolicy;
     use radroots_relay_transport::RadrootsMockRelayPublishAdapter;
+    use serde_json::Value;
     use std::net::{SocketAddr, TcpListener};
     use std::sync::Arc;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-    const RELAY_PRIMARY: &str = "wss://relay.example.com";
+    const RELAY_PRIMARY: &str = "ws://localhost:7777";
 
     fn unused_addr() -> SocketAddr {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind local addr");
@@ -133,12 +136,18 @@ mod tests {
         String::from_utf8(bytes).expect("response utf8")
     }
 
-    fn publish_server_state() -> (Radrootsd, String, RadrootsIdentity) {
+    fn publish_server_state() -> (
+        Radrootsd,
+        String,
+        RadrootsIdentity,
+        RadrootsMockRelayPublishAdapter,
+    ) {
         let identity = RadrootsIdentity::generate();
         let metadata: RadrootsNostrMetadata =
             serde_json::from_str(r#"{"name":"radrootsd-test"}"#).expect("metadata");
         let publish_proxy_config = PublishProxyConfig {
             daemon_default_publish_relays: vec![RELAY_PRIMARY.to_owned()],
+            relay_url_policy: PublishProxyRelayUrlPolicy::Localhost,
             ..PublishProxyConfig::default()
         };
         let mut state = Radrootsd::new(
@@ -148,10 +157,11 @@ mod tests {
             Nip46Config::default(),
         )
         .expect("state");
+        let adapter = RadrootsMockRelayPublishAdapter::new();
         state.publish_proxy = state
             .publish_proxy
             .clone()
-            .with_publisher(Arc::new(RadrootsMockRelayPublishAdapter::new()));
+            .with_publisher(Arc::new(adapter.clone()));
         let token = generate_bearer_token();
         state
             .publish_proxy
@@ -167,7 +177,7 @@ mod tests {
                 expires_at_unix: None,
             })
             .expect("principal");
-        (state, token, identity)
+        (state, token, identity, adapter)
     }
 
     async fn start_publish_server(
@@ -186,9 +196,75 @@ mod tests {
         (addr, handle)
     }
 
+    fn json_response_body(response: &str) -> Value {
+        let (_headers, body) = response.split_once("\r\n\r\n").expect("http body");
+        serde_json::from_str(body).expect("json response body")
+    }
+
+    #[tokio::test]
+    async fn raw_http_publish_event_get_and_list_preserve_signed_event() {
+        let (state, token, identity, adapter) = publish_server_state();
+        let event_json = signed_event_json(&identity);
+        let (addr, handle) = start_publish_server(state, RpcConfig::default()).await;
+        let publish = format!(
+            r#"{{
+                "jsonrpc":"2.0",
+                "method":"publish.event",
+                "params":{{
+                    "event":{},
+                    "relays":[],
+                    "relay_policy":"daemon_default_only",
+                    "delivery_policy":{{"mode":"any"}},
+                    "idempotency_key":"raw-http-idem"
+                }},
+                "id":1
+            }}"#,
+            event_json
+        );
+        let publish_response = post_json(addr, publish.as_str(), Some(token.as_str())).await;
+        let publish_value = json_response_body(publish_response.as_str());
+        let job_id = publish_value["result"]["job"]["job_id"]
+            .as_str()
+            .expect("job id")
+            .to_owned();
+        assert_eq!(publish_value["result"]["deduplicated"], false);
+        assert_eq!(
+            publish_value["result"]["job"]["status"],
+            "delivery_satisfied"
+        );
+
+        let get = format!(
+            r#"{{
+                "jsonrpc":"2.0",
+                "method":"publish.job.get",
+                "params":{{"job_id":"{job_id}"}},
+                "id":2
+            }}"#
+        );
+        let get_response = post_json(addr, get.as_str(), Some(token.as_str())).await;
+        let get_value = json_response_body(get_response.as_str());
+        assert_eq!(get_value["result"]["job_id"], job_id);
+        assert_eq!(get_value["result"]["status"], "delivery_satisfied");
+
+        let list = r#"{
+            "jsonrpc":"2.0",
+            "method":"publish.job.list",
+            "params":{"limit":10},
+            "id":3
+        }"#;
+        let list_response = post_json(addr, list, Some(token.as_str())).await;
+        let list_value = json_response_body(list_response.as_str());
+        let jobs = list_value["result"].as_array().expect("jobs");
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0]["job_id"], job_id);
+        handle.stop().expect("stop server");
+
+        assert_eq!(adapter.captured_raw_events(), vec![event_json]);
+    }
+
     #[tokio::test]
     async fn publish_notifications_do_not_create_jobs() {
-        let (state, token, identity) = publish_server_state();
+        let (state, token, identity, _adapter) = publish_server_state();
         let store = state.publish_proxy.store.clone();
         let (addr, handle) = start_publish_server(state, RpcConfig::default()).await;
         let notification = format!(
@@ -225,7 +301,7 @@ mod tests {
 
     #[tokio::test]
     async fn batch_requests_are_disabled_by_default() {
-        let (state, token, identity) = publish_server_state();
+        let (state, token, identity, _adapter) = publish_server_state();
         let store = state.publish_proxy.store.clone();
         let (addr, handle) = start_publish_server(state, RpcConfig::default()).await;
         let batch = format!(
