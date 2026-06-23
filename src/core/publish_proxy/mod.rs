@@ -72,6 +72,7 @@ pub struct PublishProxy {
     pub store: PublishProxyStore,
     publisher: Option<Arc<dyn RadrootsRelayPublishAdapter>>,
     resolver: Arc<dyn PublishRelayResolver>,
+    author_relay_discovery: Arc<dyn PublishAuthorRelayDiscovery>,
     publish_jobs: Arc<Semaphore>,
 }
 
@@ -84,6 +85,7 @@ impl PublishProxy {
             store,
             publisher: None,
             resolver: Arc::new(SystemPublishRelayResolver),
+            author_relay_discovery: Arc::new(NostrPublishAuthorRelayDiscovery),
             publish_jobs,
         })
     }
@@ -96,6 +98,7 @@ impl PublishProxy {
             store,
             publisher: None,
             resolver: Arc::new(SystemPublishRelayResolver),
+            author_relay_discovery: Arc::new(NostrPublishAuthorRelayDiscovery),
             publish_jobs,
         })
     }
@@ -108,6 +111,15 @@ impl PublishProxy {
     #[cfg(test)]
     fn with_relay_resolver(mut self, resolver: Arc<dyn PublishRelayResolver>) -> Self {
         self.resolver = resolver;
+        self
+    }
+
+    #[cfg(test)]
+    fn with_author_relay_discovery(
+        mut self,
+        author_relay_discovery: Arc<dyn PublishAuthorRelayDiscovery>,
+    ) -> Self {
+        self.author_relay_discovery = author_relay_discovery;
         self
     }
 
@@ -243,27 +255,42 @@ impl PublishProxy {
         pubkey: &str,
     ) -> Result<PublishRelayResolution, PublishProxyError> {
         let cached = self.store.cached_author_write_relays(pubkey)?;
-        let cached_resolution = self.resolve_author_relay_inputs(&cached).await?;
+        let mut cached_resolution = self.resolve_author_relay_inputs(&cached).await?;
         if !cached_resolution.targets.is_empty() {
             return Ok(cached_resolution);
         }
         if self.config.author_relay_discovery_relays.is_empty() {
             return Ok(cached_resolution);
         }
-        let discovery_targets = self
+        let mut discovery_targets = self
             .resolve_config_relays(
                 &self.config.author_relay_discovery_relays,
                 PublishRelaySource::DaemonDefault,
             )
             .await?;
         if discovery_targets.targets.is_empty() {
+            discovery_targets
+                .outcomes
+                .append(&mut cached_resolution.outcomes);
             return Ok(discovery_targets);
         }
         let discovered = self
-            .fetch_author_write_relays(pubkey, discovery_targets.targets)
+            .author_relay_discovery
+            .fetch_author_write_relays(
+                pubkey,
+                std::mem::take(&mut discovery_targets.targets),
+                self.config.connect_timeout_secs,
+            )
             .await?;
         self.store.cache_author_write_relays(pubkey, &discovered)?;
-        self.resolve_author_relay_inputs(&discovered).await
+        let mut discovered_resolution = self.resolve_author_relay_inputs(&discovered).await?;
+        discovered_resolution
+            .outcomes
+            .append(&mut cached_resolution.outcomes);
+        discovered_resolution
+            .outcomes
+            .append(&mut discovery_targets.outcomes);
+        Ok(discovered_resolution)
     }
 
     async fn resolve_author_relay_inputs(
@@ -273,14 +300,24 @@ impl PublishProxy {
         let mut targets = Vec::new();
         let mut outcomes = Vec::new();
         for relay in relays {
-            if let Ok(url) = RadrootsRelayUrl::parse(relay, relay_url_policy(&self.config)) {
-                self.push_checked_relay_target(
-                    &mut targets,
-                    &mut outcomes,
-                    url,
-                    PublishRelaySource::AuthorWrite,
-                )
-                .await;
+            match RadrootsRelayUrl::parse(relay, relay_url_policy(&self.config)) {
+                Ok(url) => {
+                    self.push_checked_relay_target(
+                        &mut targets,
+                        &mut outcomes,
+                        url,
+                        PublishRelaySource::AuthorWrite,
+                    )
+                    .await;
+                }
+                Err(error) => outcomes.push(PublishRelayOutcome {
+                    relay_url: relay.trim().to_owned(),
+                    source: PublishRelaySource::AuthorWrite,
+                    attempted: false,
+                    outcome_kind: PublishRelayOutcomeKind::RelayUrlRejected,
+                    message: Some(error.to_string()),
+                    latency_ms: None,
+                }),
             }
         }
         Ok(PublishRelayResolution { targets, outcomes })
@@ -358,39 +395,6 @@ impl PublishProxy {
                 format!("dns lookup failed: {error}"),
             )),
         }
-    }
-
-    async fn fetch_author_write_relays(
-        &self,
-        pubkey: &str,
-        discovery_targets: Vec<ResolvedPublishRelay>,
-    ) -> Result<Vec<String>, PublishProxyError> {
-        let Ok(public_key) = RadrootsNostrPublicKey::from_hex(pubkey) else {
-            return Ok(Vec::new());
-        };
-        let client = RadrootsNostrClient::new_signerless();
-        for target in discovery_targets {
-            if client.add_read_relay(target.url.as_str()).await.is_err() {
-                return Ok(Vec::new());
-            }
-        }
-        let filter = RadrootsNostrFilter::new()
-            .author(public_key)
-            .kind(RadrootsNostrKind::Custom(10_002))
-            .limit(10);
-        let timeout = Duration::from_secs(self.config.connect_timeout_secs);
-        let Ok(events) = client.fetch_events(filter, timeout).await else {
-            return Ok(Vec::new());
-        };
-        let Some(event) = events.into_iter().max_by(|left, right| {
-            left.created_at
-                .as_secs()
-                .cmp(&right.created_at.as_secs())
-                .then_with(|| left.id.to_hex().cmp(&right.id.to_hex()))
-        }) else {
-            return Ok(Vec::new());
-        };
-        Ok(author_write_relays_from_nip65_event(&event))
     }
 
     async fn complete_job_execution(
@@ -620,6 +624,18 @@ trait PublishRelayResolver: Send + Sync {
     fn resolve<'a>(&'a self, url: &'a RadrootsRelayUrl) -> PublishRelayResolveFuture<'a>;
 }
 
+type PublishAuthorRelayDiscoveryFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<Vec<String>, PublishProxyError>> + Send + 'a>>;
+
+trait PublishAuthorRelayDiscovery: Send + Sync {
+    fn fetch_author_write_relays<'a>(
+        &'a self,
+        pubkey: &'a str,
+        discovery_targets: Vec<ResolvedPublishRelay>,
+        connect_timeout_secs: u64,
+    ) -> PublishAuthorRelayDiscoveryFuture<'a>;
+}
+
 #[derive(Debug)]
 struct SystemPublishRelayResolver;
 
@@ -629,6 +645,47 @@ impl PublishRelayResolver for SystemPublishRelayResolver {
             let (host, port) = relay_socket_target(url)?;
             let addrs = tokio::net::lookup_host((host.as_str(), port)).await?;
             Ok(addrs.map(|addr| addr.ip()).collect())
+        })
+    }
+}
+
+#[derive(Debug)]
+struct NostrPublishAuthorRelayDiscovery;
+
+impl PublishAuthorRelayDiscovery for NostrPublishAuthorRelayDiscovery {
+    fn fetch_author_write_relays<'a>(
+        &'a self,
+        pubkey: &'a str,
+        discovery_targets: Vec<ResolvedPublishRelay>,
+        connect_timeout_secs: u64,
+    ) -> PublishAuthorRelayDiscoveryFuture<'a> {
+        Box::pin(async move {
+            let Ok(public_key) = RadrootsNostrPublicKey::from_hex(pubkey) else {
+                return Ok(Vec::new());
+            };
+            let client = RadrootsNostrClient::new_signerless();
+            for target in discovery_targets {
+                if client.add_read_relay(target.url.as_str()).await.is_err() {
+                    return Ok(Vec::new());
+                }
+            }
+            let filter = RadrootsNostrFilter::new()
+                .author(public_key)
+                .kind(RadrootsNostrKind::Custom(10_002))
+                .limit(10);
+            let timeout = Duration::from_secs(connect_timeout_secs);
+            let Ok(events) = client.fetch_events(filter, timeout).await else {
+                return Ok(Vec::new());
+            };
+            let Some(event) = events.into_iter().max_by(|left, right| {
+                left.created_at
+                    .as_secs()
+                    .cmp(&right.created_at.as_secs())
+                    .then_with(|| left.id.to_hex().cmp(&right.id.to_hex()))
+            }) else {
+                return Ok(Vec::new());
+            };
+            Ok(author_write_relays_from_nip65_event(&event))
         })
     }
 }
@@ -1756,6 +1813,7 @@ mod tests {
 
     const RELAY_PRIMARY: &str = "wss://relay.example.com";
     const RELAY_SECONDARY: &str = "wss://relay-2.example.com";
+    const RELAY_FORBIDDEN: &str = "wss://forbidden-relay.example.com";
 
     fn event(pubkey: &str, kind: u32) -> SignedNostrEventWire {
         SignedNostrEventWire {
@@ -1890,6 +1948,30 @@ mod tests {
                     None => Ok(vec![IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34))]),
                 }
             })
+        }
+    }
+
+    struct StaticPublishAuthorRelayDiscovery {
+        relays: Vec<String>,
+    }
+
+    impl StaticPublishAuthorRelayDiscovery {
+        fn new(relays: Vec<&str>) -> Self {
+            Self {
+                relays: relays.into_iter().map(str::to_owned).collect(),
+            }
+        }
+    }
+
+    impl super::PublishAuthorRelayDiscovery for StaticPublishAuthorRelayDiscovery {
+        fn fetch_author_write_relays<'a>(
+            &'a self,
+            _pubkey: &'a str,
+            _discovery_targets: Vec<super::ResolvedPublishRelay>,
+            _connect_timeout_secs: u64,
+        ) -> super::PublishAuthorRelayDiscoveryFuture<'a> {
+            let relays = self.relays.clone();
+            Box::pin(async move { Ok(relays) })
         }
     }
 
@@ -2227,6 +2309,208 @@ mod tests {
             response.job.relays[0].source,
             PublishRelaySource::AuthorWrite
         );
+    }
+
+    #[tokio::test]
+    async fn publish_event_records_invalid_cached_author_write_relay() {
+        let identity = RadrootsIdentity::generate();
+        let (proxy, adapter) = publish_proxy(config_with_defaults(vec![RELAY_SECONDARY]));
+        proxy
+            .store
+            .cache_author_write_relays(
+                identity.public_key_hex().as_str(),
+                &[RELAY_PRIMARY.to_owned(), "not a cached relay".to_owned()],
+            )
+            .expect("cache author relays");
+        let principal = principal(
+            &proxy,
+            identity.public_key_hex(),
+            vec![PublishRelayPolicy::AuthorWriteThenDaemonDefault],
+            false,
+            PublishJobVisibility::Own,
+        );
+        let response = proxy
+            .publish_event(
+                &principal,
+                publish_request(
+                    signed_event(&identity, "{}"),
+                    Vec::new(),
+                    PublishRelayPolicy::AuthorWriteThenDaemonDefault,
+                    PublishDeliveryPolicy::Any,
+                    None,
+                ),
+            )
+            .await
+            .expect("publish");
+
+        assert_eq!(response.job.status, PublishJobStatus::DeliverySatisfied);
+        let accepted = response
+            .job
+            .relays
+            .iter()
+            .find(|relay| relay.relay_url == RELAY_PRIMARY)
+            .expect("accepted author relay");
+        assert_eq!(accepted.source, PublishRelaySource::AuthorWrite);
+        assert!(accepted.attempted);
+        let rejected = response
+            .job
+            .relays
+            .iter()
+            .find(|relay| relay.relay_url == "not a cached relay")
+            .expect("rejected cached author relay");
+        assert_eq!(rejected.source, PublishRelaySource::AuthorWrite);
+        assert_eq!(
+            rejected.outcome_kind,
+            PublishRelayOutcomeKind::RelayUrlRejected
+        );
+        assert!(!rejected.attempted);
+        assert_eq!(adapter.captured_raw_events().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn publish_event_preserves_author_and_discovery_rejections_through_fallback() {
+        let identity = RadrootsIdentity::generate();
+        let mut config = config_with_defaults(vec![RELAY_SECONDARY]);
+        config.author_relay_discovery_relays = vec!["not a discovery relay".to_owned()];
+        let (proxy, adapter) = publish_proxy(config);
+        proxy
+            .store
+            .cache_author_write_relays(
+                identity.public_key_hex().as_str(),
+                &["not a cached relay".to_owned()],
+            )
+            .expect("cache author relays");
+        let principal = principal(
+            &proxy,
+            identity.public_key_hex(),
+            vec![PublishRelayPolicy::AuthorWriteThenDaemonDefault],
+            false,
+            PublishJobVisibility::Own,
+        );
+        let response = proxy
+            .publish_event(
+                &principal,
+                publish_request(
+                    signed_event(&identity, "{}"),
+                    Vec::new(),
+                    PublishRelayPolicy::AuthorWriteThenDaemonDefault,
+                    PublishDeliveryPolicy::Any,
+                    None,
+                ),
+            )
+            .await
+            .expect("publish");
+
+        assert_eq!(response.job.status, PublishJobStatus::DeliverySatisfied);
+        let daemon_default = response
+            .job
+            .relays
+            .iter()
+            .find(|relay| relay.relay_url == RELAY_SECONDARY)
+            .expect("daemon default relay");
+        assert_eq!(daemon_default.source, PublishRelaySource::DaemonDefault);
+        assert!(daemon_default.attempted);
+        let cached = response
+            .job
+            .relays
+            .iter()
+            .find(|relay| relay.relay_url == "not a cached relay")
+            .expect("cached author rejection");
+        assert_eq!(cached.source, PublishRelaySource::AuthorWrite);
+        assert_eq!(
+            cached.outcome_kind,
+            PublishRelayOutcomeKind::RelayUrlRejected
+        );
+        assert!(!cached.attempted);
+        let discovery = response
+            .job
+            .relays
+            .iter()
+            .find(|relay| relay.relay_url == "not a discovery relay")
+            .expect("discovery relay rejection");
+        assert_eq!(discovery.source, PublishRelaySource::DaemonDefault);
+        assert_eq!(
+            discovery.outcome_kind,
+            PublishRelayOutcomeKind::RelayUrlRejected
+        );
+        assert!(!discovery.attempted);
+        assert_eq!(adapter.captured_raw_events().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn publish_event_preserves_discovery_and_discovered_author_rejections() {
+        let identity = RadrootsIdentity::generate();
+        let mut config = config_with_defaults(vec![RELAY_PRIMARY]);
+        config.author_relay_discovery_relays =
+            vec![RELAY_PRIMARY.to_owned(), RELAY_FORBIDDEN.to_owned()];
+        let resolver = StaticPublishRelayResolver::new().with_addresses(
+            RELAY_FORBIDDEN,
+            vec![IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))],
+        );
+        let adapter = RadrootsMockRelayPublishAdapter::new();
+        let proxy = PublishProxy::memory(config)
+            .expect("proxy")
+            .with_relay_resolver(Arc::new(resolver))
+            .with_author_relay_discovery(Arc::new(StaticPublishAuthorRelayDiscovery::new(vec![
+                "not a discovered author relay",
+                RELAY_SECONDARY,
+            ])))
+            .with_publisher(Arc::new(adapter.clone()));
+        let principal = principal(
+            &proxy,
+            identity.public_key_hex(),
+            vec![PublishRelayPolicy::AuthorWriteThenDaemonDefault],
+            false,
+            PublishJobVisibility::Own,
+        );
+        let response = proxy
+            .publish_event(
+                &principal,
+                publish_request(
+                    signed_event(&identity, "{}"),
+                    Vec::new(),
+                    PublishRelayPolicy::AuthorWriteThenDaemonDefault,
+                    PublishDeliveryPolicy::Any,
+                    None,
+                ),
+            )
+            .await
+            .expect("publish");
+
+        assert_eq!(response.job.status, PublishJobStatus::DeliverySatisfied);
+        let accepted = response
+            .job
+            .relays
+            .iter()
+            .find(|relay| relay.relay_url == RELAY_SECONDARY)
+            .expect("discovered author relay");
+        assert_eq!(accepted.source, PublishRelaySource::AuthorWrite);
+        assert!(accepted.attempted);
+        let discovered = response
+            .job
+            .relays
+            .iter()
+            .find(|relay| relay.relay_url == "not a discovered author relay")
+            .expect("discovered author rejection");
+        assert_eq!(discovered.source, PublishRelaySource::AuthorWrite);
+        assert_eq!(
+            discovered.outcome_kind,
+            PublishRelayOutcomeKind::RelayUrlRejected
+        );
+        assert!(!discovered.attempted);
+        let discovery = response
+            .job
+            .relays
+            .iter()
+            .find(|relay| relay.relay_url == RELAY_FORBIDDEN)
+            .expect("discovery relay rejection");
+        assert_eq!(discovery.source, PublishRelaySource::DaemonDefault);
+        assert_eq!(
+            discovery.outcome_kind,
+            PublishRelayOutcomeKind::RelayUrlRejected
+        );
+        assert!(!discovery.attempted);
+        assert_eq!(adapter.captured_raw_events().len(), 1);
     }
 
     #[tokio::test]
