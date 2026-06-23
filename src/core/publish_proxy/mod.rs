@@ -1,6 +1,9 @@
 use std::collections::BTreeMap;
 use std::fmt;
+use std::future::Future;
+use std::net::IpAddr;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -65,6 +68,7 @@ pub struct PublishProxy {
     pub config: PublishProxyConfig,
     pub store: PublishProxyStore,
     publisher: Option<Arc<dyn RadrootsRelayPublishAdapter>>,
+    resolver: Arc<dyn PublishRelayResolver>,
 }
 
 impl PublishProxy {
@@ -74,6 +78,7 @@ impl PublishProxy {
             config,
             store,
             publisher: None,
+            resolver: Arc::new(SystemPublishRelayResolver),
         })
     }
 
@@ -83,11 +88,18 @@ impl PublishProxy {
             config,
             store,
             publisher: None,
+            resolver: Arc::new(SystemPublishRelayResolver),
         })
     }
 
     pub fn with_publisher(mut self, publisher: Arc<dyn RadrootsRelayPublishAdapter>) -> Self {
         self.publisher = Some(publisher);
+        self
+    }
+
+    #[cfg(test)]
+    fn with_relay_resolver(mut self, resolver: Arc<dyn PublishRelayResolver>) -> Self {
+        self.resolver = resolver;
         self
     }
 
@@ -149,10 +161,10 @@ impl PublishProxy {
         request: &PublishEventRequest,
     ) -> Result<PublishRelayResolution, PublishProxyError> {
         match request.relay_policy {
-            PublishRelayPolicy::ExplicitOnly => self.resolve_request_relays(&request.relays),
+            PublishRelayPolicy::ExplicitOnly => self.resolve_request_relays(&request.relays).await,
             PublishRelayPolicy::RequestThenAuthorWriteThenDaemonDefault => {
                 if !request.relays.is_empty() {
-                    self.resolve_request_relays(&request.relays)
+                    self.resolve_request_relays(&request.relays).await
                 } else {
                     self.resolve_author_or_default_relays(pubkey).await
                 }
@@ -160,7 +172,7 @@ impl PublishProxy {
             PublishRelayPolicy::AuthorWriteThenDaemonDefault => {
                 self.resolve_author_or_default_relays(pubkey).await
             }
-            PublishRelayPolicy::DaemonDefaultOnly => self.resolve_daemon_default_relays(),
+            PublishRelayPolicy::DaemonDefaultOnly => self.resolve_daemon_default_relays().await,
         }
     }
 
@@ -168,15 +180,17 @@ impl PublishProxy {
         &self,
         pubkey: &str,
     ) -> Result<PublishRelayResolution, PublishProxyError> {
-        let author_relays = self.resolve_author_write_relays(pubkey).await?;
-        if !author_relays.targets.is_empty() {
-            Ok(author_relays)
+        let mut author_relays = self.resolve_author_write_relays(pubkey).await?;
+        if author_relays.targets.is_empty() {
+            let mut daemon_defaults = self.resolve_daemon_default_relays().await?;
+            daemon_defaults.outcomes.append(&mut author_relays.outcomes);
+            Ok(daemon_defaults)
         } else {
-            self.resolve_daemon_default_relays()
+            Ok(author_relays)
         }
     }
 
-    fn resolve_request_relays(
+    async fn resolve_request_relays(
         &self,
         relays: &[String],
     ) -> Result<PublishRelayResolution, PublishProxyError> {
@@ -184,7 +198,15 @@ impl PublishProxy {
         let mut outcomes = Vec::new();
         for relay in relays {
             match RadrootsRelayUrl::parse(relay, relay_url_policy(&self.config)) {
-                Ok(url) => push_resolved_relay(&mut targets, url, PublishRelaySource::Request),
+                Ok(url) => {
+                    self.push_checked_relay_target(
+                        &mut targets,
+                        &mut outcomes,
+                        url,
+                        PublishRelaySource::Request,
+                    )
+                    .await;
+                }
                 Err(error) => outcomes.push(PublishRelayOutcome {
                     relay_url: relay.trim().to_owned(),
                     source: PublishRelaySource::Request,
@@ -203,75 +225,121 @@ impl PublishProxy {
         pubkey: &str,
     ) -> Result<PublishRelayResolution, PublishProxyError> {
         let cached = self.store.cached_author_write_relays(pubkey)?;
-        let cached_targets = self.resolve_author_relay_inputs(&cached)?;
-        if !cached_targets.is_empty() {
-            return Ok(PublishRelayResolution {
-                targets: cached_targets,
-                outcomes: Vec::new(),
-            });
+        let cached_resolution = self.resolve_author_relay_inputs(&cached).await?;
+        if !cached_resolution.targets.is_empty() {
+            return Ok(cached_resolution);
         }
         if self.config.author_relay_discovery_relays.is_empty() {
-            return Ok(PublishRelayResolution::empty());
+            return Ok(cached_resolution);
         }
-        let discovery_targets = self.resolve_config_relays(
-            &self.config.author_relay_discovery_relays,
-            PublishRelaySource::DaemonDefault,
-            "publish_proxy author_relay_discovery_relays",
-        )?;
+        let discovery_targets = self
+            .resolve_config_relays(
+                &self.config.author_relay_discovery_relays,
+                PublishRelaySource::DaemonDefault,
+            )
+            .await?;
+        if discovery_targets.targets.is_empty() {
+            return Ok(discovery_targets);
+        }
         let discovered = self
-            .fetch_author_write_relays(pubkey, discovery_targets)
+            .fetch_author_write_relays(pubkey, discovery_targets.targets)
             .await?;
         self.store.cache_author_write_relays(pubkey, &discovered)?;
-        let targets = self.resolve_author_relay_inputs(&discovered)?;
-        Ok(PublishRelayResolution {
-            targets,
-            outcomes: Vec::new(),
-        })
+        self.resolve_author_relay_inputs(&discovered).await
     }
 
-    fn resolve_author_relay_inputs(
+    async fn resolve_author_relay_inputs(
         &self,
         relays: &[String],
-    ) -> Result<Vec<ResolvedPublishRelay>, PublishProxyError> {
+    ) -> Result<PublishRelayResolution, PublishProxyError> {
         let mut targets = Vec::new();
+        let mut outcomes = Vec::new();
         for relay in relays {
             if let Ok(url) = RadrootsRelayUrl::parse(relay, relay_url_policy(&self.config)) {
-                push_resolved_relay(&mut targets, url, PublishRelaySource::AuthorWrite);
+                self.push_checked_relay_target(
+                    &mut targets,
+                    &mut outcomes,
+                    url,
+                    PublishRelaySource::AuthorWrite,
+                )
+                .await;
             }
         }
-        Ok(targets)
+        Ok(PublishRelayResolution { targets, outcomes })
     }
 
-    fn resolve_daemon_default_relays(&self) -> Result<PublishRelayResolution, PublishProxyError> {
-        let targets = self.resolve_config_relays(
+    async fn resolve_daemon_default_relays(
+        &self,
+    ) -> Result<PublishRelayResolution, PublishProxyError> {
+        self.resolve_config_relays(
             &self.config.daemon_default_publish_relays,
             PublishRelaySource::DaemonDefault,
-            "publish_proxy daemon_default_publish_relays",
-        )?;
-        Ok(PublishRelayResolution {
-            targets,
-            outcomes: Vec::new(),
-        })
+        )
+        .await
     }
 
-    fn resolve_config_relays(
+    async fn resolve_config_relays(
         &self,
         relays: &[String],
         source: PublishRelaySource,
-        label: &str,
-    ) -> Result<Vec<ResolvedPublishRelay>, PublishProxyError> {
+    ) -> Result<PublishRelayResolution, PublishProxyError> {
         let mut targets = Vec::new();
+        let mut outcomes = Vec::new();
         for relay in relays {
-            let url = RadrootsRelayUrl::parse(relay, relay_url_policy(&self.config)).map_err(
-                |error| {
-                    PublishProxyError::InvalidScope(format!(
-                        "{label} contains invalid relay URL: {error}"
-                    ))
-                },
-            )?;
-            push_resolved_relay(&mut targets, url, source);
+            match RadrootsRelayUrl::parse(relay, relay_url_policy(&self.config)) {
+                Ok(url) => {
+                    self.push_checked_relay_target(&mut targets, &mut outcomes, url, source)
+                        .await;
+                }
+                Err(error) => outcomes.push(PublishRelayOutcome {
+                    relay_url: relay.trim().to_owned(),
+                    source,
+                    attempted: false,
+                    outcome_kind: PublishRelayOutcomeKind::RelayUrlRejected,
+                    message: Some(error.to_string()),
+                    latency_ms: None,
+                }),
+            }
         }
-        Ok(targets)
+        Ok(PublishRelayResolution { targets, outcomes })
+    }
+
+    async fn push_checked_relay_target(
+        &self,
+        targets: &mut Vec<ResolvedPublishRelay>,
+        outcomes: &mut Vec<PublishRelayOutcome>,
+        url: RadrootsRelayUrl,
+        source: PublishRelaySource,
+    ) {
+        if relay_url_policy(&self.config) == RadrootsRelayUrlPolicy::Localhost {
+            push_resolved_relay(targets, url, source);
+            return;
+        }
+        match self.resolver.resolve(&url).await {
+            Ok(addresses) if addresses.is_empty() => {
+                outcomes.push(relay_resolution_connection_failure(
+                    url.as_str(),
+                    source,
+                    "dns lookup returned no addresses",
+                ));
+            }
+            Ok(addresses) => match url.validate_public_resolved_ip_addrs(addresses) {
+                Ok(()) => push_resolved_relay(targets, url, source),
+                Err(error) => outcomes.push(PublishRelayOutcome {
+                    relay_url: url.as_str().to_owned(),
+                    source,
+                    attempted: false,
+                    outcome_kind: PublishRelayOutcomeKind::RelayUrlRejected,
+                    message: Some(error.to_string()),
+                    latency_ms: None,
+                }),
+            },
+            Err(error) => outcomes.push(relay_resolution_connection_failure(
+                url.as_str(),
+                source,
+                format!("dns lookup failed: {error}"),
+            )),
+        }
     }
 
     async fn fetch_author_write_relays(
@@ -316,11 +384,25 @@ impl PublishProxy {
         resolution: PublishRelayResolution,
     ) -> Result<PublishJobView, PublishProxyError> {
         if resolution.targets.is_empty() {
+            let status = if resolution
+                .outcomes
+                .iter()
+                .any(|outcome| outcome.outcome_kind.is_retryable())
+            {
+                PublishJobStatus::DeliveryUnsatisfiedRetryable
+            } else {
+                PublishJobStatus::Rejected
+            };
+            let last_error = if status == PublishJobStatus::DeliveryUnsatisfiedRetryable {
+                "delivery_unsatisfied"
+            } else {
+                "no_publish_relays"
+            };
             self.store.complete_publish_job(
                 job_id,
-                PublishJobStatus::Rejected,
+                status,
                 resolution.outcomes,
-                Some("no_publish_relays".to_owned()),
+                Some(last_error.to_owned()),
             )?;
             return self.store.job_by_id(job_id);
         }
@@ -507,18 +589,31 @@ pub struct PublishRelayResolution {
 }
 
 impl PublishRelayResolution {
-    fn empty() -> Self {
-        Self {
-            targets: Vec::new(),
-            outcomes: Vec::new(),
-        }
-    }
-
     fn source_by_relay(&self) -> BTreeMap<String, PublishRelaySource> {
         self.targets
             .iter()
             .map(|target| (target.url.as_str().to_owned(), target.source))
             .collect()
+    }
+}
+
+type PublishRelayResolveFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<Vec<IpAddr>, std::io::Error>> + Send + 'a>>;
+
+trait PublishRelayResolver: Send + Sync {
+    fn resolve<'a>(&'a self, url: &'a RadrootsRelayUrl) -> PublishRelayResolveFuture<'a>;
+}
+
+#[derive(Debug)]
+struct SystemPublishRelayResolver;
+
+impl PublishRelayResolver for SystemPublishRelayResolver {
+    fn resolve<'a>(&'a self, url: &'a RadrootsRelayUrl) -> PublishRelayResolveFuture<'a> {
+        Box::pin(async move {
+            let (host, port) = relay_socket_target(url)?;
+            let addrs = tokio::net::lookup_host((host.as_str(), port)).await?;
+            Ok(addrs.map(|addr| addr.ip()).collect())
+        })
     }
 }
 
@@ -1337,6 +1432,43 @@ fn push_resolved_relay(
     }
 }
 
+fn relay_resolution_connection_failure(
+    relay_url: impl Into<String>,
+    source: PublishRelaySource,
+    message: impl Into<String>,
+) -> PublishRelayOutcome {
+    PublishRelayOutcome {
+        relay_url: relay_url.into(),
+        source,
+        attempted: false,
+        outcome_kind: PublishRelayOutcomeKind::ConnectionFailed,
+        message: Some(message.into()),
+        latency_ms: None,
+    }
+}
+
+fn relay_socket_target(url: &RadrootsRelayUrl) -> Result<(String, u16), std::io::Error> {
+    let parsed = url::Url::parse(url.as_str())
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error))?;
+    let host = parsed
+        .host_str()
+        .filter(|host| !host.is_empty())
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "relay URL must include a DNS host",
+            )
+        })?
+        .to_owned();
+    let port = parsed.port_or_known_default().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "relay URL scheme must have a default port",
+        )
+    })?;
+    Ok((host, port))
+}
+
 fn relay_url_policy(config: &PublishProxyConfig) -> RadrootsRelayUrlPolicy {
     match config.relay_url_policy {
         crate::app::config::PublishProxyRelayUrlPolicy::Public => RadrootsRelayUrlPolicy::Public,
@@ -1546,7 +1678,7 @@ mod tests {
         PublishProxy, PublishProxyError, PublishProxyStore, generate_bearer_token,
         hash_bearer_token, parse_relay_policy,
     };
-    use crate::app::config::PublishProxyConfig;
+    use crate::app::config::{PublishProxyConfig, PublishProxyRelayUrlPolicy};
     use nostr::JsonUtil;
     use radroots_identity::RadrootsIdentity;
     use radroots_nostr::prelude::{
@@ -1557,6 +1689,8 @@ mod tests {
         PublishRelayPolicy, PublishRelaySource, SignedNostrEventWire,
     };
     use radroots_relay_transport::{RadrootsMockRelayPublishAdapter, RadrootsRelayOutcome};
+    use std::collections::BTreeMap;
+    use std::net::{IpAddr, Ipv4Addr};
     use std::sync::Arc;
 
     const RELAY_PRIMARY: &str = "wss://relay.example.com";
@@ -1618,9 +1752,17 @@ mod tests {
     fn publish_proxy(
         config: PublishProxyConfig,
     ) -> (PublishProxy, RadrootsMockRelayPublishAdapter) {
+        publish_proxy_with_resolver(config, Arc::new(StaticPublishRelayResolver::new()))
+    }
+
+    fn publish_proxy_with_resolver(
+        config: PublishProxyConfig,
+        resolver: Arc<dyn super::PublishRelayResolver>,
+    ) -> (PublishProxy, RadrootsMockRelayPublishAdapter) {
         let adapter = RadrootsMockRelayPublishAdapter::new();
         let proxy = PublishProxy::memory(config)
             .expect("proxy")
+            .with_relay_resolver(resolver)
             .with_publisher(Arc::new(adapter.clone()));
         (proxy, adapter)
     }
@@ -1651,6 +1793,42 @@ mod tests {
         PublishProxyConfig {
             daemon_default_publish_relays: relays.into_iter().map(str::to_owned).collect(),
             ..PublishProxyConfig::default()
+        }
+    }
+
+    #[derive(Default)]
+    struct StaticPublishRelayResolver {
+        results: BTreeMap<String, Result<Vec<IpAddr>, String>>,
+    }
+
+    impl StaticPublishRelayResolver {
+        fn new() -> Self {
+            Self::default()
+        }
+
+        fn with_addresses(mut self, url: &str, addresses: Vec<IpAddr>) -> Self {
+            self.results.insert(url.to_owned(), Ok(addresses));
+            self
+        }
+
+        fn with_failure(mut self, url: &str, error: &str) -> Self {
+            self.results.insert(url.to_owned(), Err(error.to_owned()));
+            self
+        }
+    }
+
+    impl super::PublishRelayResolver for StaticPublishRelayResolver {
+        fn resolve<'a>(
+            &'a self,
+            url: &'a radroots_relay_transport::RadrootsRelayUrl,
+        ) -> super::PublishRelayResolveFuture<'a> {
+            Box::pin(async move {
+                match self.results.get(url.as_str()) {
+                    Some(Ok(addresses)) => Ok(addresses.clone()),
+                    Some(Err(error)) => Err(std::io::Error::other(error.clone())),
+                    None => Ok(vec![IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34))]),
+                }
+            })
         }
     }
 
@@ -2009,6 +2187,126 @@ mod tests {
         );
         assert!(!response.job.relays[0].attempted);
         assert!(adapter.captured_raw_events().is_empty());
+    }
+
+    #[tokio::test]
+    async fn publish_event_rejects_forbidden_public_dns_destination_before_publish() {
+        let identity = RadrootsIdentity::generate();
+        let resolver = StaticPublishRelayResolver::new()
+            .with_addresses(RELAY_PRIMARY, vec![IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))]);
+        let (proxy, adapter) = publish_proxy_with_resolver(
+            config_with_defaults(vec![RELAY_PRIMARY]),
+            Arc::new(resolver),
+        );
+        let principal = principal(
+            &proxy,
+            identity.public_key_hex(),
+            vec![PublishRelayPolicy::DaemonDefaultOnly],
+            false,
+            PublishJobVisibility::Own,
+        );
+        let response = proxy
+            .publish_event(
+                &principal,
+                publish_request(
+                    signed_event(&identity, "{}"),
+                    Vec::new(),
+                    PublishRelayPolicy::DaemonDefaultOnly,
+                    PublishDeliveryPolicy::Any,
+                    None,
+                ),
+            )
+            .await
+            .expect("publish");
+
+        assert_eq!(response.job.status, PublishJobStatus::Rejected);
+        assert_eq!(response.job.relays.len(), 1);
+        assert_eq!(
+            response.job.relays[0].outcome_kind,
+            PublishRelayOutcomeKind::RelayUrlRejected
+        );
+        assert!(!response.job.relays[0].attempted);
+        assert!(adapter.captured_raw_events().is_empty());
+    }
+
+    #[tokio::test]
+    async fn publish_event_records_dns_failure_as_unattempted_retryable_outcome() {
+        let identity = RadrootsIdentity::generate();
+        let resolver = StaticPublishRelayResolver::new().with_failure(RELAY_PRIMARY, "no records");
+        let (proxy, adapter) = publish_proxy_with_resolver(
+            config_with_defaults(vec![RELAY_PRIMARY]),
+            Arc::new(resolver),
+        );
+        let principal = principal(
+            &proxy,
+            identity.public_key_hex(),
+            vec![PublishRelayPolicy::DaemonDefaultOnly],
+            false,
+            PublishJobVisibility::Own,
+        );
+        let response = proxy
+            .publish_event(
+                &principal,
+                publish_request(
+                    signed_event(&identity, "{}"),
+                    Vec::new(),
+                    PublishRelayPolicy::DaemonDefaultOnly,
+                    PublishDeliveryPolicy::Any,
+                    None,
+                ),
+            )
+            .await
+            .expect("publish");
+
+        assert_eq!(
+            response.job.status,
+            PublishJobStatus::DeliveryUnsatisfiedRetryable
+        );
+        assert_eq!(
+            response.job.last_error.as_deref(),
+            Some("delivery_unsatisfied")
+        );
+        assert_eq!(response.job.relays.len(), 1);
+        assert_eq!(
+            response.job.relays[0].outcome_kind,
+            PublishRelayOutcomeKind::ConnectionFailed
+        );
+        assert!(!response.job.relays[0].attempted);
+        assert!(adapter.captured_raw_events().is_empty());
+    }
+
+    #[tokio::test]
+    async fn publish_event_localhost_policy_skips_public_dns_guard() {
+        let identity = RadrootsIdentity::generate();
+        let mut config = config_with_defaults(vec!["ws://localhost:7777"]);
+        config.relay_url_policy = PublishProxyRelayUrlPolicy::Localhost;
+        let resolver = StaticPublishRelayResolver::new()
+            .with_failure("ws://localhost:7777", "localhost resolution should not run");
+        let (proxy, adapter) = publish_proxy_with_resolver(config, Arc::new(resolver));
+        let principal = principal(
+            &proxy,
+            identity.public_key_hex(),
+            vec![PublishRelayPolicy::DaemonDefaultOnly],
+            false,
+            PublishJobVisibility::Own,
+        );
+        let response = proxy
+            .publish_event(
+                &principal,
+                publish_request(
+                    signed_event(&identity, "{}"),
+                    Vec::new(),
+                    PublishRelayPolicy::DaemonDefaultOnly,
+                    PublishDeliveryPolicy::Any,
+                    None,
+                ),
+            )
+            .await
+            .expect("publish");
+
+        assert_eq!(response.job.status, PublishJobStatus::DeliverySatisfied);
+        assert_eq!(response.job.relays[0].relay_url, "ws://localhost:7777");
+        assert!(!adapter.captured_raw_events().is_empty());
     }
 
     #[tokio::test]
