@@ -2368,7 +2368,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn publish_event_preserves_author_and_discovery_rejections_through_fallback() {
+    async fn publish_event_preserves_author_and_discovery_rejections_through_relay_selection() {
         let identity = RadrootsIdentity::generate();
         let mut config = config_with_defaults(vec![RELAY_SECONDARY]);
         config.author_relay_discovery_relays = vec!["not a discovery relay".to_owned()];
