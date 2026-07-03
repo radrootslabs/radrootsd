@@ -34,6 +34,10 @@ mod tests {
     use crate::transport::jsonrpc::auth::PublishProxyAuthorization;
     use crate::transport::jsonrpc::{MethodRegistry, RpcContext};
 
+    mod removed_surface_fixtures {
+        pub const BRIDGE_STATUS_METHOD: &str = "bridge.status";
+    }
+
     fn state(publish_proxy_enabled: bool, nip46_public_jsonrpc_enabled: bool) -> Radrootsd {
         let identity = RadrootsIdentity::generate();
         let metadata: RadrootsNostrMetadata =
@@ -61,8 +65,10 @@ mod tests {
         assert!(root.method("publish.job.get").is_some());
         assert!(root.method("publish.job.list").is_some());
         assert!(root.method("publish.relays.resolve").is_some());
-        let legacy_method = ["br", "idge.status"].concat();
-        assert!(root.method(legacy_method.as_str()).is_none());
+        assert!(
+            root.method(removed_surface_fixtures::BRIDGE_STATUS_METHOD)
+                .is_none()
+        );
         assert!(root.method("nip46.connect").is_none());
     }
 
