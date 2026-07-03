@@ -96,7 +96,6 @@ pub(crate) fn default_publish_proxy_database_path() -> PathBuf {
         .publish_proxy_database_path
 }
 
-#[cfg_attr(test, allow(dead_code))]
 pub fn default_config_path_for_process() -> Result<PathBuf> {
     Ok(default_runtime_paths_for_process()?.config_path)
 }
@@ -105,25 +104,12 @@ pub fn default_identity_path_for_process() -> Result<PathBuf> {
     Ok(default_runtime_paths_for_process()?.identity_path)
 }
 
-#[cfg_attr(test, allow(dead_code))]
 pub fn runtime_contract_for_process() -> Result<RadrootsdRuntimeContractOutput> {
     let selection = process_path_selection_with_sources()?;
     runtime_contract_with_selection(&RadrootsPathResolver::current(), &selection)
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
-pub(crate) fn runtime_contract_with_resolver(
-    resolver: &RadrootsPathResolver,
-    profile: RadrootsPathProfile,
-    repo_local_root: Option<&Path>,
-) -> Result<RadrootsdRuntimeContractOutput> {
-    runtime_contract_with_selection(
-        resolver,
-        &RadrootsRuntimePathSelection::caller(profile, repo_local_root.map(Path::to_path_buf)),
-    )
-}
-
-fn runtime_contract_with_selection(
+pub(crate) fn runtime_contract_with_selection(
     resolver: &RadrootsPathResolver,
     selection: &RadrootsRuntimePathSelection,
 ) -> Result<RadrootsdRuntimeContractOutput> {
@@ -157,9 +143,24 @@ mod tests {
 
     use radroots_runtime_paths::{
         RadrootsHostEnvironment, RadrootsPathProfile, RadrootsPathResolver, RadrootsPlatform,
+        RadrootsRuntimePathSelection,
     };
 
-    use super::runtime_contract_with_resolver;
+    use super::{
+        RadrootsdRuntimeContractOutput, default_config_path_for_process,
+        runtime_contract_for_process, runtime_contract_with_selection,
+    };
+
+    fn runtime_contract_with_resolver(
+        resolver: &RadrootsPathResolver,
+        profile: RadrootsPathProfile,
+        repo_local_root: Option<&std::path::Path>,
+    ) -> anyhow::Result<RadrootsdRuntimeContractOutput> {
+        runtime_contract_with_selection(
+            resolver,
+            &RadrootsRuntimePathSelection::caller(profile, repo_local_root.map(PathBuf::from)),
+        )
+    }
 
     fn linux_resolver() -> RadrootsPathResolver {
         RadrootsPathResolver::new(
@@ -169,6 +170,13 @@ mod tests {
                 ..RadrootsHostEnvironment::default()
             },
         )
+    }
+
+    #[test]
+    fn process_path_entrypoints_remain_linked_in_test_builds() {
+        let _default_config_path: fn() -> anyhow::Result<PathBuf> = default_config_path_for_process;
+        let _runtime_contract: fn() -> anyhow::Result<RadrootsdRuntimeContractOutput> =
+            runtime_contract_for_process;
     }
 
     #[test]

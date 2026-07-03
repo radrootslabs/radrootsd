@@ -403,12 +403,13 @@ mod tests {
         load_settings_from_path_with_resolver,
     };
     use crate::app::paths::{
-        default_runtime_paths_for_process, resolve_runtime_paths_with_resolver,
-        runtime_contract_with_resolver,
+        RadrootsdRuntimeContractOutput, default_runtime_paths_for_process,
+        resolve_runtime_paths_with_resolver, runtime_contract_with_selection,
     };
     use radroots_runtime::RadrootsNostrServiceConfig;
     use radroots_runtime_paths::{
         RadrootsHostEnvironment, RadrootsPathProfile, RadrootsPathResolver, RadrootsPlatform,
+        RadrootsRuntimePathSelection,
     };
 
     fn linux_resolver(home: &str) -> RadrootsPathResolver {
@@ -434,6 +435,17 @@ mod tests {
             nip89_identifier: Some("radrootsd".to_string()),
             nip89_extra_tags: Vec::new(),
         }
+    }
+
+    fn runtime_contract_with_resolver(
+        resolver: &RadrootsPathResolver,
+        profile: RadrootsPathProfile,
+        repo_local_root: Option<&std::path::Path>,
+    ) -> anyhow::Result<RadrootsdRuntimeContractOutput> {
+        runtime_contract_with_selection(
+            resolver,
+            &RadrootsRuntimePathSelection::caller(profile, repo_local_root.map(PathBuf::from)),
+        )
     }
 
     #[test]
