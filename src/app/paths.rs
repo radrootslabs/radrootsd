@@ -1,12 +1,10 @@
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use radroots_runtime_paths::{
-    DEFAULT_CONFIG_FILE_NAME, DEFAULT_SERVICE_IDENTITY_FILE_NAME, RadrootsLegacyPathCandidate,
-    RadrootsMigrationReport, RadrootsPathProfile, RadrootsPathResolver,
-    RadrootsRuntimeMigrationContract, RadrootsRuntimePathSelection,
-    RadrootsRuntimeSelectionContract, RadrootsRuntimeSelectionOverrideContract,
-    inspect_legacy_paths, runtime_migration_contract,
+    DEFAULT_CONFIG_FILE_NAME, DEFAULT_SERVICE_IDENTITY_FILE_NAME, RadrootsPathProfile,
+    RadrootsPathResolver, RadrootsRuntimePathSelection, RadrootsRuntimeSelectionContract,
+    RadrootsRuntimeSelectionOverrideContract,
 };
 use serde::Serialize;
 
@@ -22,7 +20,6 @@ const SUBORDINATE_PATH_OVERRIDE_KEYS: [&str; 2] = [
     "config.service.logs_dir",
     "config.publish_proxy.database_path",
 ];
-const MIGRATION_IMPORT_HINT: &str = "stop the runtime, inspect this legacy path, then perform an explicit import or manual copy into the canonical destination; radrootsd will not move it on startup";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RadrootsdRuntimePaths {
@@ -39,14 +36,12 @@ pub struct RadrootsdRuntimeContractOutput {
     pub path_overrides: RadrootsdRuntimePathOverrideContractOutput,
     pub default_shared_secret_backend: String,
     pub allowed_shared_secret_backends: Vec<String>,
-    pub migration: RadrootsdRuntimeMigrationContractOutput,
     pub canonical_config_path: PathBuf,
     pub canonical_logs_dir: PathBuf,
     pub canonical_identity_path: PathBuf,
     pub canonical_publish_proxy_database_path: PathBuf,
 }
 
-pub type RadrootsdRuntimeMigrationContractOutput = RadrootsRuntimeMigrationContract;
 pub type RadrootsdRuntimePathOverrideContractOutput = RadrootsRuntimeSelectionOverrideContract;
 
 pub(crate) fn process_path_selection() -> Result<(RadrootsPathProfile, Option<PathBuf>)> {
@@ -149,59 +144,11 @@ fn runtime_contract_with_selection(
             .into_iter()
             .map(str::to_owned)
             .collect(),
-        migration: runtime_migration_contract(RadrootsMigrationReport::empty()),
         canonical_config_path: paths.config_path,
         canonical_logs_dir: paths.logs_dir,
         canonical_identity_path: paths.identity_path,
         canonical_publish_proxy_database_path: paths.publish_proxy_database_path,
     })
-}
-
-#[allow(dead_code)]
-pub(crate) fn runtime_migration_for_process(
-    contract: &RadrootsdRuntimeContractOutput,
-) -> Result<RadrootsdRuntimeMigrationContractOutput> {
-    let current_dir = std::env::current_dir().context("resolve current directory")?;
-    Ok(runtime_migration_for_current_dir(
-        contract,
-        current_dir.as_path(),
-    ))
-}
-
-pub(crate) fn runtime_migration_for_current_dir(
-    contract: &RadrootsdRuntimeContractOutput,
-    current_dir: &Path,
-) -> RadrootsdRuntimeMigrationContractOutput {
-    let report = inspect_legacy_paths(legacy_path_candidates(contract, current_dir));
-    migration_contract_output(report)
-}
-
-fn legacy_path_candidates(
-    contract: &RadrootsdRuntimeContractOutput,
-    current_dir: &Path,
-) -> Vec<RadrootsLegacyPathCandidate> {
-    vec![
-        RadrootsLegacyPathCandidate::new(
-            "radrootsd_repo_config_v0",
-            "legacy radrootsd repo-relative config",
-            current_dir.join(DEFAULT_CONFIG_FILE_NAME),
-            Some(contract.canonical_config_path.clone()),
-            MIGRATION_IMPORT_HINT,
-        ),
-        RadrootsLegacyPathCandidate::new(
-            "radrootsd_repo_logs_v0",
-            "legacy radrootsd repo-relative logs directory",
-            current_dir.join("logs"),
-            Some(contract.canonical_logs_dir.clone()),
-            MIGRATION_IMPORT_HINT,
-        ),
-    ]
-}
-
-fn migration_contract_output(
-    report: RadrootsMigrationReport,
-) -> RadrootsdRuntimeMigrationContractOutput {
-    runtime_migration_contract(report)
 }
 
 #[cfg(test)]
@@ -212,7 +159,7 @@ mod tests {
         RadrootsHostEnvironment, RadrootsPathProfile, RadrootsPathResolver, RadrootsPlatform,
     };
 
-    use super::{runtime_contract_with_resolver, runtime_migration_for_current_dir};
+    use super::runtime_contract_with_resolver;
 
     fn linux_resolver() -> RadrootsPathResolver {
         RadrootsPathResolver::new(
@@ -225,13 +172,7 @@ mod tests {
     }
 
     #[test]
-    fn runtime_migration_detects_legacy_repo_relative_state_without_moving_it() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        std::fs::write(
-            temp.path().join("config.toml"),
-            "[metadata]\nname = \"old\"\n",
-        )
-        .expect("write old config");
+    fn runtime_contract_output_contains_canonical_runtime_paths() {
         let contract = runtime_contract_with_resolver(
             &linux_resolver(),
             RadrootsPathProfile::InteractiveUser,
@@ -239,19 +180,29 @@ mod tests {
         )
         .expect("contract");
 
-        let report = runtime_migration_for_current_dir(&contract, temp.path());
-
-        assert_eq!(report.posture, "explicit_operator_import_required");
-        assert_eq!(report.state, "legacy_state_detected");
-        assert!(!report.silent_startup_relocation);
-        assert_eq!(report.detected_legacy_paths.len(), 1);
+        assert_eq!(contract.active_profile, "interactive_user");
         assert_eq!(
-            report.detected_legacy_paths[0].id,
-            "radrootsd_repo_config_v0"
+            contract.allowed_profiles,
+            ["interactive_user", "service_host", "repo_local"]
+        );
+        assert_eq!(contract.path_overrides.root_source, "host_defaults");
+        assert_eq!(
+            contract.canonical_config_path,
+            PathBuf::from("/home/treesap/.radroots/config/services/radrootsd/config.toml")
         );
         assert_eq!(
-            report.detected_legacy_paths[0].destination,
-            Some(contract.canonical_config_path)
+            contract.canonical_logs_dir,
+            PathBuf::from("/home/treesap/.radroots/logs/services/radrootsd")
+        );
+        assert_eq!(
+            contract.canonical_identity_path,
+            PathBuf::from(
+                "/home/treesap/.radroots/secrets/services/radrootsd/identity.secret.json"
+            )
+        );
+        assert_eq!(
+            contract.canonical_publish_proxy_database_path,
+            PathBuf::from("/home/treesap/.radroots/data/services/radrootsd/publish_proxy.sqlite")
         );
     }
 }
