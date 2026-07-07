@@ -57,9 +57,9 @@ struct RadrootsdRuntimeStartupReport {
     identity_path: PathBuf,
     identity_path_source: String,
     canonical_identity_path: PathBuf,
-    publish_proxy_database_path: PathBuf,
-    publish_proxy_database_path_source: String,
-    canonical_publish_proxy_database_path: PathBuf,
+    transport_publish_database_path: PathBuf,
+    transport_publish_database_path_source: String,
+    canonical_transport_publish_database_path: PathBuf,
     path_overrides: paths::RadrootsdRuntimePathOverrideContractOutput,
     default_shared_secret_backend: String,
     allowed_shared_secret_backends: Vec<String>,
@@ -194,13 +194,13 @@ fn runtime_startup_report(
             &contract.canonical_identity_path,
         ),
         canonical_identity_path: contract.canonical_identity_path.clone(),
-        publish_proxy_database_path: settings.config.publish_proxy.database_path.clone(),
-        publish_proxy_database_path_source: config_or_profile_path_source(
-            &settings.config.publish_proxy.database_path,
-            &contract.canonical_publish_proxy_database_path,
+        transport_publish_database_path: settings.config.transport_publish.database_path.clone(),
+        transport_publish_database_path_source: config_or_profile_path_source(
+            &settings.config.transport_publish.database_path,
+            &contract.canonical_transport_publish_database_path,
         ),
-        canonical_publish_proxy_database_path: contract
-            .canonical_publish_proxy_database_path
+        canonical_transport_publish_database_path: contract
+            .canonical_transport_publish_database_path
             .clone(),
         path_overrides: contract.path_overrides.clone(),
         default_shared_secret_backend: contract.default_shared_secret_backend.clone(),
@@ -246,9 +246,9 @@ fn log_runtime_startup_report(report: &RadrootsdRuntimeStartupReport) {
         identity_path = %report.identity_path.display(),
         identity_path_source = report.identity_path_source.as_str(),
         canonical_identity_path = %report.canonical_identity_path.display(),
-        publish_proxy_database_path = %report.publish_proxy_database_path.display(),
-        publish_proxy_database_path_source = report.publish_proxy_database_path_source.as_str(),
-        canonical_publish_proxy_database_path = %report.canonical_publish_proxy_database_path.display(),
+        transport_publish_database_path = %report.transport_publish_database_path.display(),
+        transport_publish_database_path_source = report.transport_publish_database_path_source.as_str(),
+        canonical_transport_publish_database_path = %report.canonical_transport_publish_database_path.display(),
         default_shared_secret_backend = report.default_shared_secret_backend.as_str(),
         allowed_shared_secret_backends = ?report.allowed_shared_secret_backends,
         "radrootsd runtime contract"
@@ -383,40 +383,55 @@ async fn wait_for_shutdown_or_stopped(handle: ServerHandle) -> RunWaitOutcome {
 
 async fn handle_command(command: cli::Command, settings: &config::Settings) -> Result<()> {
     match command {
-        cli::Command::PublishProxy(command) => match command.command {
-            cli::PublishProxySubcommand::Principal(command) => match command.command {
+        cli::Command::TransportPublish(command) => match command.command {
+            cli::TransportPublishSubcommand::Principal(command) => match command.command {
                 cli::PrincipalSubcommand::Init(args) => {
-                    let token = crate::core::publish_proxy::generate_bearer_token();
-                    let token_hash = crate::core::publish_proxy::hash_bearer_token(token.as_str());
-                    let store = crate::core::publish_proxy::PublishProxyStore::open(
-                        settings.config.publish_proxy.database_path.clone(),
+                    let token = crate::core::transport_publish::generate_bearer_token();
+                    let token_hash =
+                        crate::core::transport_publish::hash_bearer_token(token.as_str());
+                    let store = crate::core::transport_publish::TransportPublishStore::open(
+                        settings.config.transport_publish.database_path.clone(),
                     )?;
                     let principal = store.create_principal(
-                        crate::core::publish_proxy::PublishPrincipalInit {
+                        crate::core::transport_publish::PublishPrincipalInit {
                             label: args.label,
                             token_hash,
                             allowed_pubkeys: args.allowed_pubkey,
                             allowed_kinds: args.allowed_kind,
-                            allowed_relay_policies: args
-                                .allowed_relay_policy
+                            allowed_target_policies: args
+                                .allowed_target_policy
                                 .iter()
                                 .map(|policy| {
-                                    crate::core::publish_proxy::parse_relay_policy(policy.as_str())
+                                    crate::core::transport_publish::parse_target_policy(
+                                        policy.as_str(),
+                                    )
                                 })
                                 .collect::<Result<Vec<_>, _>>()?,
-                            allow_request_relays: args.allow_request_relays,
+                            allowed_nostr_source_policies: args
+                                .allowed_nostr_source_policy
+                                .iter()
+                                .map(|policy| {
+                                    crate::core::transport_publish::parse_nostr_source_policy(
+                                        policy.as_str(),
+                                    )
+                                })
+                                .collect::<Result<Vec<_>, _>>()?,
+                            allow_request_targets: args.allow_request_targets,
                             job_visibility: args.job_visibility.parse()?,
                             expires_at_unix: None,
                         },
                     )?;
-                    crate::core::publish_proxy::write_token_file(&args.token_file, token.as_str())?;
+                    crate::core::transport_publish::write_token_file(
+                        &args.token_file,
+                        token.as_str(),
+                    )?;
                     println!(
                         "{}",
                         serde_json::json!({
                             "principal_id": principal.principal_id,
                             "label": principal.label,
                             "token_file": args.token_file,
-                            "database_path": settings.config.publish_proxy.database_path,
+                            "database_path": settings.config.transport_publish.database_path,
                         })
                     );
                     Ok(())
@@ -450,7 +465,7 @@ pub async fn run() -> Result<()> {
     let radrootsd = Radrootsd::new(
         identity.clone(),
         settings.metadata.clone(),
-        settings.config.publish_proxy.clone(),
+        settings.config.transport_publish.clone(),
         settings.config.nip46.clone(),
     );
     let radrootsd = radrootsd?;
@@ -577,8 +592,7 @@ mod tests {
                 },
                 rpc_addr: Some("127.0.0.1:0".to_string()),
                 nip46: config::Nip46Config::default(),
-                publish_proxy: config::PublishProxyConfig::default(),
-                obsolete_bridge_config_present: false,
+                transport_publish: config::TransportPublishConfig::default(),
             },
         }
     }
@@ -599,7 +613,7 @@ mod tests {
                 subordinate_path_override_source: "config_artifact".to_string(),
                 subordinate_path_override_keys: vec![
                     "config.service.logs_dir".to_string(),
-                    "config.publish_proxy.database_path".to_string(),
+                    "config.transport_publish.database_path".to_string(),
                 ],
             },
             default_shared_secret_backend: "encrypted_file".to_string(),
@@ -611,8 +625,8 @@ mod tests {
             canonical_identity_path: PathBuf::from(
                 "/home/treesap/.radroots/secrets/services/radrootsd/identity.secret.json",
             ),
-            canonical_publish_proxy_database_path: PathBuf::from(
-                "/home/treesap/.radroots/data/services/radrootsd/publish_proxy.sqlite",
+            canonical_transport_publish_database_path: PathBuf::from(
+                "/home/treesap/.radroots/data/services/radrootsd/transport_publish.sqlite",
             ),
         }
     }
@@ -622,7 +636,7 @@ mod tests {
         let state = Radrootsd::new(
             identity,
             settings.metadata.clone(),
-            settings.config.publish_proxy.clone(),
+            settings.config.transport_publish.clone(),
             settings.config.nip46.clone(),
         )
         .expect("state");
@@ -834,8 +848,8 @@ mod tests {
         };
         let mut settings = settings_with_relays(Vec::new());
         settings.config.service.logs_dir = "/tmp/radrootsd/logs".to_string();
-        settings.config.publish_proxy.database_path =
-            PathBuf::from("/tmp/radrootsd/publish_proxy.sqlite");
+        settings.config.transport_publish.database_path =
+            PathBuf::from("/tmp/radrootsd/transport_publish.sqlite");
 
         let contract = sample_runtime_contract();
         let report = runtime_startup_report(&args, &settings, &contract);
@@ -859,10 +873,12 @@ mod tests {
                 canonical_identity_path: PathBuf::from(
                     "/home/treesap/.radroots/secrets/services/radrootsd/identity.secret.json"
                 ),
-                publish_proxy_database_path: PathBuf::from("/tmp/radrootsd/publish_proxy.sqlite"),
-                publish_proxy_database_path_source: "config_artifact".to_string(),
-                canonical_publish_proxy_database_path: PathBuf::from(
-                    "/home/treesap/.radroots/data/services/radrootsd/publish_proxy.sqlite"
+                transport_publish_database_path: PathBuf::from(
+                    "/tmp/radrootsd/transport_publish.sqlite"
+                ),
+                transport_publish_database_path_source: "config_artifact".to_string(),
+                canonical_transport_publish_database_path: PathBuf::from(
+                    "/home/treesap/.radroots/data/services/radrootsd/transport_publish.sqlite"
                 ),
                 path_overrides: sample_runtime_contract().path_overrides,
                 default_shared_secret_backend: "encrypted_file".to_string(),
@@ -884,8 +900,8 @@ mod tests {
         let contract = sample_runtime_contract();
         let mut settings = settings_with_relays(Vec::new());
         settings.config.service.logs_dir = contract.canonical_logs_dir.display().to_string();
-        settings.config.publish_proxy.database_path =
-            contract.canonical_publish_proxy_database_path.clone();
+        settings.config.transport_publish.database_path =
+            contract.canonical_transport_publish_database_path.clone();
 
         let report = runtime_startup_report(&args, &settings, &contract);
 
@@ -896,10 +912,13 @@ mod tests {
         assert_eq!(report.identity_path, contract.canonical_identity_path);
         assert_eq!(report.identity_path_source, "profile_default");
         assert_eq!(
-            report.publish_proxy_database_path,
-            contract.canonical_publish_proxy_database_path
+            report.transport_publish_database_path,
+            contract.canonical_transport_publish_database_path
         );
-        assert_eq!(report.publish_proxy_database_path_source, "profile_default");
+        assert_eq!(
+            report.transport_publish_database_path_source,
+            "profile_default"
+        );
         assert_eq!(report.path_overrides, contract.path_overrides);
         assert_eq!(report.default_shared_secret_backend, "encrypted_file");
         assert_eq!(

@@ -9,7 +9,7 @@ use radroots_runtime_paths::{
 use serde::Serialize;
 
 const RADROOTSD_RUNTIME_ID: &str = "radrootsd";
-const PUBLISH_PROXY_DATABASE_FILE_NAME: &str = "publish_proxy.sqlite";
+const TRANSPORT_PUBLISH_DATABASE_FILE_NAME: &str = "transport_publish.sqlite";
 const RADROOTSD_PATHS_PROFILE_ENV: &str = "RADROOTSD_PATHS_PROFILE";
 const RADROOTSD_PATHS_REPO_LOCAL_ROOT_ENV: &str = "RADROOTSD_PATHS_REPO_LOCAL_ROOT";
 const RADROOTSD_DEFAULT_SHARED_SECRET_BACKEND: &str = "encrypted_file";
@@ -18,7 +18,7 @@ const RADROOTSD_ALLOWED_SHARED_SECRET_BACKENDS: [&str; 1] = ["encrypted_file"];
 const SUBORDINATE_PATH_OVERRIDE_SOURCE: &str = "config_artifact";
 const SUBORDINATE_PATH_OVERRIDE_KEYS: [&str; 2] = [
     "config.service.logs_dir",
-    "config.publish_proxy.database_path",
+    "config.transport_publish.database_path",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -26,7 +26,7 @@ pub(crate) struct RadrootsdRuntimePaths {
     pub(crate) config_path: PathBuf,
     pub(crate) logs_dir: PathBuf,
     pub(crate) identity_path: PathBuf,
-    pub(crate) publish_proxy_database_path: PathBuf,
+    pub(crate) transport_publish_database_path: PathBuf,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -39,7 +39,7 @@ pub struct RadrootsdRuntimeContractOutput {
     pub canonical_config_path: PathBuf,
     pub canonical_logs_dir: PathBuf,
     pub canonical_identity_path: PathBuf,
-    pub canonical_publish_proxy_database_path: PathBuf,
+    pub canonical_transport_publish_database_path: PathBuf,
 }
 
 pub type RadrootsdRuntimePathOverrideContractOutput = RadrootsRuntimeSelectionOverrideContract;
@@ -77,7 +77,7 @@ pub(crate) fn resolve_runtime_paths_with_resolver(
         config_path: namespaced.config.join(DEFAULT_CONFIG_FILE_NAME),
         logs_dir: namespaced.logs,
         identity_path: namespaced.secrets.join(DEFAULT_SERVICE_IDENTITY_FILE_NAME),
-        publish_proxy_database_path: namespaced.data.join(PUBLISH_PROXY_DATABASE_FILE_NAME),
+        transport_publish_database_path: namespaced.data.join(TRANSPORT_PUBLISH_DATABASE_FILE_NAME),
     })
 }
 
@@ -90,10 +90,10 @@ pub(crate) fn default_runtime_paths_for_process() -> Result<RadrootsdRuntimePath
     )
 }
 
-pub(crate) fn default_publish_proxy_database_path() -> PathBuf {
+pub(crate) fn default_transport_publish_database_path() -> PathBuf {
     default_runtime_paths_for_process()
         .expect("resolve canonical radrootsd runtime paths")
-        .publish_proxy_database_path
+        .transport_publish_database_path
 }
 
 pub fn default_config_path_for_process() -> Result<PathBuf> {
@@ -133,7 +133,7 @@ pub(crate) fn runtime_contract_with_selection(
         canonical_config_path: paths.config_path,
         canonical_logs_dir: paths.logs_dir,
         canonical_identity_path: paths.identity_path,
-        canonical_publish_proxy_database_path: paths.publish_proxy_database_path,
+        canonical_transport_publish_database_path: paths.transport_publish_database_path,
     })
 }
 
@@ -209,8 +209,10 @@ mod tests {
             )
         );
         assert_eq!(
-            contract.canonical_publish_proxy_database_path,
-            PathBuf::from("/home/treesap/.radroots/data/services/radrootsd/publish_proxy.sqlite")
+            contract.canonical_transport_publish_database_path,
+            PathBuf::from(
+                "/home/treesap/.radroots/data/services/radrootsd/transport_publish.sqlite"
+            )
         );
     }
 }

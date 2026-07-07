@@ -18,17 +18,17 @@ pub struct Args {
 
 #[derive(Subcommand, Debug, Clone)]
 pub enum Command {
-    PublishProxy(PublishProxyCommand),
+    TransportPublish(TransportPublishCommand),
 }
 
 #[derive(ClapArgs, Debug, Clone)]
-pub struct PublishProxyCommand {
+pub struct TransportPublishCommand {
     #[command(subcommand)]
-    pub command: PublishProxySubcommand,
+    pub command: TransportPublishSubcommand,
 }
 
 #[derive(Subcommand, Debug, Clone)]
-pub enum PublishProxySubcommand {
+pub enum TransportPublishSubcommand {
     Principal(PrincipalCommand),
 }
 
@@ -54,9 +54,11 @@ pub struct PrincipalInitArgs {
     #[arg(long)]
     pub allowed_kind: Vec<u32>,
     #[arg(long)]
-    pub allowed_relay_policy: Vec<String>,
+    pub allowed_target_policy: Vec<String>,
+    #[arg(long)]
+    pub allowed_nostr_source_policy: Vec<String>,
     #[arg(long)]
     pub job_visibility: String,
     #[arg(long)]
-    pub allow_request_relays: bool,
+    pub allow_request_targets: bool,
 }

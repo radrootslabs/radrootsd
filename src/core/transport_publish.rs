@@ -16,15 +16,18 @@ use radroots_nostr::prelude::{
     RadrootsNostrClient, RadrootsNostrEventVerification, RadrootsNostrFilter, RadrootsNostrKind,
     RadrootsNostrPublicKey, radroots_nostr_verify_event,
 };
-use radroots_publish_proxy_protocol::{
-    PublishDeliveryPolicy, PublishEventRequest, PublishEventResponse, PublishJobStatus,
-    PublishJobView, PublishRelayOutcome, PublishRelayOutcomeKind, PublishRelayPolicy,
-    PublishRelaySource, SignedNostrEventWire,
-};
 use radroots_relay_transport::{
     RadrootsNostrClientPublishAdapter, RadrootsRelayOutcome, RadrootsRelayOutcomeKind,
     RadrootsRelayPublishAdapter, RadrootsRelayPublishRelayReceipt, RadrootsRelayPublishRequest,
     RadrootsRelayTargetSet, RadrootsRelayTransportError, RadrootsRelayUrl, RadrootsRelayUrlPolicy,
+};
+use radroots_transport::RadrootsTransportSatisfactionPolicy;
+use radroots_transport_publish_protocol::{
+    NostrPublishTargetSourcePolicy, SignedNostrEventWire, TransportPublishDeliveryPolicy,
+    TransportPublishEventRequest, TransportPublishEventResponse, TransportPublishJobStatus,
+    TransportPublishJobView, TransportPublishOutcomeKind, TransportPublishPreviewBehavior,
+    TransportPublishTarget, TransportPublishTargetOutcome, TransportPublishTargetPolicy,
+    TransportPublishTargetPolicyName, TransportPublishTargetSource,
 };
 use rusqlite::types::Type;
 use rusqlite::{Connection, OptionalExtension, Row, params};
@@ -34,21 +37,23 @@ use thiserror::Error;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use uuid::Uuid;
 
-use crate::app::config::PublishProxyConfig;
+use crate::app::config::TransportPublishConfig;
 
-const TOKEN_PREFIX: &str = "rrd_pp_";
+const TOKEN_PREFIX: &str = "rrd_tp_";
 const TOKEN_HASH_PREFIX: &str = "sha256:";
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 1;
+const TRANSPORT_KIND_NOSTR: &str = "nostr";
+const TRANSPORT_KIND_RETICULUM: &str = "reticulum";
 
 #[derive(Debug, Error)]
-pub enum PublishProxyError {
-    #[error("publish proxy storage error: {0}")]
+pub enum TransportPublishError {
+    #[error("transport publish storage error: {0}")]
     Sqlite(#[from] rusqlite::Error),
-    #[error("publish proxy json error: {0}")]
+    #[error("transport publish json error: {0}")]
     Json(#[from] serde_json::Error),
-    #[error("publish proxy io error: {0}")]
+    #[error("transport publish io error: {0}")]
     Io(#[from] std::io::Error),
-    #[error("invalid publish proxy scope: {0}")]
+    #[error("invalid transport publish scope: {0}")]
     InvalidScope(String),
     #[error("invalid signed Nostr event: {0}")]
     InvalidSignedEvent(String),
@@ -56,29 +61,29 @@ pub enum PublishProxyError {
     SignedEventVerification(RadrootsNostrEventVerification),
     #[error("signed Nostr event conversion error: {0}")]
     Draft(#[from] RadrootsDraftError),
-    #[error("publish proxy relay error: {0}")]
+    #[error("transport publish relay error: {0}")]
     Relay(#[from] RadrootsRelayTransportError),
-    #[error("publish proxy transport error: {0}")]
+    #[error("transport publish transport error: {0}")]
     Transport(String),
-    #[error("publish proxy concurrency limit reached")]
+    #[error("transport publish concurrency limit reached")]
     ConcurrencyLimit,
-    #[error("publish proxy idempotency conflict for key `{0}`")]
+    #[error("transport publish idempotency conflict for key `{0}`")]
     IdempotencyConflict(String),
 }
 
 #[derive(Clone)]
-pub struct PublishProxy {
-    pub config: PublishProxyConfig,
-    pub store: PublishProxyStore,
+pub struct TransportPublish {
+    pub config: TransportPublishConfig,
+    pub store: TransportPublishStore,
     publisher: Option<Arc<dyn RadrootsRelayPublishAdapter>>,
     resolver: Arc<dyn PublishRelayResolver>,
     author_relay_discovery: Arc<dyn PublishAuthorRelayDiscovery>,
     publish_jobs: Arc<Semaphore>,
 }
 
-impl PublishProxy {
-    pub fn open(config: PublishProxyConfig) -> Result<Self, PublishProxyError> {
-        let store = PublishProxyStore::open(config.database_path.clone())?;
+impl TransportPublish {
+    pub fn open(config: TransportPublishConfig) -> Result<Self, TransportPublishError> {
+        let store = TransportPublishStore::open(config.database_path.clone())?;
         let publish_jobs = Arc::new(Semaphore::new(config.max_concurrent_publish_jobs));
         Ok(Self {
             config,
@@ -90,8 +95,8 @@ impl PublishProxy {
         })
     }
 
-    pub fn memory(config: PublishProxyConfig) -> Result<Self, PublishProxyError> {
-        let store = PublishProxyStore::memory()?;
+    pub fn memory(config: TransportPublishConfig) -> Result<Self, TransportPublishError> {
+        let store = TransportPublishStore::memory()?;
         let publish_jobs = Arc::new(Semaphore::new(config.max_concurrent_publish_jobs));
         Ok(Self {
             config,
@@ -123,30 +128,30 @@ impl PublishProxy {
         self
     }
 
-    fn acquire_publish_permit(&self) -> Result<OwnedSemaphorePermit, PublishProxyError> {
+    fn acquire_publish_permit(&self) -> Result<OwnedSemaphorePermit, TransportPublishError> {
         self.publish_jobs
             .clone()
             .try_acquire_owned()
-            .map_err(|_| PublishProxyError::ConcurrencyLimit)
+            .map_err(|_| TransportPublishError::ConcurrencyLimit)
     }
 
     pub async fn publish_event(
         &self,
         principal: &PublishPrincipal,
-        request: PublishEventRequest,
-    ) -> Result<PublishEventResponse, PublishProxyError> {
+        request: TransportPublishEventRequest,
+    ) -> Result<TransportPublishEventResponse, TransportPublishError> {
         request
-            .validate(self.config.max_relays_per_request)
+            .validate(self.config.max_targets_per_request)
             .map_err(|error| {
-                PublishProxyError::InvalidSignedEvent(format!(
+                TransportPublishError::InvalidSignedEvent(format!(
                     "publish request validation failed: {error}"
                 ))
             })?;
         principal.allows_event(&request)?;
         let signed_event = signed_event_from_wire(&request.event)?;
         if signed_event.raw_json.len() > self.config.max_event_bytes {
-            return Err(PublishProxyError::InvalidSignedEvent(
-                "signed event exceeds publish_proxy max_event_bytes".to_owned(),
+            return Err(TransportPublishError::InvalidSignedEvent(
+                "signed event exceeds transport_publish max_event_bytes".to_owned(),
             ));
         }
         let effective_timeout_ms = effective_publish_timeout_ms(&self.config, request.timeout_ms)?;
@@ -158,14 +163,14 @@ impl PublishProxy {
             effective_timeout_ms,
         )?;
         let resolution = self
-            .resolve_relays_for_request(signed_event.pubkey.as_str(), &request)
+            .resolve_targets_for_request(signed_event.pubkey.as_str(), &request)
             .await?;
         let response = self.store.record_publish_job(PublishJobInsert {
             principal_id: principal.principal_id.clone(),
             idempotency_key: request.idempotency_key.clone(),
             request: request.clone(),
             request_fingerprint,
-            effective_relay_count: resolution.targets.len(),
+            effective_target_count: resolution.target_count(),
         })?;
         if response.deduplicated {
             return Ok(response);
@@ -179,37 +184,101 @@ impl PublishProxy {
                 resolution,
             )
             .await?;
-        Ok(PublishEventResponse {
+        Ok(TransportPublishEventResponse {
             deduplicated: false,
             job: completed,
         })
     }
 
-    pub async fn resolve_relays_for_request(
+    pub async fn resolve_targets_for_request(
         &self,
         pubkey: &str,
-        request: &PublishEventRequest,
-    ) -> Result<PublishRelayResolution, PublishProxyError> {
-        match request.relay_policy {
-            PublishRelayPolicy::ExplicitOnly => self.resolve_request_relays(&request.relays).await,
-            PublishRelayPolicy::RequestThenAuthorWriteThenDaemonDefault => {
-                if !request.relays.is_empty() {
-                    self.resolve_request_relays(&request.relays).await
-                } else {
+        request: &TransportPublishEventRequest,
+    ) -> Result<PublishRelayResolution, TransportPublishError> {
+        match &request.target_policy {
+            TransportPublishTargetPolicy::ExplicitTargets { targets } => {
+                self.resolve_explicit_targets(targets).await
+            }
+            TransportPublishTargetPolicy::Nostr {
+                source_policy,
+                relay_urls,
+            } => match source_policy {
+                NostrPublishTargetSourcePolicy::ExplicitOnly => {
+                    self.resolve_request_relays(relay_urls).await
+                }
+                NostrPublishTargetSourcePolicy::RequestThenAuthorWriteThenDaemonDefault => {
+                    if !relay_urls.is_empty() {
+                        self.resolve_request_relays(relay_urls).await
+                    } else {
+                        self.resolve_author_or_default_relays(pubkey).await
+                    }
+                }
+                NostrPublishTargetSourcePolicy::AuthorWriteThenDaemonDefault => {
                     self.resolve_author_or_default_relays(pubkey).await
                 }
-            }
-            PublishRelayPolicy::AuthorWriteThenDaemonDefault => {
-                self.resolve_author_or_default_relays(pubkey).await
-            }
-            PublishRelayPolicy::DaemonDefaultOnly => self.resolve_daemon_default_relays().await,
+                NostrPublishTargetSourcePolicy::DaemonDefaultOnly => {
+                    self.resolve_daemon_default_relays().await
+                }
+            },
         }
     }
 
+    async fn resolve_explicit_targets(
+        &self,
+        targets: &[TransportPublishTarget],
+    ) -> Result<PublishRelayResolution, TransportPublishError> {
+        let mut resolved = Vec::new();
+        let mut outcomes = Vec::new();
+        for target in targets {
+            match target.transport_kind.as_str() {
+                TRANSPORT_KIND_NOSTR => {
+                    self.resolve_request_target(&mut resolved, &mut outcomes, target)
+                        .await;
+                }
+                TRANSPORT_KIND_RETICULUM => {
+                    outcomes.push(reticulum_preview_outcome(target));
+                }
+                _ => outcomes.push(unsupported_transport_outcome(target)),
+            }
+        }
+        Ok(PublishRelayResolution {
+            targets: resolved,
+            outcomes,
+        })
+    }
+
+    async fn resolve_request_target(
+        &self,
+        targets: &mut Vec<ResolvedPublishRelay>,
+        outcomes: &mut Vec<TransportPublishTargetOutcome>,
+        target: &TransportPublishTarget,
+    ) {
+        match RadrootsRelayUrl::parse(target.endpoint_uri.as_str(), relay_url_policy(&self.config))
+        {
+            Ok(url) => {
+                self.push_checked_relay_target(
+                    targets,
+                    outcomes,
+                    url,
+                    TransportPublishTargetSource::Request,
+                )
+                .await;
+            }
+            Err(error) => outcomes.push(TransportPublishTargetOutcome {
+                transport_kind: TRANSPORT_KIND_NOSTR.to_owned(),
+                endpoint_uri: target.endpoint_uri.trim().to_owned(),
+                source: TransportPublishTargetSource::Request,
+                attempted: false,
+                outcome_kind: TransportPublishOutcomeKind::TargetRejected,
+                message: Some(error.to_string()),
+                latency_ms: None,
+            }),
+        }
+    }
     async fn resolve_author_or_default_relays(
         &self,
         pubkey: &str,
-    ) -> Result<PublishRelayResolution, PublishProxyError> {
+    ) -> Result<PublishRelayResolution, TransportPublishError> {
         let mut author_relays = self.resolve_author_write_relays(pubkey).await?;
         if author_relays.targets.is_empty() {
             let mut daemon_defaults = self.resolve_daemon_default_relays().await?;
@@ -223,7 +292,7 @@ impl PublishProxy {
     async fn resolve_request_relays(
         &self,
         relays: &[String],
-    ) -> Result<PublishRelayResolution, PublishProxyError> {
+    ) -> Result<PublishRelayResolution, TransportPublishError> {
         let mut targets = Vec::new();
         let mut outcomes = Vec::new();
         for relay in relays {
@@ -233,15 +302,16 @@ impl PublishProxy {
                         &mut targets,
                         &mut outcomes,
                         url,
-                        PublishRelaySource::Request,
+                        TransportPublishTargetSource::Request,
                     )
                     .await;
                 }
-                Err(error) => outcomes.push(PublishRelayOutcome {
-                    relay_url: relay.trim().to_owned(),
-                    source: PublishRelaySource::Request,
+                Err(error) => outcomes.push(TransportPublishTargetOutcome {
+                    transport_kind: TRANSPORT_KIND_NOSTR.to_owned(),
+                    endpoint_uri: relay.trim().to_owned(),
+                    source: TransportPublishTargetSource::Request,
                     attempted: false,
-                    outcome_kind: PublishRelayOutcomeKind::RelayUrlRejected,
+                    outcome_kind: TransportPublishOutcomeKind::TargetRejected,
                     message: Some(error.to_string()),
                     latency_ms: None,
                 }),
@@ -253,19 +323,19 @@ impl PublishProxy {
     async fn resolve_author_write_relays(
         &self,
         pubkey: &str,
-    ) -> Result<PublishRelayResolution, PublishProxyError> {
+    ) -> Result<PublishRelayResolution, TransportPublishError> {
         let cached = self.store.cached_author_write_relays(pubkey)?;
         let mut cached_resolution = self.resolve_author_relay_inputs(&cached).await?;
         if !cached_resolution.targets.is_empty() {
             return Ok(cached_resolution);
         }
-        if self.config.author_relay_discovery_relays.is_empty() {
+        if self.config.nostr.author_relay_discovery_relays.is_empty() {
             return Ok(cached_resolution);
         }
         let mut discovery_targets = self
             .resolve_config_relays(
-                &self.config.author_relay_discovery_relays,
-                PublishRelaySource::DaemonDefault,
+                &self.config.nostr.author_relay_discovery_relays,
+                TransportPublishTargetSource::DaemonDefault,
             )
             .await?;
         if discovery_targets.targets.is_empty() {
@@ -296,7 +366,7 @@ impl PublishProxy {
     async fn resolve_author_relay_inputs(
         &self,
         relays: &[String],
-    ) -> Result<PublishRelayResolution, PublishProxyError> {
+    ) -> Result<PublishRelayResolution, TransportPublishError> {
         let mut targets = Vec::new();
         let mut outcomes = Vec::new();
         for relay in relays {
@@ -306,15 +376,16 @@ impl PublishProxy {
                         &mut targets,
                         &mut outcomes,
                         url,
-                        PublishRelaySource::AuthorWrite,
+                        TransportPublishTargetSource::NostrAuthorWrite,
                     )
                     .await;
                 }
-                Err(error) => outcomes.push(PublishRelayOutcome {
-                    relay_url: relay.trim().to_owned(),
-                    source: PublishRelaySource::AuthorWrite,
+                Err(error) => outcomes.push(TransportPublishTargetOutcome {
+                    transport_kind: TRANSPORT_KIND_NOSTR.to_owned(),
+                    endpoint_uri: relay.trim().to_owned(),
+                    source: TransportPublishTargetSource::NostrAuthorWrite,
                     attempted: false,
-                    outcome_kind: PublishRelayOutcomeKind::RelayUrlRejected,
+                    outcome_kind: TransportPublishOutcomeKind::TargetRejected,
                     message: Some(error.to_string()),
                     latency_ms: None,
                 }),
@@ -325,10 +396,10 @@ impl PublishProxy {
 
     async fn resolve_daemon_default_relays(
         &self,
-    ) -> Result<PublishRelayResolution, PublishProxyError> {
+    ) -> Result<PublishRelayResolution, TransportPublishError> {
         self.resolve_config_relays(
-            &self.config.daemon_default_publish_relays,
-            PublishRelaySource::DaemonDefault,
+            &self.config.nostr.daemon_default_relays,
+            TransportPublishTargetSource::DaemonDefault,
         )
         .await
     }
@@ -336,8 +407,8 @@ impl PublishProxy {
     async fn resolve_config_relays(
         &self,
         relays: &[String],
-        source: PublishRelaySource,
-    ) -> Result<PublishRelayResolution, PublishProxyError> {
+        source: TransportPublishTargetSource,
+    ) -> Result<PublishRelayResolution, TransportPublishError> {
         let mut targets = Vec::new();
         let mut outcomes = Vec::new();
         for relay in relays {
@@ -346,11 +417,12 @@ impl PublishProxy {
                     self.push_checked_relay_target(&mut targets, &mut outcomes, url, source)
                         .await;
                 }
-                Err(error) => outcomes.push(PublishRelayOutcome {
-                    relay_url: relay.trim().to_owned(),
+                Err(error) => outcomes.push(TransportPublishTargetOutcome {
+                    transport_kind: TRANSPORT_KIND_NOSTR.to_owned(),
+                    endpoint_uri: relay.trim().to_owned(),
                     source,
                     attempted: false,
-                    outcome_kind: PublishRelayOutcomeKind::RelayUrlRejected,
+                    outcome_kind: TransportPublishOutcomeKind::TargetRejected,
                     message: Some(error.to_string()),
                     latency_ms: None,
                 }),
@@ -362,9 +434,9 @@ impl PublishProxy {
     async fn push_checked_relay_target(
         &self,
         targets: &mut Vec<ResolvedPublishRelay>,
-        outcomes: &mut Vec<PublishRelayOutcome>,
+        outcomes: &mut Vec<TransportPublishTargetOutcome>,
         url: RadrootsRelayUrl,
-        source: PublishRelaySource,
+        source: TransportPublishTargetSource,
     ) {
         if relay_url_policy(&self.config) == RadrootsRelayUrlPolicy::Localhost {
             push_resolved_relay(targets, url, source);
@@ -380,11 +452,12 @@ impl PublishProxy {
             }
             Ok(addresses) => match url.validate_public_resolved_ip_addrs(addresses) {
                 Ok(()) => push_resolved_relay(targets, url, source),
-                Err(error) => outcomes.push(PublishRelayOutcome {
-                    relay_url: url.as_str().to_owned(),
+                Err(error) => outcomes.push(TransportPublishTargetOutcome {
+                    transport_kind: TRANSPORT_KIND_NOSTR.to_owned(),
+                    endpoint_uri: url.as_str().to_owned(),
                     source,
                     attempted: false,
-                    outcome_kind: PublishRelayOutcomeKind::RelayUrlRejected,
+                    outcome_kind: TransportPublishOutcomeKind::TargetRejected,
                     message: Some(error.to_string()),
                     latency_ms: None,
                 }),
@@ -401,24 +474,29 @@ impl PublishProxy {
         &self,
         job_id: &str,
         signed_event: RadrootsSignedNostrEvent,
-        delivery_policy: PublishDeliveryPolicy,
+        delivery_policy: TransportPublishDeliveryPolicy,
         timeout_ms: u64,
         resolution: PublishRelayResolution,
-    ) -> Result<PublishJobView, PublishProxyError> {
+    ) -> Result<TransportPublishJobView, TransportPublishError> {
+        let target_count = resolution.target_count();
         if resolution.targets.is_empty() {
             let status = if resolution
                 .outcomes
                 .iter()
                 .any(|outcome| outcome.outcome_kind.is_retryable())
             {
-                PublishJobStatus::DeliveryUnsatisfiedRetryable
+                TransportPublishJobStatus::DeliveryUnsatisfiedRetryable
+            } else if resolution.outcomes.is_empty() {
+                TransportPublishJobStatus::Rejected
             } else {
-                PublishJobStatus::Rejected
+                TransportPublishJobStatus::DeliveryUnsatisfiedTerminal
             };
-            let last_error = if status == PublishJobStatus::DeliveryUnsatisfiedRetryable {
+            let last_error = if status == TransportPublishJobStatus::DeliveryUnsatisfiedRetryable {
                 "delivery_unsatisfied"
+            } else if resolution.outcomes.is_empty() {
+                "no_transport_publish_targets"
             } else {
-                "no_publish_relays"
+                "delivery_unsatisfied"
             };
             self.store.complete_publish_job(
                 job_id,
@@ -428,13 +506,13 @@ impl PublishProxy {
             )?;
             return self.store.job_by_id(job_id);
         }
-        let required_ack_count = delivery_policy.required_ack_count(resolution.targets.len());
-        if required_ack_count > resolution.targets.len() {
+        let required_target_count = delivery_policy.required_target_count(target_count);
+        if required_target_count > target_count {
             self.store.complete_publish_job(
                 job_id,
-                PublishJobStatus::Rejected,
+                TransportPublishJobStatus::Rejected,
                 resolution.outcomes,
-                Some("delivery_quorum_exceeds_relay_count".to_owned()),
+                Some("delivery_quorum_exceeds_target_count".to_owned()),
             )?;
             return self.store.job_by_id(job_id);
         }
@@ -446,9 +524,14 @@ impl PublishProxy {
                 .map(|target| target.url.clone())
                 .collect(),
         )?;
+        let satisfaction_policy = satisfaction_policy_from_delivery_policy(
+            &delivery_policy,
+            target_count,
+            resolution.targets.len(),
+        );
         let publish_request =
             RadrootsRelayPublishRequest::new(signed_event, target_set, current_unix_millis())
-                .with_accepted_quorum(required_ack_count);
+                .with_satisfaction_policy(satisfaction_policy);
         let started = Instant::now();
         let publish_timeout = Duration::from_millis(timeout_ms);
         let receipts =
@@ -464,8 +547,8 @@ impl PublishProxy {
         outcomes.extend(receipts.into_iter().map(|receipt| {
             publish_outcome_from_receipt(receipt, &source_by_relay, Some(latency_ms))
         }));
-        let status = delivery_status(&delivery_policy, resolution.targets.len(), &outcomes);
-        let last_error = if status == PublishJobStatus::DeliverySatisfied {
+        let status = delivery_status(&delivery_policy, target_count, &outcomes);
+        let last_error = if status == TransportPublishJobStatus::DeliverySatisfied {
             None
         } else {
             Some("delivery_unsatisfied".to_owned())
@@ -478,23 +561,23 @@ impl PublishProxy {
     async fn publish_with_adapter(
         &self,
         request: RadrootsRelayPublishRequest,
-    ) -> Result<Vec<RadrootsRelayPublishRelayReceipt>, PublishProxyError> {
+    ) -> Result<Vec<RadrootsRelayPublishRelayReceipt>, TransportPublishError> {
         if let Some(publisher) = &self.publisher {
             return publisher
                 .publish(request)
                 .await
-                .map_err(PublishProxyError::Relay);
+                .map_err(TransportPublishError::Relay);
         }
         let adapter = RadrootsNostrClientPublishAdapter::new(RadrootsNostrClient::new_signerless());
         adapter
             .publish(request)
             .await
-            .map_err(PublishProxyError::Relay)
+            .map_err(TransportPublishError::Relay)
     }
 }
 
 #[derive(Clone)]
-pub struct PublishProxyStore {
+pub struct TransportPublishStore {
     inner: Arc<Mutex<Connection>>,
 }
 
@@ -506,13 +589,13 @@ pub enum PublishJobVisibility {
 }
 
 impl FromStr for PublishJobVisibility {
-    type Err = PublishProxyError;
+    type Err = TransportPublishError;
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value {
             "own" => Ok(Self::Own),
             "admin" => Ok(Self::Admin),
-            other => Err(PublishProxyError::InvalidScope(format!(
+            other => Err(TransportPublishError::InvalidScope(format!(
                 "unknown job visibility `{other}`"
             ))),
         }
@@ -534,8 +617,9 @@ pub struct PublishPrincipalInit {
     pub token_hash: String,
     pub allowed_pubkeys: Vec<String>,
     pub allowed_kinds: Vec<u32>,
-    pub allowed_relay_policies: Vec<PublishRelayPolicy>,
-    pub allow_request_relays: bool,
+    pub allowed_target_policies: Vec<TransportPublishTargetPolicyName>,
+    pub allowed_nostr_source_policies: Vec<NostrPublishTargetSourcePolicy>,
+    pub allow_request_targets: bool,
     pub job_visibility: PublishJobVisibility,
     pub expires_at_unix: Option<i64>,
 }
@@ -546,38 +630,72 @@ pub struct PublishPrincipal {
     pub label: String,
     pub allowed_pubkeys: Vec<String>,
     pub allowed_kinds: Vec<u32>,
-    pub allowed_relay_policies: Vec<PublishRelayPolicy>,
-    pub allow_request_relays: bool,
+    pub allowed_target_policies: Vec<TransportPublishTargetPolicyName>,
+    pub allowed_nostr_source_policies: Vec<NostrPublishTargetSourcePolicy>,
+    pub allow_request_targets: bool,
     pub job_visibility: PublishJobVisibility,
     pub expires_at_unix: Option<i64>,
 }
 
 impl PublishPrincipal {
-    pub fn allows_event(&self, request: &PublishEventRequest) -> Result<(), PublishProxyError> {
+    pub fn allows_event(
+        &self,
+        request: &TransportPublishEventRequest,
+    ) -> Result<(), TransportPublishError> {
         ensure_lower_hex("pubkey", request.event.pubkey.as_str(), 64)?;
         if !self
             .allowed_pubkeys
             .iter()
             .any(|pubkey| pubkey == &request.event.pubkey)
         {
-            return Err(PublishProxyError::InvalidScope(
+            return Err(TransportPublishError::InvalidScope(
                 "principal is not allowed to publish for event pubkey".to_owned(),
             ));
         }
         if !self.allowed_kinds.contains(&request.event.kind) {
-            return Err(PublishProxyError::InvalidScope(
+            return Err(TransportPublishError::InvalidScope(
                 "principal is not allowed to publish event kind".to_owned(),
             ));
         }
-        if !self.allowed_relay_policies.contains(&request.relay_policy) {
-            return Err(PublishProxyError::InvalidScope(
-                "principal is not allowed to use requested relay policy".to_owned(),
-            ));
-        }
-        if !self.allow_request_relays && !request.relays.is_empty() {
-            return Err(PublishProxyError::InvalidScope(
-                "principal is not allowed to provide request relays".to_owned(),
-            ));
+        match &request.target_policy {
+            TransportPublishTargetPolicy::ExplicitTargets { targets } => {
+                if !self
+                    .allowed_target_policies
+                    .contains(&TransportPublishTargetPolicyName::ExplicitTargets)
+                {
+                    return Err(TransportPublishError::InvalidScope(
+                        "principal is not allowed to use explicit transport targets".to_owned(),
+                    ));
+                }
+                if !self.allow_request_targets && !targets.is_empty() {
+                    return Err(TransportPublishError::InvalidScope(
+                        "principal is not allowed to provide request targets".to_owned(),
+                    ));
+                }
+            }
+            TransportPublishTargetPolicy::Nostr {
+                source_policy,
+                relay_urls,
+            } => {
+                if !self
+                    .allowed_target_policies
+                    .contains(&TransportPublishTargetPolicyName::Nostr)
+                {
+                    return Err(TransportPublishError::InvalidScope(
+                        "principal is not allowed to use Nostr target policy".to_owned(),
+                    ));
+                }
+                if !self.allowed_nostr_source_policies.contains(source_policy) {
+                    return Err(TransportPublishError::InvalidScope(
+                        "principal is not allowed to use requested Nostr source policy".to_owned(),
+                    ));
+                }
+                if !self.allow_request_targets && !relay_urls.is_empty() {
+                    return Err(TransportPublishError::InvalidScope(
+                        "principal is not allowed to provide request targets".to_owned(),
+                    ));
+                }
+            }
         }
         Ok(())
     }
@@ -591,25 +709,29 @@ impl PublishPrincipal {
 pub struct PublishJobInsert {
     pub principal_id: String,
     pub idempotency_key: Option<String>,
-    pub request: PublishEventRequest,
+    pub request: TransportPublishEventRequest,
     pub request_fingerprint: String,
-    pub effective_relay_count: usize,
+    pub effective_target_count: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedPublishRelay {
     pub url: RadrootsRelayUrl,
-    pub source: PublishRelaySource,
+    pub source: TransportPublishTargetSource,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PublishRelayResolution {
     pub targets: Vec<ResolvedPublishRelay>,
-    pub outcomes: Vec<PublishRelayOutcome>,
+    pub outcomes: Vec<TransportPublishTargetOutcome>,
 }
 
 impl PublishRelayResolution {
-    fn source_by_relay(&self) -> BTreeMap<String, PublishRelaySource> {
+    fn target_count(&self) -> usize {
+        self.targets.len() + self.outcomes.len()
+    }
+
+    fn source_by_relay(&self) -> BTreeMap<String, TransportPublishTargetSource> {
         self.targets
             .iter()
             .map(|target| (target.url.as_str().to_owned(), target.source))
@@ -625,7 +747,7 @@ pub(crate) trait PublishRelayResolver: Send + Sync {
 }
 
 type PublishAuthorRelayDiscoveryFuture<'a> =
-    Pin<Box<dyn Future<Output = Result<Vec<String>, PublishProxyError>> + Send + 'a>>;
+    Pin<Box<dyn Future<Output = Result<Vec<String>, TransportPublishError>> + Send + 'a>>;
 
 trait PublishAuthorRelayDiscovery: Send + Sync {
     fn fetch_author_write_relays<'a>(
@@ -690,8 +812,8 @@ impl PublishAuthorRelayDiscovery for NostrPublishAuthorRelayDiscovery {
     }
 }
 
-impl PublishProxyStore {
-    pub fn open(path: PathBuf) -> Result<Self, PublishProxyError> {
+impl TransportPublishStore {
+    pub fn open(path: PathBuf) -> Result<Self, TransportPublishError> {
         if let Some(parent) = path
             .parent()
             .filter(|parent| !parent.as_os_str().is_empty())
@@ -702,28 +824,29 @@ impl PublishProxyStore {
         Self::from_connection(connection)
     }
 
-    pub fn memory() -> Result<Self, PublishProxyError> {
+    pub fn memory() -> Result<Self, TransportPublishError> {
         Self::from_connection(Connection::open_in_memory()?)
     }
 
-    fn from_connection(connection: Connection) -> Result<Self, PublishProxyError> {
+    fn from_connection(connection: Connection) -> Result<Self, TransportPublishError> {
         connection.execute_batch(
             r#"
             PRAGMA foreign_keys = ON;
-            CREATE TABLE IF NOT EXISTS publish_proxy_principals (
+            CREATE TABLE IF NOT EXISTS transport_publish_principals (
                 principal_id TEXT PRIMARY KEY NOT NULL,
                 label TEXT NOT NULL,
                 token_hash TEXT NOT NULL UNIQUE,
                 allowed_pubkeys_json TEXT NOT NULL,
                 allowed_kinds_json TEXT NOT NULL,
-                allowed_relay_policies_json TEXT NOT NULL,
-                allow_request_relays INTEGER NOT NULL,
+                allowed_target_policies_json TEXT NOT NULL,
+                allowed_nostr_source_policies_json TEXT NOT NULL,
+                allow_request_targets INTEGER NOT NULL,
                 job_visibility TEXT NOT NULL,
                 expires_at_unix INTEGER,
                 revoked_at_unix INTEGER,
                 created_at_unix INTEGER NOT NULL
             );
-            CREATE TABLE IF NOT EXISTS publish_proxy_jobs (
+            CREATE TABLE IF NOT EXISTS transport_publish_jobs (
                 job_id TEXT PRIMARY KEY NOT NULL,
                 principal_id TEXT NOT NULL,
                 idempotency_key TEXT,
@@ -732,40 +855,40 @@ impl PublishProxyStore {
                 event_id TEXT NOT NULL,
                 event_pubkey TEXT NOT NULL,
                 event_kind INTEGER NOT NULL,
-                relay_policy_json TEXT NOT NULL,
+                target_policy_json TEXT NOT NULL,
                 delivery_policy_json TEXT NOT NULL,
-                requested_relay_count INTEGER NOT NULL,
-                effective_relay_count INTEGER NOT NULL,
+                requested_target_count INTEGER NOT NULL,
+                effective_target_count INTEGER NOT NULL,
                 request_json TEXT NOT NULL,
                 requested_at_ms INTEGER NOT NULL,
                 updated_at_ms INTEGER NOT NULL,
                 completed_at_ms INTEGER,
                 last_error TEXT,
-                FOREIGN KEY(principal_id) REFERENCES publish_proxy_principals(principal_id)
+                FOREIGN KEY(principal_id) REFERENCES transport_publish_principals(principal_id)
             );
-            CREATE UNIQUE INDEX IF NOT EXISTS publish_proxy_jobs_principal_idempotency_idx
-                ON publish_proxy_jobs(principal_id, idempotency_key)
+            CREATE UNIQUE INDEX IF NOT EXISTS transport_publish_jobs_principal_idempotency_idx
+                ON transport_publish_jobs(principal_id, idempotency_key)
                 WHERE idempotency_key IS NOT NULL;
-            CREATE TABLE IF NOT EXISTS publish_proxy_relay_results (
+            CREATE TABLE IF NOT EXISTS transport_publish_target_results (
                 job_id TEXT NOT NULL,
-                relay_url TEXT NOT NULL,
+                transport_kind TEXT NOT NULL,
+                endpoint_uri TEXT NOT NULL,
                 source TEXT NOT NULL,
                 attempted INTEGER NOT NULL,
                 outcome_kind TEXT NOT NULL,
                 message TEXT,
                 latency_ms INTEGER,
                 updated_at_ms INTEGER NOT NULL,
-                PRIMARY KEY(job_id, relay_url),
-                FOREIGN KEY(job_id) REFERENCES publish_proxy_jobs(job_id)
+                PRIMARY KEY(job_id, transport_kind, endpoint_uri),
+                FOREIGN KEY(job_id) REFERENCES transport_publish_jobs(job_id)
             );
-            CREATE TABLE IF NOT EXISTS publish_proxy_relay_list_cache (
+            CREATE TABLE IF NOT EXISTS transport_publish_nostr_author_cache (
                 pubkey TEXT PRIMARY KEY NOT NULL,
                 relays_json TEXT NOT NULL,
                 updated_at_ms INTEGER NOT NULL
             );
             "#,
         )?;
-        migrate_schema(&connection)?;
         recover_interrupted_publish_jobs(&connection)?;
         connection.pragma_update(None, "user_version", SCHEMA_VERSION)?;
         Ok(Self {
@@ -776,7 +899,7 @@ impl PublishProxyStore {
     pub fn create_principal(
         &self,
         input: PublishPrincipalInit,
-    ) -> Result<PublishPrincipal, PublishProxyError> {
+    ) -> Result<PublishPrincipal, TransportPublishError> {
         validate_principal_init(&input)?;
         let principal_id = Uuid::new_v4().to_string();
         let now = current_unix_secs();
@@ -786,20 +909,21 @@ impl PublishProxyStore {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         connection.execute(
             r#"
-            INSERT INTO publish_proxy_principals (
+            INSERT INTO transport_publish_principals (
                 principal_id,
                 label,
                 token_hash,
                 allowed_pubkeys_json,
                 allowed_kinds_json,
-                allowed_relay_policies_json,
-                allow_request_relays,
+                allowed_target_policies_json,
+                allowed_nostr_source_policies_json,
+                allow_request_targets,
                 job_visibility,
                 expires_at_unix,
                 revoked_at_unix,
                 created_at_unix
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL, ?10)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, NULL, ?11)
             "#,
             params![
                 principal_id,
@@ -807,22 +931,24 @@ impl PublishProxyStore {
                 input.token_hash,
                 serde_json::to_string(&input.allowed_pubkeys)?,
                 serde_json::to_string(&input.allowed_kinds)?,
-                serde_json::to_string(&input.allowed_relay_policies)?,
-                input.allow_request_relays,
+                serde_json::to_string(&input.allowed_target_policies)?,
+                serde_json::to_string(&input.allowed_nostr_source_policies)?,
+                input.allow_request_targets,
                 input.job_visibility.to_string(),
                 input.expires_at_unix,
                 now,
             ],
         )?;
         drop(connection);
-        self.principal_by_id(principal_id.as_str())?
-            .ok_or_else(|| PublishProxyError::InvalidScope("created principal missing".to_owned()))
+        self.principal_by_id(principal_id.as_str())?.ok_or_else(|| {
+            TransportPublishError::InvalidScope("created principal missing".to_owned())
+        })
     }
 
     pub fn principal_for_token_hash(
         &self,
         token_hash: &str,
-    ) -> Result<Option<PublishPrincipal>, PublishProxyError> {
+    ) -> Result<Option<PublishPrincipal>, TransportPublishError> {
         let now = current_unix_secs();
         let connection = self
             .inner
@@ -836,11 +962,12 @@ impl PublishProxyStore {
                     label,
                     allowed_pubkeys_json,
                     allowed_kinds_json,
-                    allowed_relay_policies_json,
-                    allow_request_relays,
+                    allowed_target_policies_json,
+                    allowed_nostr_source_policies_json,
+                    allow_request_targets,
                     job_visibility,
                     expires_at_unix
-                FROM publish_proxy_principals
+                FROM transport_publish_principals
                 WHERE token_hash = ?1
                   AND revoked_at_unix IS NULL
                   AND (expires_at_unix IS NULL OR expires_at_unix > ?2)
@@ -855,7 +982,7 @@ impl PublishProxyStore {
     pub fn principal_by_id(
         &self,
         principal_id: &str,
-    ) -> Result<Option<PublishPrincipal>, PublishProxyError> {
+    ) -> Result<Option<PublishPrincipal>, TransportPublishError> {
         let connection = self
             .inner
             .lock()
@@ -868,11 +995,12 @@ impl PublishProxyStore {
                     label,
                     allowed_pubkeys_json,
                     allowed_kinds_json,
-                    allowed_relay_policies_json,
-                    allow_request_relays,
+                    allowed_target_policies_json,
+                    allowed_nostr_source_policies_json,
+                    allow_request_targets,
                     job_visibility,
                     expires_at_unix
-                FROM publish_proxy_principals
+                FROM transport_publish_principals
                 WHERE principal_id = ?1
                 "#,
                 params![principal_id],
@@ -885,17 +1013,17 @@ impl PublishProxyStore {
     pub fn record_publish_job(
         &self,
         insert: PublishJobInsert,
-    ) -> Result<PublishEventResponse, PublishProxyError> {
+    ) -> Result<TransportPublishEventResponse, TransportPublishError> {
         if let Some(idempotency_key) = insert.idempotency_key.as_deref() {
             if let Some(existing) =
                 self.job_for_principal_id_and_key(insert.principal_id.as_str(), idempotency_key)?
             {
                 if existing.request_fingerprint != insert.request_fingerprint {
-                    return Err(PublishProxyError::IdempotencyConflict(
+                    return Err(TransportPublishError::IdempotencyConflict(
                         idempotency_key.to_owned(),
                     ));
                 }
-                return Ok(PublishEventResponse {
+                return Ok(TransportPublishEventResponse {
                     deduplicated: true,
                     job: existing.view,
                 });
@@ -911,7 +1039,7 @@ impl PublishProxyStore {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let insert_result = connection.execute(
             r#"
-            INSERT INTO publish_proxy_jobs (
+            INSERT INTO transport_publish_jobs (
                 job_id,
                 principal_id,
                 idempotency_key,
@@ -920,10 +1048,10 @@ impl PublishProxyStore {
                 event_id,
                 event_pubkey,
                 event_kind,
-                relay_policy_json,
+                target_policy_json,
                 delivery_policy_json,
-                requested_relay_count,
-                effective_relay_count,
+                requested_target_count,
+                effective_target_count,
                 request_json,
                 requested_at_ms,
                 updated_at_ms
@@ -935,14 +1063,14 @@ impl PublishProxyStore {
                 insert.principal_id,
                 insert.idempotency_key,
                 insert.request_fingerprint,
-                serde_json::to_string(&PublishJobStatus::Publishing)?,
+                serde_json::to_string(&TransportPublishJobStatus::Publishing)?,
                 insert.request.event.id,
                 insert.request.event.pubkey,
                 insert.request.event.kind,
-                serde_json::to_string(&insert.request.relay_policy)?,
+                serde_json::to_string(&insert.request.target_policy)?,
                 serde_json::to_string(&insert.request.delivery_policy)?,
-                insert.request.relays.len(),
-                insert.effective_relay_count,
+                insert.request.target_policy.request_target_count(),
+                insert.effective_target_count,
                 request_json,
                 now,
                 now,
@@ -953,7 +1081,7 @@ impl PublishProxyStore {
             Err(rusqlite::Error::SqliteFailure(error, _))
                 if error.code == rusqlite::ErrorCode::ConstraintViolation =>
             {
-                return Err(PublishProxyError::IdempotencyConflict(
+                return Err(TransportPublishError::IdempotencyConflict(
                     "idempotency key conflicts with an existing publish job".to_owned(),
                 ));
             }
@@ -961,7 +1089,7 @@ impl PublishProxyStore {
         }
         drop(connection);
         let job = self.job_by_id(job_id.as_str())?;
-        Ok(PublishEventResponse {
+        Ok(TransportPublishEventResponse {
             deduplicated: false,
             job,
         })
@@ -971,7 +1099,7 @@ impl PublishProxyStore {
         &self,
         job_id: &str,
         principal: &PublishPrincipal,
-    ) -> Result<Option<PublishJobView>, PublishProxyError> {
+    ) -> Result<Option<TransportPublishJobView>, TransportPublishError> {
         let connection = self
             .inner
             .lock()
@@ -987,7 +1115,7 @@ impl PublishProxyStore {
         if !principal.can_read_job(job.principal_id.as_str()) {
             return Ok(None);
         }
-        job.view.relays = self.relay_outcomes(job.view.job_id.as_str())?;
+        job.view.targets = self.target_outcomes(job.view.job_id.as_str())?;
         finalize_job_view(&mut job.view);
         Ok(Some(job.view))
     }
@@ -996,7 +1124,7 @@ impl PublishProxyStore {
         &self,
         principal: &PublishPrincipal,
         limit: usize,
-    ) -> Result<Vec<PublishJobView>, PublishProxyError> {
+    ) -> Result<Vec<TransportPublishJobView>, TransportPublishError> {
         let limit = i64::try_from(limit.clamp(1, 200)).unwrap_or(200);
         let connection = self
             .inner
@@ -1022,7 +1150,7 @@ impl PublishProxyStore {
 
         rows.into_iter()
             .map(|mut row| {
-                row.view.relays = self.relay_outcomes(row.view.job_id.as_str())?;
+                row.view.targets = self.target_outcomes(row.view.job_id.as_str())?;
                 finalize_job_view(&mut row.view);
                 Ok(row.view)
             })
@@ -1033,7 +1161,7 @@ impl PublishProxyStore {
         &self,
         principal_id: &str,
         idempotency_key: &str,
-    ) -> Result<Option<PublishJobRow>, PublishProxyError> {
+    ) -> Result<Option<PublishJobRow>, TransportPublishError> {
         let connection = self
             .inner
             .lock()
@@ -1050,12 +1178,15 @@ impl PublishProxyStore {
         let Some(mut job) = row else {
             return Ok(None);
         };
-        job.view.relays = self.relay_outcomes(job.view.job_id.as_str())?;
+        job.view.targets = self.target_outcomes(job.view.job_id.as_str())?;
         finalize_job_view(&mut job.view);
         Ok(Some(job))
     }
 
-    pub fn job_by_id(&self, job_id: &str) -> Result<PublishJobView, PublishProxyError> {
+    pub fn job_by_id(
+        &self,
+        job_id: &str,
+    ) -> Result<TransportPublishJobView, TransportPublishError> {
         let connection = self
             .inner
             .lock()
@@ -1066,11 +1197,11 @@ impl PublishProxyStore {
             .optional()?;
         drop(connection);
         let Some(mut job) = row else {
-            return Err(PublishProxyError::InvalidScope(
+            return Err(TransportPublishError::InvalidScope(
                 "unknown publish job".to_owned(),
             ));
         };
-        job.view.relays = self.relay_outcomes(job.view.job_id.as_str())?;
+        job.view.targets = self.target_outcomes(job.view.job_id.as_str())?;
         finalize_job_view(&mut job.view);
         Ok(job.view)
     }
@@ -1078,10 +1209,10 @@ impl PublishProxyStore {
     pub fn complete_publish_job(
         &self,
         job_id: &str,
-        status: PublishJobStatus,
-        outcomes: Vec<PublishRelayOutcome>,
+        status: TransportPublishJobStatus,
+        outcomes: Vec<TransportPublishTargetOutcome>,
         last_error: Option<String>,
-    ) -> Result<(), PublishProxyError> {
+    ) -> Result<(), TransportPublishError> {
         let now = current_unix_millis();
         let connection = self
             .inner
@@ -1089,7 +1220,7 @@ impl PublishProxyStore {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         connection.execute(
             r#"
-            UPDATE publish_proxy_jobs
+            UPDATE transport_publish_jobs
             SET status = ?2,
                 updated_at_ms = ?3,
                 completed_at_ms = ?4,
@@ -1105,15 +1236,16 @@ impl PublishProxyStore {
             ],
         )?;
         connection.execute(
-            "DELETE FROM publish_proxy_relay_results WHERE job_id = ?1",
+            "DELETE FROM transport_publish_target_results WHERE job_id = ?1",
             params![job_id],
         )?;
         for outcome in outcomes {
             connection.execute(
                 r#"
-                INSERT OR REPLACE INTO publish_proxy_relay_results (
+                INSERT OR REPLACE INTO transport_publish_target_results (
                     job_id,
-                    relay_url,
+                    transport_kind,
+                    endpoint_uri,
                     source,
                     attempted,
                     outcome_kind,
@@ -1121,11 +1253,12 @@ impl PublishProxyStore {
                     latency_ms,
                     updated_at_ms
                 )
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
                 "#,
                 params![
                     job_id,
-                    outcome.relay_url,
+                    outcome.transport_kind,
+                    outcome.endpoint_uri,
                     serde_json::to_string(&outcome.source)?,
                     outcome.attempted,
                     serde_json::to_string(&outcome.outcome_kind)?,
@@ -1143,20 +1276,20 @@ impl PublishProxyStore {
     pub fn cached_author_write_relays(
         &self,
         pubkey: &str,
-    ) -> Result<Vec<String>, PublishProxyError> {
+    ) -> Result<Vec<String>, TransportPublishError> {
         let connection = self
             .inner
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let relays_json = connection
             .query_row(
-                "SELECT relays_json FROM publish_proxy_relay_list_cache WHERE pubkey = ?1",
+                "SELECT relays_json FROM transport_publish_nostr_author_cache WHERE pubkey = ?1",
                 params![pubkey],
                 |row| row.get::<_, String>(0),
             )
             .optional()?;
         relays_json
-            .map(|value| serde_json::from_str(value.as_str()).map_err(PublishProxyError::from))
+            .map(|value| serde_json::from_str(value.as_str()).map_err(TransportPublishError::from))
             .unwrap_or_else(|| Ok(Vec::new()))
     }
 
@@ -1164,7 +1297,7 @@ impl PublishProxyStore {
         &self,
         pubkey: &str,
         relays: &[String],
-    ) -> Result<(), PublishProxyError> {
+    ) -> Result<(), TransportPublishError> {
         let now = current_unix_millis();
         let connection = self
             .inner
@@ -1172,7 +1305,7 @@ impl PublishProxyStore {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         connection.execute(
             r#"
-            INSERT INTO publish_proxy_relay_list_cache (pubkey, relays_json, updated_at_ms)
+            INSERT INTO transport_publish_nostr_author_cache (pubkey, relays_json, updated_at_ms)
             VALUES (?1, ?2, ?3)
             ON CONFLICT(pubkey) DO UPDATE SET
                 relays_json = excluded.relays_json,
@@ -1183,21 +1316,24 @@ impl PublishProxyStore {
         Ok(())
     }
 
-    fn relay_outcomes(&self, job_id: &str) -> Result<Vec<PublishRelayOutcome>, PublishProxyError> {
+    fn target_outcomes(
+        &self,
+        job_id: &str,
+    ) -> Result<Vec<TransportPublishTargetOutcome>, TransportPublishError> {
         let connection = self
             .inner
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut stmt = connection.prepare(
             r#"
-            SELECT relay_url, source, attempted, outcome_kind, message, latency_ms
-            FROM publish_proxy_relay_results
+            SELECT transport_kind, endpoint_uri, source, attempted, outcome_kind, message, latency_ms
+            FROM transport_publish_target_results
             WHERE job_id = ?1
-            ORDER BY relay_url
+            ORDER BY transport_kind, endpoint_uri
             "#,
         )?;
         let outcomes = stmt
-            .query_map(params![job_id], relay_outcome_from_row)?
+            .query_map(params![job_id], target_outcome_from_row)?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(outcomes)
     }
@@ -1206,37 +1342,14 @@ impl PublishProxyStore {
 struct PublishJobRow {
     principal_id: String,
     request_fingerprint: String,
-    view: PublishJobView,
+    view: TransportPublishJobView,
 }
 
-fn migrate_schema(connection: &Connection) -> Result<(), PublishProxyError> {
-    let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
-    if version < 2 {
-        if !table_has_column(connection, "publish_proxy_jobs", "request_fingerprint")? {
-            connection.execute(
-                "ALTER TABLE publish_proxy_jobs ADD COLUMN request_fingerprint TEXT NOT NULL DEFAULT ''",
-                [],
-            )?;
-        }
-        if !table_has_column(connection, "publish_proxy_jobs", "effective_relay_count")? {
-            connection.execute(
-                "ALTER TABLE publish_proxy_jobs ADD COLUMN effective_relay_count INTEGER NOT NULL DEFAULT 0",
-                [],
-            )?;
-            connection.execute(
-                "UPDATE publish_proxy_jobs SET effective_relay_count = requested_relay_count WHERE effective_relay_count = 0",
-                [],
-            )?;
-        }
-    }
-    Ok(())
-}
-
-fn recover_interrupted_publish_jobs(connection: &Connection) -> Result<(), PublishProxyError> {
+fn recover_interrupted_publish_jobs(connection: &Connection) -> Result<(), TransportPublishError> {
     let now = current_unix_millis();
     connection.execute(
         r#"
-        UPDATE publish_proxy_jobs
+        UPDATE transport_publish_jobs
         SET status = ?1,
             updated_at_ms = ?2,
             completed_at_ms = ?3,
@@ -1244,26 +1357,14 @@ fn recover_interrupted_publish_jobs(connection: &Connection) -> Result<(), Publi
         WHERE status = ?5
         "#,
         params![
-            serde_json::to_string(&PublishJobStatus::DeliveryUnsatisfiedRetryable)?,
+            serde_json::to_string(&TransportPublishJobStatus::DeliveryUnsatisfiedRetryable)?,
             now,
             now,
             "publish_attempt_interrupted",
-            serde_json::to_string(&PublishJobStatus::Publishing)?,
+            serde_json::to_string(&TransportPublishJobStatus::Publishing)?,
         ],
     )?;
     Ok(())
-}
-
-fn table_has_column(
-    connection: &Connection,
-    table: &str,
-    column: &str,
-) -> Result<bool, PublishProxyError> {
-    let mut stmt = connection.prepare(format!("PRAGMA table_info({table})").as_str())?;
-    let columns = stmt
-        .query_map([], |row| row.get::<_, String>(1))?
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok(columns.iter().any(|existing| existing == column))
 }
 
 fn job_select_sql(tail: &str) -> String {
@@ -1277,42 +1378,43 @@ fn job_select_sql(tail: &str) -> String {
             event_id,
             event_pubkey,
             event_kind,
-            relay_policy_json,
+            target_policy_json,
             delivery_policy_json,
-            effective_relay_count,
+            effective_target_count,
             requested_at_ms,
             completed_at_ms,
             last_error
-        FROM publish_proxy_jobs
+        FROM transport_publish_jobs
         {tail}
         "#
     )
 }
 
 fn principal_from_row(row: &Row<'_>) -> Result<PublishPrincipal, rusqlite::Error> {
-    let visibility: String = row.get(6)?;
+    let visibility: String = row.get(7)?;
     Ok(PublishPrincipal {
         principal_id: row.get(0)?,
         label: row.get(1)?,
         allowed_pubkeys: json_column(row, 2)?,
         allowed_kinds: json_column(row, 3)?,
-        allowed_relay_policies: json_column(row, 4)?,
-        allow_request_relays: row.get(5)?,
+        allowed_target_policies: json_column(row, 4)?,
+        allowed_nostr_source_policies: json_column(row, 5)?,
+        allow_request_targets: row.get(6)?,
         job_visibility: PublishJobVisibility::from_str(visibility.as_str())
-            .map_err(|error| conversion_error(6, error))?,
-        expires_at_unix: row.get(7)?,
+            .map_err(|error| conversion_error(7, error))?,
+        expires_at_unix: row.get(8)?,
     })
 }
 
 fn job_from_row(row: &Row<'_>) -> Result<PublishJobRow, rusqlite::Error> {
-    let status: PublishJobStatus = json_text(row, 3)?;
-    let relay_policy: PublishRelayPolicy = json_text(row, 7)?;
-    let delivery_policy: PublishDeliveryPolicy = json_text(row, 8)?;
-    let relay_count: i64 = row.get(9)?;
+    let status: TransportPublishJobStatus = json_text(row, 3)?;
+    let target_policy: TransportPublishTargetPolicy = json_text(row, 7)?;
+    let delivery_policy: TransportPublishDeliveryPolicy = json_text(row, 8)?;
+    let target_count: i64 = row.get(9)?;
     Ok(PublishJobRow {
         principal_id: row.get(1)?,
         request_fingerprint: row.get(2)?,
-        view: PublishJobView {
+        view: TransportPublishJobView {
             job_id: row.get(0)?,
             status,
             terminal: false,
@@ -1320,73 +1422,76 @@ fn job_from_row(row: &Row<'_>) -> Result<PublishJobRow, rusqlite::Error> {
             event_id: row.get(4)?,
             pubkey: row.get(5)?,
             event_kind: row.get::<_, i64>(6)? as u32,
-            relay_policy,
+            target_policy,
             delivery_policy,
-            relay_count: usize::try_from(relay_count).unwrap_or(0),
+            target_count: usize::try_from(target_count).unwrap_or(0),
             acknowledged_count: 0,
             retryable_count: 0,
             terminal_count: 0,
             requested_at_ms: row.get(10)?,
             completed_at_ms: row.get(11)?,
             last_error: row.get(12)?,
-            relays: Vec::new(),
+            targets: Vec::new(),
         },
     })
 }
 
-fn relay_outcome_from_row(row: &Row<'_>) -> Result<PublishRelayOutcome, rusqlite::Error> {
-    let source: PublishRelaySource = json_text(row, 1)?;
-    let outcome_kind: PublishRelayOutcomeKind = json_text(row, 3)?;
-    Ok(PublishRelayOutcome {
-        relay_url: row.get(0)?,
+fn target_outcome_from_row(
+    row: &Row<'_>,
+) -> Result<TransportPublishTargetOutcome, rusqlite::Error> {
+    let source: TransportPublishTargetSource = json_text(row, 2)?;
+    let outcome_kind: TransportPublishOutcomeKind = json_text(row, 4)?;
+    Ok(TransportPublishTargetOutcome {
+        transport_kind: row.get(0)?,
+        endpoint_uri: row.get(1)?,
         source,
-        attempted: row.get(2)?,
+        attempted: row.get(3)?,
         outcome_kind,
-        message: row.get(4)?,
+        message: row.get(5)?,
         latency_ms: row
-            .get::<_, Option<i64>>(5)?
+            .get::<_, Option<i64>>(6)?
             .map(|latency| u64::try_from(latency).unwrap_or(0)),
     })
 }
 
-fn finalize_job_view(view: &mut PublishJobView) {
+fn finalize_job_view(view: &mut TransportPublishJobView) {
     view.acknowledged_count = view
-        .relays
+        .targets
         .iter()
-        .filter(|relay| relay.outcome_kind.counts_toward_quorum())
+        .filter(|relay| relay.outcome_kind.counts_toward_satisfaction())
         .count();
     view.retryable_count = view
-        .relays
+        .targets
         .iter()
         .filter(|relay| relay.outcome_kind.is_retryable())
         .count();
     view.terminal_count = view
-        .relays
+        .targets
         .iter()
         .filter(|relay| relay.outcome_kind.is_terminal_failure())
         .count();
     view.terminal = matches!(
         view.status,
-        PublishJobStatus::DeliverySatisfied
-            | PublishJobStatus::DeliveryUnsatisfiedTerminal
-            | PublishJobStatus::Rejected
+        TransportPublishJobStatus::DeliverySatisfied
+            | TransportPublishJobStatus::DeliveryUnsatisfiedTerminal
+            | TransportPublishJobStatus::Rejected
     );
-    view.delivery_satisfied = view.status == PublishJobStatus::DeliverySatisfied;
+    view.delivery_satisfied = view.status == TransportPublishJobStatus::DeliverySatisfied;
 }
 
-fn validate_principal_init(input: &PublishPrincipalInit) -> Result<(), PublishProxyError> {
+fn validate_principal_init(input: &PublishPrincipalInit) -> Result<(), TransportPublishError> {
     if input.label.trim().is_empty() {
-        return Err(PublishProxyError::InvalidScope(
+        return Err(TransportPublishError::InvalidScope(
             "principal label must not be empty".to_owned(),
         ));
     }
     if !input.token_hash.starts_with(TOKEN_HASH_PREFIX) {
-        return Err(PublishProxyError::InvalidScope(
+        return Err(TransportPublishError::InvalidScope(
             "principal token hash must use sha256 prefix".to_owned(),
         ));
     }
     if input.allowed_pubkeys.is_empty() {
-        return Err(PublishProxyError::InvalidScope(
+        return Err(TransportPublishError::InvalidScope(
             "principal must include at least one allowed pubkey".to_owned(),
         ));
     }
@@ -1394,7 +1499,7 @@ fn validate_principal_init(input: &PublishPrincipalInit) -> Result<(), PublishPr
         ensure_lower_hex("allowed_pubkey", pubkey, 64)?;
     }
     if input.allowed_kinds.is_empty() {
-        return Err(PublishProxyError::InvalidScope(
+        return Err(TransportPublishError::InvalidScope(
             "principal must include at least one allowed kind".to_owned(),
         ));
     }
@@ -1403,13 +1508,22 @@ fn validate_principal_init(input: &PublishPrincipalInit) -> Result<(), PublishPr
         .iter()
         .any(|kind| *kind > u16::MAX as u32)
     {
-        return Err(PublishProxyError::InvalidScope(
-            "allowed kind exceeds publish proxy range".to_owned(),
+        return Err(TransportPublishError::InvalidScope(
+            "allowed kind exceeds transport publish range".to_owned(),
         ));
     }
-    if input.allowed_relay_policies.is_empty() {
-        return Err(PublishProxyError::InvalidScope(
-            "principal must include at least one allowed relay policy".to_owned(),
+    if input.allowed_target_policies.is_empty() {
+        return Err(TransportPublishError::InvalidScope(
+            "principal must include at least one allowed target policy".to_owned(),
+        ));
+    }
+    if input
+        .allowed_target_policies
+        .contains(&TransportPublishTargetPolicyName::Nostr)
+        && input.allowed_nostr_source_policies.is_empty()
+    {
+        return Err(TransportPublishError::InvalidScope(
+            "principal must include at least one allowed Nostr source policy".to_owned(),
         ));
     }
     Ok(())
@@ -1435,28 +1549,44 @@ fn hex_lower(bytes: &[u8]) -> String {
     output
 }
 
-pub fn parse_relay_policy(value: &str) -> Result<PublishRelayPolicy, PublishProxyError> {
+pub fn parse_nostr_source_policy(
+    value: &str,
+) -> Result<NostrPublishTargetSourcePolicy, TransportPublishError> {
     match value {
-        "explicit_only" => Ok(PublishRelayPolicy::ExplicitOnly),
+        "explicit_only" => Ok(NostrPublishTargetSourcePolicy::ExplicitOnly),
         "request_then_author_write_then_daemon_default" => {
-            Ok(PublishRelayPolicy::RequestThenAuthorWriteThenDaemonDefault)
+            Ok(NostrPublishTargetSourcePolicy::RequestThenAuthorWriteThenDaemonDefault)
         }
-        "author_write_then_daemon_default" => Ok(PublishRelayPolicy::AuthorWriteThenDaemonDefault),
-        "daemon_default_only" => Ok(PublishRelayPolicy::DaemonDefaultOnly),
-        other => Err(PublishProxyError::InvalidScope(format!(
-            "unknown relay policy `{other}`"
+        "author_write_then_daemon_default" => {
+            Ok(NostrPublishTargetSourcePolicy::AuthorWriteThenDaemonDefault)
+        }
+        "daemon_default_only" => Ok(NostrPublishTargetSourcePolicy::DaemonDefaultOnly),
+        other => Err(TransportPublishError::InvalidScope(format!(
+            "unknown Nostr source policy `{other}`"
+        ))),
+    }
+}
+
+pub fn parse_target_policy(
+    value: &str,
+) -> Result<TransportPublishTargetPolicyName, TransportPublishError> {
+    match value {
+        "explicit_targets" => Ok(TransportPublishTargetPolicyName::ExplicitTargets),
+        "nostr" => Ok(TransportPublishTargetPolicyName::Nostr),
+        other => Err(TransportPublishError::InvalidScope(format!(
+            "unknown target policy `{other}`"
         ))),
     }
 }
 
 fn signed_event_from_wire(
     event: &SignedNostrEventWire,
-) -> Result<RadrootsSignedNostrEvent, PublishProxyError> {
+) -> Result<RadrootsSignedNostrEvent, TransportPublishError> {
     event
         .validate()
-        .map_err(|error| PublishProxyError::InvalidSignedEvent(error.to_string()))?;
+        .map_err(|error| TransportPublishError::InvalidSignedEvent(error.to_string()))?;
     let created_at = u32::try_from(event.created_at).map_err(|_| {
-        PublishProxyError::InvalidSignedEvent(
+        TransportPublishError::InvalidSignedEvent(
             "signed event created_at exceeds daemon-supported range".to_owned(),
         )
     })?;
@@ -1472,7 +1602,7 @@ fn signed_event_from_wire(
     };
     match radroots_nostr_verify_event(&radroots_event) {
         RadrootsNostrEventVerification::Verified => {}
-        verification => return Err(PublishProxyError::SignedEventVerification(verification)),
+        verification => return Err(TransportPublishError::SignedEventVerification(verification)),
     }
     RadrootsSignedNostrEvent::new(RadrootsSignedNostrEventParts {
         id: event.id.clone(),
@@ -1484,34 +1614,28 @@ fn signed_event_from_wire(
         sig: event.sig.clone(),
         raw_json,
     })
-    .map_err(PublishProxyError::from)
+    .map_err(TransportPublishError::from)
 }
 
 fn request_intent_fingerprint(
     principal_id: &str,
     canonical_event_json: &str,
-    request: &PublishEventRequest,
+    request: &TransportPublishEventRequest,
     effective_timeout_ms: u64,
-) -> Result<String, PublishProxyError> {
+) -> Result<String, TransportPublishError> {
     #[derive(Serialize)]
     struct FingerprintInput<'a> {
         principal_id: &'a str,
         canonical_event_json: &'a str,
-        relays: Vec<String>,
-        relay_policy: &'a PublishRelayPolicy,
-        delivery_policy: &'a PublishDeliveryPolicy,
+        target_policy: &'a TransportPublishTargetPolicy,
+        delivery_policy: &'a TransportPublishDeliveryPolicy,
         effective_timeout_ms: u64,
     }
 
     let input = FingerprintInput {
         principal_id,
         canonical_event_json,
-        relays: request
-            .relays
-            .iter()
-            .map(|relay| relay.trim().to_owned())
-            .collect(),
-        relay_policy: &request.relay_policy,
+        target_policy: &request.target_policy,
         delivery_policy: &request.delivery_policy,
         effective_timeout_ms,
     };
@@ -1522,16 +1646,16 @@ fn request_intent_fingerprint(
 }
 
 fn effective_publish_timeout_ms(
-    config: &PublishProxyConfig,
+    config: &TransportPublishConfig,
     timeout_ms: Option<u64>,
-) -> Result<u64, PublishProxyError> {
+) -> Result<u64, TransportPublishError> {
     let max_timeout_ms = config.connect_timeout_secs.saturating_mul(1_000);
     match timeout_ms {
-        Some(0) => Err(PublishProxyError::InvalidSignedEvent(
+        Some(0) => Err(TransportPublishError::InvalidSignedEvent(
             "timeout_ms must be greater than zero".to_owned(),
         )),
         Some(timeout_ms) if timeout_ms > max_timeout_ms => {
-            Err(PublishProxyError::InvalidSignedEvent(format!(
+            Err(TransportPublishError::InvalidSignedEvent(format!(
                 "timeout_ms must be at most {max_timeout_ms}"
             )))
         }
@@ -1543,23 +1667,59 @@ fn effective_publish_timeout_ms(
 fn push_resolved_relay(
     targets: &mut Vec<ResolvedPublishRelay>,
     url: RadrootsRelayUrl,
-    source: PublishRelaySource,
+    source: TransportPublishTargetSource,
 ) {
     if !targets.iter().any(|target| target.url == url) {
         targets.push(ResolvedPublishRelay { url, source });
     }
 }
 
+fn reticulum_preview_outcome(target: &TransportPublishTarget) -> TransportPublishTargetOutcome {
+    let outcome_kind = match target.preview_behavior.unwrap_or_default() {
+        TransportPublishPreviewBehavior::RejectDeliveryAttempts => {
+            TransportPublishOutcomeKind::Unavailable
+        }
+        TransportPublishPreviewBehavior::DeferDeliveryPlans => {
+            TransportPublishOutcomeKind::Deferred
+        }
+    };
+    TransportPublishTargetOutcome {
+        transport_kind: TRANSPORT_KIND_RETICULUM.to_owned(),
+        endpoint_uri: target.endpoint_uri.trim().to_owned(),
+        source: TransportPublishTargetSource::ReticulumPreview,
+        attempted: false,
+        outcome_kind,
+        message: Some(
+            "reticulum transport is registered for preview but not routable by radrootsd"
+                .to_owned(),
+        ),
+        latency_ms: None,
+    }
+}
+
+fn unsupported_transport_outcome(target: &TransportPublishTarget) -> TransportPublishTargetOutcome {
+    TransportPublishTargetOutcome {
+        transport_kind: target.transport_kind.trim().to_owned(),
+        endpoint_uri: target.endpoint_uri.trim().to_owned(),
+        source: TransportPublishTargetSource::Request,
+        attempted: false,
+        outcome_kind: TransportPublishOutcomeKind::Unsupported,
+        message: Some("transport kind is not supported by radrootsd transport publish".to_owned()),
+        latency_ms: None,
+    }
+}
+
 fn relay_resolution_connection_failure(
     relay_url: impl Into<String>,
-    source: PublishRelaySource,
+    source: TransportPublishTargetSource,
     message: impl Into<String>,
-) -> PublishRelayOutcome {
-    PublishRelayOutcome {
-        relay_url: relay_url.into(),
+) -> TransportPublishTargetOutcome {
+    TransportPublishTargetOutcome {
+        transport_kind: TRANSPORT_KIND_NOSTR.to_owned(),
+        endpoint_uri: relay_url.into(),
         source,
         attempted: false,
-        outcome_kind: PublishRelayOutcomeKind::ConnectionFailed,
+        outcome_kind: TransportPublishOutcomeKind::ConnectionFailed,
         message: Some(message.into()),
         latency_ms: None,
     }
@@ -1587,12 +1747,10 @@ fn relay_socket_target(url: &RadrootsRelayUrl) -> Result<(String, u16), std::io:
     Ok((host, port))
 }
 
-fn relay_url_policy(config: &PublishProxyConfig) -> RadrootsRelayUrlPolicy {
-    match config.relay_url_policy {
-        crate::app::config::PublishProxyRelayUrlPolicy::Public => RadrootsRelayUrlPolicy::Public,
-        crate::app::config::PublishProxyRelayUrlPolicy::Localhost => {
-            RadrootsRelayUrlPolicy::Localhost
-        }
+fn relay_url_policy(config: &TransportPublishConfig) -> RadrootsRelayUrlPolicy {
+    match config.nostr.relay_url_policy {
+        crate::app::config::NostrRelayUrlPolicy::Public => RadrootsRelayUrlPolicy::Public,
+        crate::app::config::NostrRelayUrlPolicy::Localhost => RadrootsRelayUrlPolicy::Localhost,
     }
 }
 
@@ -1621,15 +1779,16 @@ fn author_write_relays_from_nip65_event(
 
 fn publish_outcome_from_receipt(
     receipt: RadrootsRelayPublishRelayReceipt,
-    source_by_relay: &BTreeMap<String, PublishRelaySource>,
+    source_by_relay: &BTreeMap<String, TransportPublishTargetSource>,
     latency_ms: Option<u64>,
-) -> PublishRelayOutcome {
+) -> TransportPublishTargetOutcome {
     let source = source_by_relay
         .get(receipt.relay_url.as_str())
         .copied()
-        .unwrap_or(PublishRelaySource::DaemonDefault);
-    PublishRelayOutcome {
-        relay_url: receipt.relay_url,
+        .unwrap_or(TransportPublishTargetSource::DaemonDefault);
+    TransportPublishTargetOutcome {
+        transport_kind: TRANSPORT_KIND_NOSTR.to_owned(),
+        endpoint_uri: receipt.relay_url,
         source,
         attempted: receipt.attempted,
         outcome_kind: publish_outcome_kind(receipt.outcome.kind),
@@ -1638,50 +1797,69 @@ fn publish_outcome_from_receipt(
     }
 }
 
-fn publish_outcome_kind(kind: RadrootsRelayOutcomeKind) -> PublishRelayOutcomeKind {
+fn publish_outcome_kind(kind: RadrootsRelayOutcomeKind) -> TransportPublishOutcomeKind {
     match kind {
-        RadrootsRelayOutcomeKind::Accepted => PublishRelayOutcomeKind::Accepted,
-        RadrootsRelayOutcomeKind::DuplicateAccepted => PublishRelayOutcomeKind::DuplicateAccepted,
-        RadrootsRelayOutcomeKind::Blocked => PublishRelayOutcomeKind::Blocked,
-        RadrootsRelayOutcomeKind::RateLimited => PublishRelayOutcomeKind::RateLimited,
-        RadrootsRelayOutcomeKind::Invalid => PublishRelayOutcomeKind::Invalid,
-        RadrootsRelayOutcomeKind::PowRequired => PublishRelayOutcomeKind::PowRequired,
-        RadrootsRelayOutcomeKind::Restricted => PublishRelayOutcomeKind::Restricted,
-        RadrootsRelayOutcomeKind::AuthRequired => PublishRelayOutcomeKind::AuthRequired,
-        RadrootsRelayOutcomeKind::Muted => PublishRelayOutcomeKind::Muted,
-        RadrootsRelayOutcomeKind::Unsupported => PublishRelayOutcomeKind::Unsupported,
-        RadrootsRelayOutcomeKind::PaymentRequired => PublishRelayOutcomeKind::PaymentRequired,
-        RadrootsRelayOutcomeKind::Error => PublishRelayOutcomeKind::Error,
-        RadrootsRelayOutcomeKind::Timeout => PublishRelayOutcomeKind::Timeout,
-        RadrootsRelayOutcomeKind::ConnectionFailed => PublishRelayOutcomeKind::ConnectionFailed,
-        RadrootsRelayOutcomeKind::RelayUrlRejected => PublishRelayOutcomeKind::RelayUrlRejected,
-        RadrootsRelayOutcomeKind::SkippedAlreadyAccepted => {
-            PublishRelayOutcomeKind::SkippedAlreadyAccepted
+        RadrootsRelayOutcomeKind::Accepted => TransportPublishOutcomeKind::Accepted,
+        RadrootsRelayOutcomeKind::DuplicateAccepted => {
+            TransportPublishOutcomeKind::DuplicateAccepted
         }
-        RadrootsRelayOutcomeKind::Unknown => PublishRelayOutcomeKind::Unknown,
+        RadrootsRelayOutcomeKind::Blocked => TransportPublishOutcomeKind::Blocked,
+        RadrootsRelayOutcomeKind::RateLimited => TransportPublishOutcomeKind::RateLimited,
+        RadrootsRelayOutcomeKind::Invalid => TransportPublishOutcomeKind::Invalid,
+        RadrootsRelayOutcomeKind::PowRequired => TransportPublishOutcomeKind::PowRequired,
+        RadrootsRelayOutcomeKind::Restricted => TransportPublishOutcomeKind::Restricted,
+        RadrootsRelayOutcomeKind::AuthRequired => TransportPublishOutcomeKind::AuthRequired,
+        RadrootsRelayOutcomeKind::Muted => TransportPublishOutcomeKind::Muted,
+        RadrootsRelayOutcomeKind::Unsupported => TransportPublishOutcomeKind::Unsupported,
+        RadrootsRelayOutcomeKind::PaymentRequired => TransportPublishOutcomeKind::PaymentRequired,
+        RadrootsRelayOutcomeKind::Error => TransportPublishOutcomeKind::Error,
+        RadrootsRelayOutcomeKind::Timeout => TransportPublishOutcomeKind::Timeout,
+        RadrootsRelayOutcomeKind::ConnectionFailed => TransportPublishOutcomeKind::ConnectionFailed,
+        RadrootsRelayOutcomeKind::RelayUrlRejected => TransportPublishOutcomeKind::TargetRejected,
+        RadrootsRelayOutcomeKind::SkippedAlreadyAccepted => {
+            TransportPublishOutcomeKind::SkippedAlreadyAccepted
+        }
+        RadrootsRelayOutcomeKind::Unknown => TransportPublishOutcomeKind::Unknown,
+    }
+}
+
+fn satisfaction_policy_from_delivery_policy(
+    delivery_policy: &TransportPublishDeliveryPolicy,
+    target_count: usize,
+    nostr_target_count: usize,
+) -> RadrootsTransportSatisfactionPolicy {
+    match delivery_policy {
+        TransportPublishDeliveryPolicy::Any => RadrootsTransportSatisfactionPolicy::AnyTarget,
+        TransportPublishDeliveryPolicy::All => RadrootsTransportSatisfactionPolicy::AllTargets,
+        TransportPublishDeliveryPolicy::Quorum { quorum } => {
+            let required = (*quorum).min(target_count).min(nostr_target_count).max(1);
+            RadrootsTransportSatisfactionPolicy::AtLeast(
+                u16::try_from(required).unwrap_or(u16::MAX),
+            )
+        }
     }
 }
 
 fn delivery_status(
-    delivery_policy: &PublishDeliveryPolicy,
-    relay_count: usize,
-    outcomes: &[PublishRelayOutcome],
-) -> PublishJobStatus {
-    let required = delivery_policy.required_ack_count(relay_count);
+    delivery_policy: &TransportPublishDeliveryPolicy,
+    target_count: usize,
+    outcomes: &[TransportPublishTargetOutcome],
+) -> TransportPublishJobStatus {
+    let required = delivery_policy.required_target_count(target_count);
     let acknowledged = outcomes
         .iter()
-        .filter(|outcome| outcome.outcome_kind.counts_toward_quorum())
+        .filter(|outcome| outcome.outcome_kind.counts_toward_satisfaction())
         .count();
     if acknowledged >= required {
-        return PublishJobStatus::DeliverySatisfied;
+        return TransportPublishJobStatus::DeliverySatisfied;
     }
     if outcomes
         .iter()
         .any(|outcome| outcome.outcome_kind.is_retryable())
     {
-        PublishJobStatus::DeliveryUnsatisfiedRetryable
+        TransportPublishJobStatus::DeliveryUnsatisfiedRetryable
     } else {
-        PublishJobStatus::DeliveryUnsatisfiedTerminal
+        TransportPublishJobStatus::DeliveryUnsatisfiedTerminal
     }
 }
 
@@ -1699,7 +1877,7 @@ fn timeout_receipts(targets: &[ResolvedPublishRelay]) -> Vec<RadrootsRelayPublis
 
 fn transport_error_receipts(
     targets: &[ResolvedPublishRelay],
-    error: PublishProxyError,
+    error: TransportPublishError,
 ) -> Vec<RadrootsRelayPublishRelayReceipt> {
     let message = format!("error: {error}");
     targets
@@ -1713,7 +1891,7 @@ fn transport_error_receipts(
         .collect()
 }
 
-pub fn write_token_file(path: &Path, token: &str) -> Result<(), PublishProxyError> {
+pub fn write_token_file(path: &Path, token: &str) -> Result<(), TransportPublishError> {
     if let Some(parent) = path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
@@ -1738,7 +1916,7 @@ fn ensure_lower_hex(
     field: &str,
     value: &str,
     expected_len: usize,
-) -> Result<(), PublishProxyError> {
+) -> Result<(), TransportPublishError> {
     if value.len() == expected_len
         && value
             .bytes()
@@ -1746,7 +1924,7 @@ fn ensure_lower_hex(
     {
         Ok(())
     } else {
-        Err(PublishProxyError::InvalidScope(format!(
+        Err(TransportPublishError::InvalidScope(format!(
             "{field} must be {expected_len} lowercase hex characters"
         )))
     }
@@ -1793,20 +1971,24 @@ fn current_unix_millis() -> i64 {
 mod tests {
     use super::{
         PublishJobInsert, PublishJobVisibility, PublishPrincipal, PublishPrincipalInit,
-        PublishProxy, PublishProxyError, PublishProxyStore, generate_bearer_token,
-        hash_bearer_token, parse_relay_policy,
+        TransportPublish, TransportPublishError, TransportPublishStore, generate_bearer_token,
+        hash_bearer_token, parse_nostr_source_policy,
     };
-    use crate::app::config::{PublishProxyConfig, PublishProxyRelayUrlPolicy};
+    use crate::app::config::{
+        NostrRelayUrlPolicy, TransportPublishConfig, TransportPublishNostrConfig,
+    };
     use nostr::JsonUtil;
     use radroots_identity::RadrootsIdentity;
     use radroots_nostr::prelude::{
         RadrootsNostrEventVerification, RadrootsNostrTimestamp, radroots_nostr_build_event,
     };
-    use radroots_publish_proxy_protocol::{
-        PublishDeliveryPolicy, PublishEventRequest, PublishJobStatus, PublishRelayOutcomeKind,
-        PublishRelayPolicy, PublishRelaySource, SignedNostrEventWire,
-    };
     use radroots_relay_transport::{RadrootsMockRelayPublishAdapter, RadrootsRelayOutcome};
+    use radroots_transport_publish_protocol::{
+        NostrPublishTargetSourcePolicy, SignedNostrEventWire, TransportPublishDeliveryPolicy,
+        TransportPublishEventRequest, TransportPublishJobStatus, TransportPublishOutcomeKind,
+        TransportPublishTargetPolicy, TransportPublishTargetPolicyName,
+        TransportPublishTargetSource,
+    };
     use std::collections::BTreeMap;
     use std::net::{IpAddr, Ipv4Addr};
     use std::sync::Arc;
@@ -1827,12 +2009,14 @@ mod tests {
         }
     }
 
-    fn request(pubkey: &str, kind: u32) -> PublishEventRequest {
-        PublishEventRequest {
+    fn request(pubkey: &str, kind: u32) -> TransportPublishEventRequest {
+        TransportPublishEventRequest {
             event: event(pubkey, kind),
-            relays: Vec::new(),
-            relay_policy: PublishRelayPolicy::DaemonDefaultOnly,
-            delivery_policy: PublishDeliveryPolicy::Any,
+            target_policy: TransportPublishTargetPolicy::nostr(
+                NostrPublishTargetSourcePolicy::DaemonDefaultOnly,
+                Vec::new(),
+            ),
+            delivery_policy: TransportPublishDeliveryPolicy::Any,
             idempotency_key: Some("idem-1".to_owned()),
             timeout_ms: None,
         }
@@ -1854,32 +2038,31 @@ mod tests {
     fn publish_request(
         event: SignedNostrEventWire,
         relays: Vec<String>,
-        relay_policy: PublishRelayPolicy,
-        delivery_policy: PublishDeliveryPolicy,
+        source_policy: NostrPublishTargetSourcePolicy,
+        delivery_policy: TransportPublishDeliveryPolicy,
         idempotency_key: Option<&str>,
-    ) -> PublishEventRequest {
-        PublishEventRequest {
+    ) -> TransportPublishEventRequest {
+        TransportPublishEventRequest {
             event,
-            relays,
-            relay_policy,
+            target_policy: TransportPublishTargetPolicy::nostr(source_policy, relays),
             delivery_policy,
             idempotency_key: idempotency_key.map(str::to_owned),
             timeout_ms: Some(5_000),
         }
     }
 
-    fn publish_proxy(
-        config: PublishProxyConfig,
-    ) -> (PublishProxy, RadrootsMockRelayPublishAdapter) {
-        publish_proxy_with_resolver(config, Arc::new(StaticPublishRelayResolver::new()))
+    fn transport_publish(
+        config: TransportPublishConfig,
+    ) -> (TransportPublish, RadrootsMockRelayPublishAdapter) {
+        transport_publish_with_resolver(config, Arc::new(StaticPublishRelayResolver::new()))
     }
 
-    fn publish_proxy_with_resolver(
-        config: PublishProxyConfig,
+    fn transport_publish_with_resolver(
+        config: TransportPublishConfig,
         resolver: Arc<dyn super::PublishRelayResolver>,
-    ) -> (PublishProxy, RadrootsMockRelayPublishAdapter) {
+    ) -> (TransportPublish, RadrootsMockRelayPublishAdapter) {
         let adapter = RadrootsMockRelayPublishAdapter::new();
-        let proxy = PublishProxy::memory(config)
+        let proxy = TransportPublish::memory(config)
             .expect("proxy")
             .with_relay_resolver(resolver)
             .with_publisher(Arc::new(adapter.clone()));
@@ -1887,10 +2070,10 @@ mod tests {
     }
 
     fn principal(
-        proxy: &PublishProxy,
+        proxy: &TransportPublish,
         pubkey: String,
-        policies: Vec<PublishRelayPolicy>,
-        allow_request_relays: bool,
+        nostr_source_policies: Vec<NostrPublishTargetSourcePolicy>,
+        allow_request_targets: bool,
         visibility: PublishJobVisibility,
     ) -> PublishPrincipal {
         proxy
@@ -1900,18 +2083,22 @@ mod tests {
                 token_hash: hash_bearer_token(generate_bearer_token().as_str()),
                 allowed_pubkeys: vec![pubkey],
                 allowed_kinds: vec![30_402],
-                allowed_relay_policies: policies,
-                allow_request_relays,
+                allowed_target_policies: vec![TransportPublishTargetPolicyName::Nostr],
+                allowed_nostr_source_policies: nostr_source_policies,
+                allow_request_targets,
                 job_visibility: visibility,
                 expires_at_unix: None,
             })
             .expect("principal")
     }
 
-    fn config_with_defaults(relays: Vec<&str>) -> PublishProxyConfig {
-        PublishProxyConfig {
-            daemon_default_publish_relays: relays.into_iter().map(str::to_owned).collect(),
-            ..PublishProxyConfig::default()
+    fn config_with_defaults(relays: Vec<&str>) -> TransportPublishConfig {
+        TransportPublishConfig {
+            nostr: TransportPublishNostrConfig {
+                daemon_default_relays: relays.into_iter().map(str::to_owned).collect(),
+                ..TransportPublishNostrConfig::default()
+            },
+            ..TransportPublishConfig::default()
         }
     }
 
@@ -1978,24 +2165,24 @@ mod tests {
     #[test]
     fn token_generation_and_hashing_do_not_store_plaintext() {
         let token = generate_bearer_token();
-        assert!(token.starts_with("rrd_pp_"));
+        assert!(token.starts_with("rrd_tp_"));
         let hash = hash_bearer_token(token.as_str());
         assert!(hash.starts_with("sha256:"));
         assert!(!hash.contains(token.as_str()));
     }
 
     #[test]
-    fn relay_policy_parser_accepts_contract_values() {
+    fn nostr_source_policy_parser_accepts_contract_values() {
         assert_eq!(
-            parse_relay_policy("explicit_only").expect("policy"),
-            PublishRelayPolicy::ExplicitOnly
+            parse_nostr_source_policy("explicit_only").expect("policy"),
+            NostrPublishTargetSourcePolicy::ExplicitOnly
         );
-        assert!(parse_relay_policy("unknown").is_err());
+        assert!(parse_nostr_source_policy("unknown").is_err());
     }
 
     #[test]
     fn storage_authenticates_hashed_tokens_and_scopes_jobs() {
-        let store = PublishProxyStore::memory().expect("store");
+        let store = TransportPublishStore::memory().expect("store");
         let token = generate_bearer_token();
         let token_hash = hash_bearer_token(token.as_str());
         let principal = store
@@ -2004,8 +2191,11 @@ mod tests {
                 token_hash: token_hash.clone(),
                 allowed_pubkeys: vec!["a".repeat(64)],
                 allowed_kinds: vec![30_402],
-                allowed_relay_policies: vec![PublishRelayPolicy::DaemonDefaultOnly],
-                allow_request_relays: false,
+                allowed_target_policies: vec![TransportPublishTargetPolicyName::Nostr],
+                allowed_nostr_source_policies: vec![
+                    NostrPublishTargetSourcePolicy::DaemonDefaultOnly,
+                ],
+                allow_request_targets: false,
                 job_visibility: PublishJobVisibility::Own,
                 expires_at_unix: None,
             })
@@ -2029,7 +2219,7 @@ mod tests {
                 idempotency_key: Some("idem-1".to_owned()),
                 request: accepted.clone(),
                 request_fingerprint: "fingerprint-1".to_owned(),
-                effective_relay_count: 1,
+                effective_target_count: 1,
             })
             .expect("record job");
         assert!(!response.deduplicated);
@@ -2039,7 +2229,7 @@ mod tests {
                 idempotency_key: Some("idem-1".to_owned()),
                 request: accepted,
                 request_fingerprint: "fingerprint-1".to_owned(),
-                effective_relay_count: 1,
+                effective_target_count: 1,
             })
             .expect("dedupe");
         assert!(duplicate.deduplicated);
@@ -2061,15 +2251,18 @@ mod tests {
         let pubkey = "a".repeat(64);
         let request = request(pubkey.as_str(), 30_402);
         let job_id = {
-            let store = PublishProxyStore::open(database_path.clone()).expect("store");
+            let store = TransportPublishStore::open(database_path.clone()).expect("store");
             let principal = store
                 .create_principal(PublishPrincipalInit {
                     label: "tester".to_owned(),
                     token_hash,
                     allowed_pubkeys: vec![pubkey],
                     allowed_kinds: vec![30_402],
-                    allowed_relay_policies: vec![PublishRelayPolicy::DaemonDefaultOnly],
-                    allow_request_relays: false,
+                    allowed_target_policies: vec![TransportPublishTargetPolicyName::Nostr],
+                    allowed_nostr_source_policies: vec![
+                        NostrPublishTargetSourcePolicy::DaemonDefaultOnly,
+                    ],
+                    allow_request_targets: false,
                     job_visibility: PublishJobVisibility::Own,
                     expires_at_unix: None,
                 })
@@ -2080,35 +2273,35 @@ mod tests {
                     idempotency_key: Some("idem-interrupted".to_owned()),
                     request,
                     request_fingerprint: "fingerprint-interrupted".to_owned(),
-                    effective_relay_count: 1,
+                    effective_target_count: 1,
                 })
                 .expect("record job");
-            assert_eq!(response.job.status, PublishJobStatus::Publishing);
+            assert_eq!(response.job.status, TransportPublishJobStatus::Publishing);
             response.job.job_id
         };
 
-        let reopened = PublishProxyStore::open(database_path).expect("reopen store");
+        let reopened = TransportPublishStore::open(database_path).expect("reopen store");
         let recovered = reopened.job_by_id(job_id.as_str()).expect("recovered job");
         assert_eq!(
             recovered.status,
-            PublishJobStatus::DeliveryUnsatisfiedRetryable
+            TransportPublishJobStatus::DeliveryUnsatisfiedRetryable
         );
         assert_eq!(
             recovered.last_error.as_deref(),
             Some("publish_attempt_interrupted")
         );
         assert!(recovered.completed_at_ms.is_some());
-        assert!(recovered.relays.is_empty());
+        assert!(recovered.targets.is_empty());
     }
 
     #[tokio::test]
     async fn publish_event_verifies_and_records_daemon_default_outcome() {
         let identity = RadrootsIdentity::generate();
-        let (proxy, adapter) = publish_proxy(config_with_defaults(vec![RELAY_PRIMARY]));
+        let (proxy, adapter) = transport_publish(config_with_defaults(vec![RELAY_PRIMARY]));
         let principal = principal(
             &proxy,
             identity.public_key_hex(),
-            vec![PublishRelayPolicy::DaemonDefaultOnly],
+            vec![NostrPublishTargetSourcePolicy::DaemonDefaultOnly],
             false,
             PublishJobVisibility::Own,
         );
@@ -2120,8 +2313,8 @@ mod tests {
                 publish_request(
                     event,
                     Vec::new(),
-                    PublishRelayPolicy::DaemonDefaultOnly,
-                    PublishDeliveryPolicy::Any,
+                    NostrPublishTargetSourcePolicy::DaemonDefaultOnly,
+                    TransportPublishDeliveryPolicy::Any,
                     Some("idem-valid"),
                 ),
             )
@@ -2129,13 +2322,16 @@ mod tests {
             .expect("publish");
 
         assert!(!response.deduplicated);
-        assert_eq!(response.job.status, PublishJobStatus::DeliverySatisfied);
-        assert_eq!(response.job.relay_count, 1);
-        assert_eq!(response.job.acknowledged_count, 1);
-        assert_eq!(response.job.relays[0].relay_url, RELAY_PRIMARY);
         assert_eq!(
-            response.job.relays[0].source,
-            PublishRelaySource::DaemonDefault
+            response.job.status,
+            TransportPublishJobStatus::DeliverySatisfied
+        );
+        assert_eq!(response.job.target_count, 1);
+        assert_eq!(response.job.acknowledged_count, 1);
+        assert_eq!(response.job.targets[0].endpoint_uri, RELAY_PRIMARY);
+        assert_eq!(
+            response.job.targets[0].source,
+            TransportPublishTargetSource::DaemonDefault
         );
         assert_eq!(adapter.captured_raw_events(), vec![raw_event]);
     }
@@ -2143,11 +2339,11 @@ mod tests {
     #[tokio::test]
     async fn publish_event_rejects_tampered_content_before_publish() {
         let identity = RadrootsIdentity::generate();
-        let (proxy, adapter) = publish_proxy(config_with_defaults(vec![RELAY_PRIMARY]));
+        let (proxy, adapter) = transport_publish(config_with_defaults(vec![RELAY_PRIMARY]));
         let principal = principal(
             &proxy,
             identity.public_key_hex(),
-            vec![PublishRelayPolicy::DaemonDefaultOnly],
+            vec![NostrPublishTargetSourcePolicy::DaemonDefaultOnly],
             false,
             PublishJobVisibility::Own,
         );
@@ -2159,8 +2355,8 @@ mod tests {
                 publish_request(
                     event,
                     Vec::new(),
-                    PublishRelayPolicy::DaemonDefaultOnly,
-                    PublishDeliveryPolicy::Any,
+                    NostrPublishTargetSourcePolicy::DaemonDefaultOnly,
+                    TransportPublishDeliveryPolicy::Any,
                     None,
                 ),
             )
@@ -2169,7 +2365,9 @@ mod tests {
 
         assert!(matches!(
             error,
-            PublishProxyError::SignedEventVerification(RadrootsNostrEventVerification::IdMismatch)
+            TransportPublishError::SignedEventVerification(
+                RadrootsNostrEventVerification::IdMismatch
+            )
         ));
         assert!(adapter.captured_raw_events().is_empty());
     }
@@ -2177,11 +2375,11 @@ mod tests {
     #[tokio::test]
     async fn publish_event_rejects_wrong_signature_before_publish() {
         let identity = RadrootsIdentity::generate();
-        let (proxy, adapter) = publish_proxy(config_with_defaults(vec![RELAY_PRIMARY]));
+        let (proxy, adapter) = transport_publish(config_with_defaults(vec![RELAY_PRIMARY]));
         let principal = principal(
             &proxy,
             identity.public_key_hex(),
-            vec![PublishRelayPolicy::DaemonDefaultOnly],
+            vec![NostrPublishTargetSourcePolicy::DaemonDefaultOnly],
             false,
             PublishJobVisibility::Own,
         );
@@ -2194,8 +2392,8 @@ mod tests {
                 publish_request(
                     event,
                     Vec::new(),
-                    PublishRelayPolicy::DaemonDefaultOnly,
-                    PublishDeliveryPolicy::Any,
+                    NostrPublishTargetSourcePolicy::DaemonDefaultOnly,
+                    TransportPublishDeliveryPolicy::Any,
                     None,
                 ),
             )
@@ -2204,7 +2402,7 @@ mod tests {
 
         assert!(matches!(
             error,
-            PublishProxyError::SignedEventVerification(
+            TransportPublishError::SignedEventVerification(
                 RadrootsNostrEventVerification::SignatureInvalid
             )
         ));
@@ -2214,11 +2412,11 @@ mod tests {
     #[tokio::test]
     async fn publish_event_rejects_malformed_wire_fields() {
         let identity = RadrootsIdentity::generate();
-        let (proxy, adapter) = publish_proxy(config_with_defaults(vec![RELAY_PRIMARY]));
+        let (proxy, adapter) = transport_publish(config_with_defaults(vec![RELAY_PRIMARY]));
         let principal = principal(
             &proxy,
             identity.public_key_hex(),
-            vec![PublishRelayPolicy::DaemonDefaultOnly],
+            vec![NostrPublishTargetSourcePolicy::DaemonDefaultOnly],
             false,
             PublishJobVisibility::Own,
         );
@@ -2230,26 +2428,29 @@ mod tests {
                 publish_request(
                     event,
                     Vec::new(),
-                    PublishRelayPolicy::DaemonDefaultOnly,
-                    PublishDeliveryPolicy::Any,
+                    NostrPublishTargetSourcePolicy::DaemonDefaultOnly,
+                    TransportPublishDeliveryPolicy::Any,
                     None,
                 ),
             )
             .await
             .expect_err("malformed field should fail");
 
-        assert!(matches!(error, PublishProxyError::InvalidSignedEvent(_)));
+        assert!(matches!(
+            error,
+            TransportPublishError::InvalidSignedEvent(_)
+        ));
         assert!(adapter.captured_raw_events().is_empty());
     }
 
     #[tokio::test]
     async fn publish_event_uses_explicit_request_relays_when_allowed() {
         let identity = RadrootsIdentity::generate();
-        let (proxy, _adapter) = publish_proxy(config_with_defaults(vec![RELAY_SECONDARY]));
+        let (proxy, _adapter) = transport_publish(config_with_defaults(vec![RELAY_SECONDARY]));
         let principal = principal(
             &proxy,
             identity.public_key_hex(),
-            vec![PublishRelayPolicy::RequestThenAuthorWriteThenDaemonDefault],
+            vec![NostrPublishTargetSourcePolicy::RequestThenAuthorWriteThenDaemonDefault],
             true,
             PublishJobVisibility::Own,
         );
@@ -2259,23 +2460,29 @@ mod tests {
                 publish_request(
                     signed_event(&identity, "{}"),
                     vec![RELAY_PRIMARY.to_owned()],
-                    PublishRelayPolicy::RequestThenAuthorWriteThenDaemonDefault,
-                    PublishDeliveryPolicy::Any,
+                    NostrPublishTargetSourcePolicy::RequestThenAuthorWriteThenDaemonDefault,
+                    TransportPublishDeliveryPolicy::Any,
                     None,
                 ),
             )
             .await
             .expect("publish");
 
-        assert_eq!(response.job.status, PublishJobStatus::DeliverySatisfied);
-        assert_eq!(response.job.relays[0].relay_url, RELAY_PRIMARY);
-        assert_eq!(response.job.relays[0].source, PublishRelaySource::Request);
+        assert_eq!(
+            response.job.status,
+            TransportPublishJobStatus::DeliverySatisfied
+        );
+        assert_eq!(response.job.targets[0].endpoint_uri, RELAY_PRIMARY);
+        assert_eq!(
+            response.job.targets[0].source,
+            TransportPublishTargetSource::Request
+        );
     }
 
     #[tokio::test]
     async fn publish_event_uses_cached_nip65_author_write_before_defaults() {
         let identity = RadrootsIdentity::generate();
-        let (proxy, _adapter) = publish_proxy(config_with_defaults(vec![RELAY_SECONDARY]));
+        let (proxy, _adapter) = transport_publish(config_with_defaults(vec![RELAY_SECONDARY]));
         proxy
             .store
             .cache_author_write_relays(
@@ -2286,7 +2493,7 @@ mod tests {
         let principal = principal(
             &proxy,
             identity.public_key_hex(),
-            vec![PublishRelayPolicy::AuthorWriteThenDaemonDefault],
+            vec![NostrPublishTargetSourcePolicy::AuthorWriteThenDaemonDefault],
             false,
             PublishJobVisibility::Own,
         );
@@ -2296,25 +2503,25 @@ mod tests {
                 publish_request(
                     signed_event(&identity, "{}"),
                     Vec::new(),
-                    PublishRelayPolicy::AuthorWriteThenDaemonDefault,
-                    PublishDeliveryPolicy::Any,
+                    NostrPublishTargetSourcePolicy::AuthorWriteThenDaemonDefault,
+                    TransportPublishDeliveryPolicy::Any,
                     None,
                 ),
             )
             .await
             .expect("publish");
 
-        assert_eq!(response.job.relays[0].relay_url, RELAY_PRIMARY);
+        assert_eq!(response.job.targets[0].endpoint_uri, RELAY_PRIMARY);
         assert_eq!(
-            response.job.relays[0].source,
-            PublishRelaySource::AuthorWrite
+            response.job.targets[0].source,
+            TransportPublishTargetSource::NostrAuthorWrite
         );
     }
 
     #[tokio::test]
     async fn publish_event_records_invalid_cached_author_write_relay() {
         let identity = RadrootsIdentity::generate();
-        let (proxy, adapter) = publish_proxy(config_with_defaults(vec![RELAY_SECONDARY]));
+        let (proxy, adapter) = transport_publish(config_with_defaults(vec![RELAY_SECONDARY]));
         proxy
             .store
             .cache_author_write_relays(
@@ -2325,7 +2532,7 @@ mod tests {
         let principal = principal(
             &proxy,
             identity.public_key_hex(),
-            vec![PublishRelayPolicy::AuthorWriteThenDaemonDefault],
+            vec![NostrPublishTargetSourcePolicy::AuthorWriteThenDaemonDefault],
             false,
             PublishJobVisibility::Own,
         );
@@ -2335,33 +2542,42 @@ mod tests {
                 publish_request(
                     signed_event(&identity, "{}"),
                     Vec::new(),
-                    PublishRelayPolicy::AuthorWriteThenDaemonDefault,
-                    PublishDeliveryPolicy::Any,
+                    NostrPublishTargetSourcePolicy::AuthorWriteThenDaemonDefault,
+                    TransportPublishDeliveryPolicy::Any,
                     None,
                 ),
             )
             .await
             .expect("publish");
 
-        assert_eq!(response.job.status, PublishJobStatus::DeliverySatisfied);
+        assert_eq!(
+            response.job.status,
+            TransportPublishJobStatus::DeliverySatisfied
+        );
         let accepted = response
             .job
-            .relays
+            .targets
             .iter()
-            .find(|relay| relay.relay_url == RELAY_PRIMARY)
+            .find(|relay| relay.endpoint_uri == RELAY_PRIMARY)
             .expect("accepted author relay");
-        assert_eq!(accepted.source, PublishRelaySource::AuthorWrite);
+        assert_eq!(
+            accepted.source,
+            TransportPublishTargetSource::NostrAuthorWrite
+        );
         assert!(accepted.attempted);
         let rejected = response
             .job
-            .relays
+            .targets
             .iter()
-            .find(|relay| relay.relay_url == "not a cached relay")
+            .find(|relay| relay.endpoint_uri == "not a cached relay")
             .expect("rejected cached author relay");
-        assert_eq!(rejected.source, PublishRelaySource::AuthorWrite);
+        assert_eq!(
+            rejected.source,
+            TransportPublishTargetSource::NostrAuthorWrite
+        );
         assert_eq!(
             rejected.outcome_kind,
-            PublishRelayOutcomeKind::RelayUrlRejected
+            TransportPublishOutcomeKind::TargetRejected
         );
         assert!(!rejected.attempted);
         assert_eq!(adapter.captured_raw_events().len(), 1);
@@ -2371,8 +2587,8 @@ mod tests {
     async fn publish_event_preserves_author_and_discovery_rejections_through_relay_selection() {
         let identity = RadrootsIdentity::generate();
         let mut config = config_with_defaults(vec![RELAY_SECONDARY]);
-        config.author_relay_discovery_relays = vec!["not a discovery relay".to_owned()];
-        let (proxy, adapter) = publish_proxy(config);
+        config.nostr.author_relay_discovery_relays = vec!["not a discovery relay".to_owned()];
+        let (proxy, adapter) = transport_publish(config);
         proxy
             .store
             .cache_author_write_relays(
@@ -2383,7 +2599,7 @@ mod tests {
         let principal = principal(
             &proxy,
             identity.public_key_hex(),
-            vec![PublishRelayPolicy::AuthorWriteThenDaemonDefault],
+            vec![NostrPublishTargetSourcePolicy::AuthorWriteThenDaemonDefault],
             false,
             PublishJobVisibility::Own,
         );
@@ -2393,45 +2609,57 @@ mod tests {
                 publish_request(
                     signed_event(&identity, "{}"),
                     Vec::new(),
-                    PublishRelayPolicy::AuthorWriteThenDaemonDefault,
-                    PublishDeliveryPolicy::Any,
+                    NostrPublishTargetSourcePolicy::AuthorWriteThenDaemonDefault,
+                    TransportPublishDeliveryPolicy::Any,
                     None,
                 ),
             )
             .await
             .expect("publish");
 
-        assert_eq!(response.job.status, PublishJobStatus::DeliverySatisfied);
+        assert_eq!(
+            response.job.status,
+            TransportPublishJobStatus::DeliverySatisfied
+        );
         let daemon_default = response
             .job
-            .relays
+            .targets
             .iter()
-            .find(|relay| relay.relay_url == RELAY_SECONDARY)
+            .find(|relay| relay.endpoint_uri == RELAY_SECONDARY)
             .expect("daemon default relay");
-        assert_eq!(daemon_default.source, PublishRelaySource::DaemonDefault);
+        assert_eq!(
+            daemon_default.source,
+            TransportPublishTargetSource::DaemonDefault
+        );
         assert!(daemon_default.attempted);
         let cached = response
             .job
-            .relays
+            .targets
             .iter()
-            .find(|relay| relay.relay_url == "not a cached relay")
+            .find(|relay| relay.endpoint_uri == "not a cached relay")
             .expect("cached author rejection");
-        assert_eq!(cached.source, PublishRelaySource::AuthorWrite);
+        assert_eq!(
+            cached.source,
+            TransportPublishTargetSource::NostrAuthorWrite
+        );
         assert_eq!(
             cached.outcome_kind,
-            PublishRelayOutcomeKind::RelayUrlRejected
+            TransportPublishOutcomeKind::TargetRejected
         );
         assert!(!cached.attempted);
         let discovery = response
             .job
-            .relays
+            .targets
             .iter()
-            .find(|relay| relay.relay_url == "not a discovery relay")
+            .find(|relay| relay.endpoint_uri == "not a discovery relay")
             .expect("discovery relay rejection");
-        assert_eq!(discovery.source, PublishRelaySource::DaemonDefault);
+        assert_eq!(
+            discovery.source,
+            TransportPublishTargetSource::DaemonDefault
+        );
         assert_eq!(
             discovery.outcome_kind,
-            PublishRelayOutcomeKind::RelayUrlRejected
+            TransportPublishOutcomeKind::TargetRejected
         );
         assert!(!discovery.attempted);
         assert_eq!(adapter.captured_raw_events().len(), 1);
@@ -2441,14 +2669,14 @@ mod tests {
     async fn publish_event_preserves_discovery_and_discovered_author_rejections() {
         let identity = RadrootsIdentity::generate();
         let mut config = config_with_defaults(vec![RELAY_PRIMARY]);
-        config.author_relay_discovery_relays =
+        config.nostr.author_relay_discovery_relays =
             vec![RELAY_PRIMARY.to_owned(), RELAY_FORBIDDEN.to_owned()];
         let resolver = StaticPublishRelayResolver::new().with_addresses(
             RELAY_FORBIDDEN,
             vec![IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))],
         );
         let adapter = RadrootsMockRelayPublishAdapter::new();
-        let proxy = PublishProxy::memory(config)
+        let proxy = TransportPublish::memory(config)
             .expect("proxy")
             .with_relay_resolver(Arc::new(resolver))
             .with_author_relay_discovery(Arc::new(StaticPublishAuthorRelayDiscovery::new(vec![
@@ -2459,7 +2687,7 @@ mod tests {
         let principal = principal(
             &proxy,
             identity.public_key_hex(),
-            vec![PublishRelayPolicy::AuthorWriteThenDaemonDefault],
+            vec![NostrPublishTargetSourcePolicy::AuthorWriteThenDaemonDefault],
             false,
             PublishJobVisibility::Own,
         );
@@ -2469,58 +2697,70 @@ mod tests {
                 publish_request(
                     signed_event(&identity, "{}"),
                     Vec::new(),
-                    PublishRelayPolicy::AuthorWriteThenDaemonDefault,
-                    PublishDeliveryPolicy::Any,
+                    NostrPublishTargetSourcePolicy::AuthorWriteThenDaemonDefault,
+                    TransportPublishDeliveryPolicy::Any,
                     None,
                 ),
             )
             .await
             .expect("publish");
 
-        assert_eq!(response.job.status, PublishJobStatus::DeliverySatisfied);
+        assert_eq!(
+            response.job.status,
+            TransportPublishJobStatus::DeliverySatisfied
+        );
         let accepted = response
             .job
-            .relays
+            .targets
             .iter()
-            .find(|relay| relay.relay_url == RELAY_SECONDARY)
+            .find(|relay| relay.endpoint_uri == RELAY_SECONDARY)
             .expect("discovered author relay");
-        assert_eq!(accepted.source, PublishRelaySource::AuthorWrite);
+        assert_eq!(
+            accepted.source,
+            TransportPublishTargetSource::NostrAuthorWrite
+        );
         assert!(accepted.attempted);
         let discovered = response
             .job
-            .relays
+            .targets
             .iter()
-            .find(|relay| relay.relay_url == "not a discovered author relay")
+            .find(|relay| relay.endpoint_uri == "not a discovered author relay")
             .expect("discovered author rejection");
-        assert_eq!(discovered.source, PublishRelaySource::AuthorWrite);
+        assert_eq!(
+            discovered.source,
+            TransportPublishTargetSource::NostrAuthorWrite
+        );
         assert_eq!(
             discovered.outcome_kind,
-            PublishRelayOutcomeKind::RelayUrlRejected
+            TransportPublishOutcomeKind::TargetRejected
         );
         assert!(!discovered.attempted);
         let discovery = response
             .job
-            .relays
+            .targets
             .iter()
-            .find(|relay| relay.relay_url == RELAY_FORBIDDEN)
+            .find(|relay| relay.endpoint_uri == RELAY_FORBIDDEN)
             .expect("discovery relay rejection");
-        assert_eq!(discovery.source, PublishRelaySource::DaemonDefault);
+        assert_eq!(
+            discovery.source,
+            TransportPublishTargetSource::DaemonDefault
+        );
         assert_eq!(
             discovery.outcome_kind,
-            PublishRelayOutcomeKind::RelayUrlRejected
+            TransportPublishOutcomeKind::TargetRejected
         );
         assert!(!discovery.attempted);
         assert_eq!(adapter.captured_raw_events().len(), 1);
     }
 
     #[tokio::test]
-    async fn publish_event_records_no_publish_relays_failure() {
+    async fn publish_event_records_no_transport_publish_targets_failure() {
         let identity = RadrootsIdentity::generate();
-        let (proxy, adapter) = publish_proxy(PublishProxyConfig::default());
+        let (proxy, adapter) = transport_publish(TransportPublishConfig::default());
         let principal = principal(
             &proxy,
             identity.public_key_hex(),
-            vec![PublishRelayPolicy::DaemonDefaultOnly],
+            vec![NostrPublishTargetSourcePolicy::DaemonDefaultOnly],
             false,
             PublishJobVisibility::Own,
         );
@@ -2530,31 +2770,31 @@ mod tests {
                 publish_request(
                     signed_event(&identity, "{}"),
                     Vec::new(),
-                    PublishRelayPolicy::DaemonDefaultOnly,
-                    PublishDeliveryPolicy::Any,
+                    NostrPublishTargetSourcePolicy::DaemonDefaultOnly,
+                    TransportPublishDeliveryPolicy::Any,
                     None,
                 ),
             )
             .await
             .expect("publish");
 
-        assert_eq!(response.job.status, PublishJobStatus::Rejected);
+        assert_eq!(response.job.status, TransportPublishJobStatus::Rejected);
         assert_eq!(
             response.job.last_error.as_deref(),
-            Some("no_publish_relays")
+            Some("no_transport_publish_targets")
         );
-        assert!(response.job.relays.is_empty());
+        assert!(response.job.targets.is_empty());
         assert!(adapter.captured_raw_events().is_empty());
     }
 
     #[tokio::test]
     async fn publish_event_records_unsafe_request_relay_rejection() {
         let identity = RadrootsIdentity::generate();
-        let (proxy, adapter) = publish_proxy(PublishProxyConfig::default());
+        let (proxy, adapter) = transport_publish(TransportPublishConfig::default());
         let principal = principal(
             &proxy,
             identity.public_key_hex(),
-            vec![PublishRelayPolicy::ExplicitOnly],
+            vec![NostrPublishTargetSourcePolicy::ExplicitOnly],
             true,
             PublishJobVisibility::Own,
         );
@@ -2564,87 +2804,8 @@ mod tests {
                 publish_request(
                     signed_event(&identity, "{}"),
                     vec!["wss://127.0.0.1:7777".to_owned()],
-                    PublishRelayPolicy::ExplicitOnly,
-                    PublishDeliveryPolicy::Any,
-                    None,
-                ),
-            )
-            .await
-            .expect("publish");
-
-        assert_eq!(response.job.status, PublishJobStatus::Rejected);
-        assert_eq!(response.job.relays.len(), 1);
-        assert_eq!(
-            response.job.relays[0].outcome_kind,
-            PublishRelayOutcomeKind::RelayUrlRejected
-        );
-        assert!(!response.job.relays[0].attempted);
-        assert!(adapter.captured_raw_events().is_empty());
-    }
-
-    #[tokio::test]
-    async fn publish_event_rejects_forbidden_public_dns_destination_before_publish() {
-        let identity = RadrootsIdentity::generate();
-        let resolver = StaticPublishRelayResolver::new()
-            .with_addresses(RELAY_PRIMARY, vec![IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))]);
-        let (proxy, adapter) = publish_proxy_with_resolver(
-            config_with_defaults(vec![RELAY_PRIMARY]),
-            Arc::new(resolver),
-        );
-        let principal = principal(
-            &proxy,
-            identity.public_key_hex(),
-            vec![PublishRelayPolicy::DaemonDefaultOnly],
-            false,
-            PublishJobVisibility::Own,
-        );
-        let response = proxy
-            .publish_event(
-                &principal,
-                publish_request(
-                    signed_event(&identity, "{}"),
-                    Vec::new(),
-                    PublishRelayPolicy::DaemonDefaultOnly,
-                    PublishDeliveryPolicy::Any,
-                    None,
-                ),
-            )
-            .await
-            .expect("publish");
-
-        assert_eq!(response.job.status, PublishJobStatus::Rejected);
-        assert_eq!(response.job.relays.len(), 1);
-        assert_eq!(
-            response.job.relays[0].outcome_kind,
-            PublishRelayOutcomeKind::RelayUrlRejected
-        );
-        assert!(!response.job.relays[0].attempted);
-        assert!(adapter.captured_raw_events().is_empty());
-    }
-
-    #[tokio::test]
-    async fn publish_event_records_dns_failure_as_unattempted_retryable_outcome() {
-        let identity = RadrootsIdentity::generate();
-        let resolver = StaticPublishRelayResolver::new().with_failure(RELAY_PRIMARY, "no records");
-        let (proxy, adapter) = publish_proxy_with_resolver(
-            config_with_defaults(vec![RELAY_PRIMARY]),
-            Arc::new(resolver),
-        );
-        let principal = principal(
-            &proxy,
-            identity.public_key_hex(),
-            vec![PublishRelayPolicy::DaemonDefaultOnly],
-            false,
-            PublishJobVisibility::Own,
-        );
-        let response = proxy
-            .publish_event(
-                &principal,
-                publish_request(
-                    signed_event(&identity, "{}"),
-                    Vec::new(),
-                    PublishRelayPolicy::DaemonDefaultOnly,
-                    PublishDeliveryPolicy::Any,
+                    NostrPublishTargetSourcePolicy::ExplicitOnly,
+                    TransportPublishDeliveryPolicy::Any,
                     None,
                 ),
             )
@@ -2653,33 +2814,30 @@ mod tests {
 
         assert_eq!(
             response.job.status,
-            PublishJobStatus::DeliveryUnsatisfiedRetryable
+            TransportPublishJobStatus::DeliveryUnsatisfiedTerminal
         );
+        assert_eq!(response.job.targets.len(), 1);
         assert_eq!(
-            response.job.last_error.as_deref(),
-            Some("delivery_unsatisfied")
+            response.job.targets[0].outcome_kind,
+            TransportPublishOutcomeKind::TargetRejected
         );
-        assert_eq!(response.job.relays.len(), 1);
-        assert_eq!(
-            response.job.relays[0].outcome_kind,
-            PublishRelayOutcomeKind::ConnectionFailed
-        );
-        assert!(!response.job.relays[0].attempted);
+        assert!(!response.job.targets[0].attempted);
         assert!(adapter.captured_raw_events().is_empty());
     }
 
     #[tokio::test]
-    async fn publish_event_localhost_policy_skips_public_dns_guard() {
+    async fn publish_event_rejects_forbidden_public_dns_destination_before_publish() {
         let identity = RadrootsIdentity::generate();
-        let mut config = config_with_defaults(vec!["ws://localhost:7777"]);
-        config.relay_url_policy = PublishProxyRelayUrlPolicy::Localhost;
         let resolver = StaticPublishRelayResolver::new()
-            .with_failure("ws://localhost:7777", "localhost resolution should not run");
-        let (proxy, adapter) = publish_proxy_with_resolver(config, Arc::new(resolver));
+            .with_addresses(RELAY_PRIMARY, vec![IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))]);
+        let (proxy, adapter) = transport_publish_with_resolver(
+            config_with_defaults(vec![RELAY_PRIMARY]),
+            Arc::new(resolver),
+        );
         let principal = principal(
             &proxy,
             identity.public_key_hex(),
-            vec![PublishRelayPolicy::DaemonDefaultOnly],
+            vec![NostrPublishTargetSourcePolicy::DaemonDefaultOnly],
             false,
             PublishJobVisibility::Own,
         );
@@ -2689,35 +2847,126 @@ mod tests {
                 publish_request(
                     signed_event(&identity, "{}"),
                     Vec::new(),
-                    PublishRelayPolicy::DaemonDefaultOnly,
-                    PublishDeliveryPolicy::Any,
+                    NostrPublishTargetSourcePolicy::DaemonDefaultOnly,
+                    TransportPublishDeliveryPolicy::Any,
                     None,
                 ),
             )
             .await
             .expect("publish");
 
-        assert_eq!(response.job.status, PublishJobStatus::DeliverySatisfied);
-        assert_eq!(response.job.relays[0].relay_url, "ws://localhost:7777");
+        assert_eq!(
+            response.job.status,
+            TransportPublishJobStatus::DeliveryUnsatisfiedTerminal
+        );
+        assert_eq!(response.job.targets.len(), 1);
+        assert_eq!(
+            response.job.targets[0].outcome_kind,
+            TransportPublishOutcomeKind::TargetRejected
+        );
+        assert!(!response.job.targets[0].attempted);
+        assert!(adapter.captured_raw_events().is_empty());
+    }
+
+    #[tokio::test]
+    async fn publish_event_records_dns_failure_as_unattempted_retryable_outcome() {
+        let identity = RadrootsIdentity::generate();
+        let resolver = StaticPublishRelayResolver::new().with_failure(RELAY_PRIMARY, "no records");
+        let (proxy, adapter) = transport_publish_with_resolver(
+            config_with_defaults(vec![RELAY_PRIMARY]),
+            Arc::new(resolver),
+        );
+        let principal = principal(
+            &proxy,
+            identity.public_key_hex(),
+            vec![NostrPublishTargetSourcePolicy::DaemonDefaultOnly],
+            false,
+            PublishJobVisibility::Own,
+        );
+        let response = proxy
+            .publish_event(
+                &principal,
+                publish_request(
+                    signed_event(&identity, "{}"),
+                    Vec::new(),
+                    NostrPublishTargetSourcePolicy::DaemonDefaultOnly,
+                    TransportPublishDeliveryPolicy::Any,
+                    None,
+                ),
+            )
+            .await
+            .expect("publish");
+
+        assert_eq!(
+            response.job.status,
+            TransportPublishJobStatus::DeliveryUnsatisfiedRetryable
+        );
+        assert_eq!(
+            response.job.last_error.as_deref(),
+            Some("delivery_unsatisfied")
+        );
+        assert_eq!(response.job.targets.len(), 1);
+        assert_eq!(
+            response.job.targets[0].outcome_kind,
+            TransportPublishOutcomeKind::ConnectionFailed
+        );
+        assert!(!response.job.targets[0].attempted);
+        assert!(adapter.captured_raw_events().is_empty());
+    }
+
+    #[tokio::test]
+    async fn publish_event_localhost_policy_skips_public_dns_guard() {
+        let identity = RadrootsIdentity::generate();
+        let mut config = config_with_defaults(vec!["ws://localhost:7777"]);
+        config.nostr.relay_url_policy = NostrRelayUrlPolicy::Localhost;
+        let resolver = StaticPublishRelayResolver::new()
+            .with_failure("ws://localhost:7777", "localhost resolution should not run");
+        let (proxy, adapter) = transport_publish_with_resolver(config, Arc::new(resolver));
+        let principal = principal(
+            &proxy,
+            identity.public_key_hex(),
+            vec![NostrPublishTargetSourcePolicy::DaemonDefaultOnly],
+            false,
+            PublishJobVisibility::Own,
+        );
+        let response = proxy
+            .publish_event(
+                &principal,
+                publish_request(
+                    signed_event(&identity, "{}"),
+                    Vec::new(),
+                    NostrPublishTargetSourcePolicy::DaemonDefaultOnly,
+                    TransportPublishDeliveryPolicy::Any,
+                    None,
+                ),
+            )
+            .await
+            .expect("publish");
+
+        assert_eq!(
+            response.job.status,
+            TransportPublishJobStatus::DeliverySatisfied
+        );
+        assert_eq!(response.job.targets[0].endpoint_uri, "ws://localhost:7777");
         assert!(!adapter.captured_raw_events().is_empty());
     }
 
     #[tokio::test]
     async fn publish_event_deduplicates_same_intent_and_conflicts_different_intent() {
         let identity = RadrootsIdentity::generate();
-        let (proxy, _adapter) = publish_proxy(config_with_defaults(vec![RELAY_PRIMARY]));
+        let (proxy, _adapter) = transport_publish(config_with_defaults(vec![RELAY_PRIMARY]));
         let principal = principal(
             &proxy,
             identity.public_key_hex(),
-            vec![PublishRelayPolicy::DaemonDefaultOnly],
+            vec![NostrPublishTargetSourcePolicy::DaemonDefaultOnly],
             false,
             PublishJobVisibility::Own,
         );
         let request = publish_request(
             signed_event(&identity, "{}"),
             Vec::new(),
-            PublishRelayPolicy::DaemonDefaultOnly,
-            PublishDeliveryPolicy::Any,
+            NostrPublishTargetSourcePolicy::DaemonDefaultOnly,
+            TransportPublishDeliveryPolicy::Any,
             Some("idem-conflict"),
         );
         let first = proxy
@@ -2739,8 +2988,8 @@ mod tests {
                 publish_request(
                     signed_event(&identity, "changed"),
                     Vec::new(),
-                    PublishRelayPolicy::DaemonDefaultOnly,
-                    PublishDeliveryPolicy::Any,
+                    NostrPublishTargetSourcePolicy::DaemonDefaultOnly,
+                    TransportPublishDeliveryPolicy::Any,
                     Some("idem-conflict"),
                 ),
             )
@@ -2748,26 +2997,26 @@ mod tests {
             .expect_err("conflict");
         assert!(matches!(
             conflict,
-            PublishProxyError::IdempotencyConflict(_)
+            TransportPublishError::IdempotencyConflict(_)
         ));
     }
 
     #[tokio::test]
     async fn publish_event_rejects_zero_and_excessive_timeout_before_job_creation() {
         let identity = RadrootsIdentity::generate();
-        let (proxy, adapter) = publish_proxy(config_with_defaults(vec![RELAY_PRIMARY]));
+        let (proxy, adapter) = transport_publish(config_with_defaults(vec![RELAY_PRIMARY]));
         let principal = principal(
             &proxy,
             identity.public_key_hex(),
-            vec![PublishRelayPolicy::DaemonDefaultOnly],
+            vec![NostrPublishTargetSourcePolicy::DaemonDefaultOnly],
             false,
             PublishJobVisibility::Own,
         );
         let mut zero = publish_request(
             signed_event(&identity, "{}"),
             Vec::new(),
-            PublishRelayPolicy::DaemonDefaultOnly,
-            PublishDeliveryPolicy::Any,
+            NostrPublishTargetSourcePolicy::DaemonDefaultOnly,
+            TransportPublishDeliveryPolicy::Any,
             Some("idem-zero-timeout"),
         );
         zero.timeout_ms = Some(0);
@@ -2777,14 +3026,14 @@ mod tests {
             .expect_err("zero timeout should fail");
         assert!(matches!(
             zero_error,
-            PublishProxyError::InvalidSignedEvent(_)
+            TransportPublishError::InvalidSignedEvent(_)
         ));
 
         let mut excessive = publish_request(
             signed_event(&identity, "changed"),
             Vec::new(),
-            PublishRelayPolicy::DaemonDefaultOnly,
-            PublishDeliveryPolicy::Any,
+            NostrPublishTargetSourcePolicy::DaemonDefaultOnly,
+            TransportPublishDeliveryPolicy::Any,
             Some("idem-excessive-timeout"),
         );
         excessive.timeout_ms = Some(10_001);
@@ -2794,7 +3043,7 @@ mod tests {
             .expect_err("excessive timeout should fail");
         assert!(matches!(
             excessive_error,
-            PublishProxyError::InvalidSignedEvent(_)
+            TransportPublishError::InvalidSignedEvent(_)
         ));
         assert!(
             proxy
@@ -2809,11 +3058,11 @@ mod tests {
     #[tokio::test]
     async fn publish_event_default_timeout_fingerprints_as_effective_timeout() {
         let identity = RadrootsIdentity::generate();
-        let (proxy, _adapter) = publish_proxy(config_with_defaults(vec![RELAY_PRIMARY]));
+        let (proxy, _adapter) = transport_publish(config_with_defaults(vec![RELAY_PRIMARY]));
         let principal = principal(
             &proxy,
             identity.public_key_hex(),
-            vec![PublishRelayPolicy::DaemonDefaultOnly],
+            vec![NostrPublishTargetSourcePolicy::DaemonDefaultOnly],
             false,
             PublishJobVisibility::Own,
         );
@@ -2821,16 +3070,16 @@ mod tests {
         let mut default_timeout = publish_request(
             event.clone(),
             Vec::new(),
-            PublishRelayPolicy::DaemonDefaultOnly,
-            PublishDeliveryPolicy::Any,
+            NostrPublishTargetSourcePolicy::DaemonDefaultOnly,
+            TransportPublishDeliveryPolicy::Any,
             Some("idem-default-timeout"),
         );
         default_timeout.timeout_ms = None;
         let mut explicit_default = publish_request(
             event,
             Vec::new(),
-            PublishRelayPolicy::DaemonDefaultOnly,
-            PublishDeliveryPolicy::Any,
+            NostrPublishTargetSourcePolicy::DaemonDefaultOnly,
+            TransportPublishDeliveryPolicy::Any,
             Some("idem-default-timeout"),
         );
         explicit_default.timeout_ms = Some(10_000);
@@ -2851,11 +3100,11 @@ mod tests {
     #[tokio::test]
     async fn publish_event_fingerprint_conflicts_on_different_effective_timeout() {
         let identity = RadrootsIdentity::generate();
-        let (proxy, _adapter) = publish_proxy(config_with_defaults(vec![RELAY_PRIMARY]));
+        let (proxy, _adapter) = transport_publish(config_with_defaults(vec![RELAY_PRIMARY]));
         let principal = principal(
             &proxy,
             identity.public_key_hex(),
-            vec![PublishRelayPolicy::DaemonDefaultOnly],
+            vec![NostrPublishTargetSourcePolicy::DaemonDefaultOnly],
             false,
             PublishJobVisibility::Own,
         );
@@ -2863,15 +3112,15 @@ mod tests {
         let first = publish_request(
             event.clone(),
             Vec::new(),
-            PublishRelayPolicy::DaemonDefaultOnly,
-            PublishDeliveryPolicy::Any,
+            NostrPublishTargetSourcePolicy::DaemonDefaultOnly,
+            TransportPublishDeliveryPolicy::Any,
             Some("idem-timeout-conflict"),
         );
         let mut conflict = publish_request(
             event,
             Vec::new(),
-            PublishRelayPolicy::DaemonDefaultOnly,
-            PublishDeliveryPolicy::Any,
+            NostrPublishTargetSourcePolicy::DaemonDefaultOnly,
+            TransportPublishDeliveryPolicy::Any,
             Some("idem-timeout-conflict"),
         );
         conflict.timeout_ms = Some(6_000);
@@ -2881,7 +3130,10 @@ mod tests {
             .publish_event(&principal, conflict)
             .await
             .expect_err("timeout conflict");
-        assert!(matches!(error, PublishProxyError::IdempotencyConflict(_)));
+        assert!(matches!(
+            error,
+            TransportPublishError::IdempotencyConflict(_)
+        ));
     }
 
     #[tokio::test]
@@ -2889,11 +3141,11 @@ mod tests {
         let identity = RadrootsIdentity::generate();
         let mut config = config_with_defaults(vec![RELAY_PRIMARY]);
         config.max_concurrent_publish_jobs = 1;
-        let (proxy, adapter) = publish_proxy(config);
+        let (proxy, adapter) = transport_publish(config);
         let principal = principal(
             &proxy,
             identity.public_key_hex(),
-            vec![PublishRelayPolicy::DaemonDefaultOnly],
+            vec![NostrPublishTargetSourcePolicy::DaemonDefaultOnly],
             false,
             PublishJobVisibility::Own,
         );
@@ -2904,14 +3156,14 @@ mod tests {
                 publish_request(
                     signed_event(&identity, "{}"),
                     Vec::new(),
-                    PublishRelayPolicy::DaemonDefaultOnly,
-                    PublishDeliveryPolicy::Any,
+                    NostrPublishTargetSourcePolicy::DaemonDefaultOnly,
+                    TransportPublishDeliveryPolicy::Any,
                     Some("idem-concurrency"),
                 ),
             )
             .await
             .expect_err("concurrency limit");
-        assert!(matches!(error, PublishProxyError::ConcurrencyLimit));
+        assert!(matches!(error, TransportPublishError::ConcurrencyLimit));
         assert!(
             proxy
                 .store
@@ -2926,25 +3178,25 @@ mod tests {
     async fn publish_jobs_respect_own_and_admin_visibility() {
         let identity = RadrootsIdentity::generate();
         let other_identity = RadrootsIdentity::generate();
-        let (proxy, _adapter) = publish_proxy(config_with_defaults(vec![RELAY_PRIMARY]));
+        let (proxy, _adapter) = transport_publish(config_with_defaults(vec![RELAY_PRIMARY]));
         let owner = principal(
             &proxy,
             identity.public_key_hex(),
-            vec![PublishRelayPolicy::DaemonDefaultOnly],
+            vec![NostrPublishTargetSourcePolicy::DaemonDefaultOnly],
             false,
             PublishJobVisibility::Own,
         );
         let other = principal(
             &proxy,
             other_identity.public_key_hex(),
-            vec![PublishRelayPolicy::DaemonDefaultOnly],
+            vec![NostrPublishTargetSourcePolicy::DaemonDefaultOnly],
             false,
             PublishJobVisibility::Own,
         );
         let admin = principal(
             &proxy,
             other_identity.public_key_hex(),
-            vec![PublishRelayPolicy::DaemonDefaultOnly],
+            vec![NostrPublishTargetSourcePolicy::DaemonDefaultOnly],
             false,
             PublishJobVisibility::Admin,
         );
@@ -2954,8 +3206,8 @@ mod tests {
                 publish_request(
                     signed_event(&identity, "{}"),
                     Vec::new(),
-                    PublishRelayPolicy::DaemonDefaultOnly,
-                    PublishDeliveryPolicy::Any,
+                    NostrPublishTargetSourcePolicy::DaemonDefaultOnly,
+                    TransportPublishDeliveryPolicy::Any,
                     None,
                 ),
             )
@@ -2985,13 +3237,13 @@ mod tests {
             RELAY_PRIMARY,
             RadrootsRelayOutcome::connection_failed("error: unavailable"),
         );
-        let proxy = PublishProxy::memory(config_with_defaults(vec![RELAY_PRIMARY]))
+        let proxy = TransportPublish::memory(config_with_defaults(vec![RELAY_PRIMARY]))
             .expect("proxy")
             .with_publisher(Arc::new(adapter));
         let principal = principal(
             &proxy,
             identity.public_key_hex(),
-            vec![PublishRelayPolicy::DaemonDefaultOnly],
+            vec![NostrPublishTargetSourcePolicy::DaemonDefaultOnly],
             false,
             PublishJobVisibility::Own,
         );
@@ -3001,8 +3253,8 @@ mod tests {
                 publish_request(
                     signed_event(&identity, "{}"),
                     Vec::new(),
-                    PublishRelayPolicy::DaemonDefaultOnly,
-                    PublishDeliveryPolicy::Any,
+                    NostrPublishTargetSourcePolicy::DaemonDefaultOnly,
+                    TransportPublishDeliveryPolicy::Any,
                     None,
                 ),
             )
@@ -3011,7 +3263,7 @@ mod tests {
 
         assert_eq!(
             response.job.status,
-            PublishJobStatus::DeliveryUnsatisfiedRetryable
+            TransportPublishJobStatus::DeliveryUnsatisfiedRetryable
         );
         assert_eq!(response.job.retryable_count, 1);
     }

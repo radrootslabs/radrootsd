@@ -1858,27 +1858,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "radroots_publish_proxy_protocol"
-version = "0.1.0-alpha.2"
-dependencies = [
- "serde",
-]
-
-[[package]]
-name = "radroots_relay_transport"
-version = "0.1.0-alpha.2"
-dependencies = [
- "futures",
- "nostr",
- "radroots_events",
- "radroots_nostr",
- "serde",
- "serde_json",
- "thiserror 1.0.69",
- "url",
-]
-
-[[package]]
 name = "radroots_runtime"
 version = "0.1.0-alpha.2"
 dependencies = [
@@ -1914,6 +1893,35 @@ name = "radroots_secret_vault"
 version = "0.1.0-alpha.2"
 
 [[package]]
+name = "radroots_transport"
+version = "0.1.0-alpha.2"
+dependencies = [
+ "sha2",
+]
+
+[[package]]
+name = "radroots_transport_nostr"
+version = "0.1.0-alpha.2"
+dependencies = [
+ "futures",
+ "nostr",
+ "radroots_events",
+ "radroots_nostr",
+ "radroots_transport",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "url",
+]
+
+[[package]]
+name = "radroots_transport_publish_protocol"
+version = "0.1.0-alpha.2"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "radrootsd"
 version = "0.1.0"
 dependencies = [
@@ -1924,10 +1932,11 @@ dependencies = [
  "radroots_events",
  "radroots_identity",
  "radroots_nostr",
- "radroots_publish_proxy_protocol",
- "radroots_relay_transport",
  "radroots_runtime",
  "radroots_runtime_paths",
+ "radroots_transport",
+ "radroots_transport_nostr",
+ "radroots_transport_publish_protocol",
  "rand 0.9.2",
  "rusqlite",
  "serde",

@@ -14,8 +14,9 @@ resolver = "2"
 radroots_events = { path = "../lib/crates/events" }
 radroots_identity = { path = "../lib/crates/identity" }
 radroots_nostr = { path = "../lib/crates/nostr" }
-radroots_publish_proxy_protocol = { path = "../lib/crates/publish_proxy_protocol" }
-radroots_relay_transport = { path = "../lib/crates/relay_transport", default-features = false }
+radroots_transport_publish_protocol = { path = "../lib/crates/transport_publish_protocol" }
+radroots_relay_transport = { package = "radroots_transport_nostr", path = "../lib/crates/transport_nostr", default-features = false }
+radroots_transport = { path = "../lib/crates/transport", default-features = false }
 radroots_runtime = { path = "../lib/crates/runtime" }
 
 [lints.rust]
@@ -25,8 +26,9 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage_nightly)'] }
 radroots_events = { workspace = true, features = ["serde"] }
 radroots_identity = { workspace = true }
 radroots_nostr = { workspace = true, features = ["client", "codec", "events", "http"] }
-radroots_publish_proxy_protocol = { workspace = true, features = ["std", "serde"] }
+radroots_transport_publish_protocol = { workspace = true, features = ["std", "serde"] }
 radroots_relay_transport = { workspace = true, features = ["std", "client"] }
+radroots_transport = { workspace = true }
 radroots_runtime = { workspace = true, features = ["cli"] }
 radroots_runtime_paths = { path = "../lib/crates/runtime_paths" }
 nostr = { version = "0.44.2", features = ["nip46"] }

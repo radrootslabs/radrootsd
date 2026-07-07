@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 use super::paths::{
-    RadrootsdRuntimePaths, default_publish_proxy_database_path, process_path_selection,
+    RadrootsdRuntimePaths, default_transport_publish_database_path, process_path_selection,
     resolve_runtime_paths_with_resolver,
 };
 
@@ -49,32 +49,32 @@ fn default_nip46_public_jsonrpc_enabled() -> bool {
     false
 }
 
-fn default_publish_proxy_enabled() -> bool {
+fn default_transport_publish_enabled() -> bool {
     true
 }
 
-fn default_publish_proxy_connect_timeout_secs() -> u64 {
+fn default_transport_publish_connect_timeout_secs() -> u64 {
     10
 }
 
-fn default_publish_proxy_max_event_bytes() -> usize {
+fn default_transport_publish_max_event_bytes() -> usize {
     128 * 1024
 }
 
-fn default_publish_proxy_max_relays_per_request() -> usize {
+fn default_transport_publish_max_targets_per_request() -> usize {
     20
 }
 
-fn default_publish_proxy_job_list_limit() -> usize {
+fn default_transport_publish_job_list_limit() -> usize {
     100
 }
 
-fn default_publish_proxy_max_concurrent_publish_jobs() -> usize {
+fn default_transport_publish_max_concurrent_publish_jobs() -> usize {
     8
 }
 
-fn default_publish_proxy_relay_url_policy() -> PublishProxyRelayUrlPolicy {
-    PublishProxyRelayUrlPolicy::Public
+fn default_nostr_relay_url_policy() -> NostrRelayUrlPolicy {
+    NostrRelayUrlPolicy::Public
 }
 
 #[derive(Debug, Deserialize, Clone, Default)]
@@ -103,66 +103,63 @@ impl RawServiceConfig {
 }
 
 #[derive(Debug, Deserialize, Clone)]
-struct RawPublishProxyConfig {
-    #[serde(default = "default_publish_proxy_enabled")]
+#[serde(deny_unknown_fields)]
+struct RawTransportPublishConfig {
+    #[serde(default = "default_transport_publish_enabled")]
     pub enabled: bool,
-    #[serde(default = "default_publish_proxy_connect_timeout_secs")]
+    #[serde(default = "default_transport_publish_connect_timeout_secs")]
     pub connect_timeout_secs: u64,
-    #[serde(default = "default_publish_proxy_max_event_bytes")]
+    #[serde(default = "default_transport_publish_max_event_bytes")]
     pub max_event_bytes: usize,
-    #[serde(default = "default_publish_proxy_max_relays_per_request")]
-    pub max_relays_per_request: usize,
-    #[serde(default = "default_publish_proxy_job_list_limit")]
+    #[serde(default = "default_transport_publish_max_targets_per_request")]
+    pub max_targets_per_request: usize,
+    #[serde(default = "default_transport_publish_job_list_limit")]
     pub job_list_limit: usize,
-    #[serde(default = "default_publish_proxy_max_concurrent_publish_jobs")]
+    #[serde(default = "default_transport_publish_max_concurrent_publish_jobs")]
     pub max_concurrent_publish_jobs: usize,
     #[serde(default)]
     pub database_path: Option<PathBuf>,
-    #[serde(default = "default_publish_proxy_relay_url_policy")]
-    pub relay_url_policy: PublishProxyRelayUrlPolicy,
     #[serde(default)]
-    pub author_relay_discovery_relays: Vec<String>,
-    #[serde(default)]
-    pub daemon_default_publish_relays: Vec<String>,
+    pub nostr: TransportPublishNostrConfig,
 }
 
-impl Default for RawPublishProxyConfig {
+impl Default for RawTransportPublishConfig {
     fn default() -> Self {
         Self {
-            enabled: default_publish_proxy_enabled(),
-            connect_timeout_secs: default_publish_proxy_connect_timeout_secs(),
-            max_event_bytes: default_publish_proxy_max_event_bytes(),
-            max_relays_per_request: default_publish_proxy_max_relays_per_request(),
-            job_list_limit: default_publish_proxy_job_list_limit(),
-            max_concurrent_publish_jobs: default_publish_proxy_max_concurrent_publish_jobs(),
+            enabled: default_transport_publish_enabled(),
+            connect_timeout_secs: default_transport_publish_connect_timeout_secs(),
+            max_event_bytes: default_transport_publish_max_event_bytes(),
+            max_targets_per_request: default_transport_publish_max_targets_per_request(),
+            job_list_limit: default_transport_publish_job_list_limit(),
+            max_concurrent_publish_jobs: default_transport_publish_max_concurrent_publish_jobs(),
             database_path: None,
-            relay_url_policy: default_publish_proxy_relay_url_policy(),
-            author_relay_discovery_relays: Vec::new(),
-            daemon_default_publish_relays: Vec::new(),
+            nostr: TransportPublishNostrConfig::default(),
         }
     }
 }
 
-impl RawPublishProxyConfig {
-    fn into_publish_proxy_config(self, paths: &RadrootsdRuntimePaths) -> PublishProxyConfig {
-        PublishProxyConfig {
+impl RawTransportPublishConfig {
+    fn into_transport_publish_config(
+        self,
+        paths: &RadrootsdRuntimePaths,
+    ) -> TransportPublishConfig {
+        TransportPublishConfig {
             enabled: self.enabled,
             connect_timeout_secs: self.connect_timeout_secs,
             max_event_bytes: self.max_event_bytes,
-            max_relays_per_request: self.max_relays_per_request,
+            max_targets_per_request: self.max_targets_per_request,
             job_list_limit: self.job_list_limit,
             max_concurrent_publish_jobs: self.max_concurrent_publish_jobs,
             database_path: self
                 .database_path
-                .unwrap_or_else(|| paths.publish_proxy_database_path.clone()),
-            relay_url_policy: self.relay_url_policy,
-            author_relay_discovery_relays: self.author_relay_discovery_relays,
-            daemon_default_publish_relays: self.daemon_default_publish_relays,
+                .unwrap_or_else(|| paths.transport_publish_database_path.clone()),
+            nostr: self.nostr,
         }
     }
 }
 
 #[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 struct RawConfiguration {
     #[serde(flatten)]
     pub service: RawServiceConfig,
@@ -173,9 +170,7 @@ struct RawConfiguration {
     #[serde(default)]
     pub nip46: Nip46Config,
     #[serde(default)]
-    pub publish_proxy: RawPublishProxyConfig,
-    #[serde(default, rename = "bridge")]
-    pub obsolete_publish_bridge_config: Option<serde::de::IgnoredAny>,
+    pub transport_publish: RawTransportPublishConfig,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -193,11 +188,10 @@ impl RawSettings {
                 rpc: self.config.rpc,
                 rpc_addr: self.config.rpc_addr,
                 nip46: self.config.nip46,
-                publish_proxy: self.config.publish_proxy.into_publish_proxy_config(paths),
-                obsolete_bridge_config_present: self
+                transport_publish: self
                     .config
-                    .obsolete_publish_bridge_config
-                    .is_some(),
+                    .transport_publish
+                    .into_transport_publish_config(paths),
             },
         }
     }
@@ -253,68 +247,84 @@ impl Default for Nip46Config {
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum PublishProxyRelayUrlPolicy {
+pub enum NostrRelayUrlPolicy {
     Public,
     Localhost,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
-pub struct PublishProxyConfig {
-    #[serde(default = "default_publish_proxy_enabled")]
-    pub enabled: bool,
-    #[serde(default = "default_publish_proxy_connect_timeout_secs")]
-    pub connect_timeout_secs: u64,
-    #[serde(default = "default_publish_proxy_max_event_bytes")]
-    pub max_event_bytes: usize,
-    #[serde(default = "default_publish_proxy_max_relays_per_request")]
-    pub max_relays_per_request: usize,
-    #[serde(default = "default_publish_proxy_job_list_limit")]
-    pub job_list_limit: usize,
-    #[serde(default = "default_publish_proxy_max_concurrent_publish_jobs")]
-    pub max_concurrent_publish_jobs: usize,
-    #[serde(default = "default_publish_proxy_database_path")]
-    pub database_path: PathBuf,
-    #[serde(default = "default_publish_proxy_relay_url_policy")]
-    pub relay_url_policy: PublishProxyRelayUrlPolicy,
+#[serde(deny_unknown_fields)]
+pub struct TransportPublishNostrConfig {
+    #[serde(default = "default_nostr_relay_url_policy")]
+    pub relay_url_policy: NostrRelayUrlPolicy,
     #[serde(default)]
     pub author_relay_discovery_relays: Vec<String>,
     #[serde(default)]
-    pub daemon_default_publish_relays: Vec<String>,
+    pub daemon_default_relays: Vec<String>,
 }
 
-impl Default for PublishProxyConfig {
+impl Default for TransportPublishNostrConfig {
     fn default() -> Self {
         Self {
-            enabled: default_publish_proxy_enabled(),
-            connect_timeout_secs: default_publish_proxy_connect_timeout_secs(),
-            max_event_bytes: default_publish_proxy_max_event_bytes(),
-            max_relays_per_request: default_publish_proxy_max_relays_per_request(),
-            job_list_limit: default_publish_proxy_job_list_limit(),
-            max_concurrent_publish_jobs: default_publish_proxy_max_concurrent_publish_jobs(),
-            database_path: default_publish_proxy_database_path(),
-            relay_url_policy: default_publish_proxy_relay_url_policy(),
+            relay_url_policy: default_nostr_relay_url_policy(),
             author_relay_discovery_relays: Vec::new(),
-            daemon_default_publish_relays: Vec::new(),
+            daemon_default_relays: Vec::new(),
         }
     }
 }
 
-impl PublishProxyConfig {
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct TransportPublishConfig {
+    #[serde(default = "default_transport_publish_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_transport_publish_connect_timeout_secs")]
+    pub connect_timeout_secs: u64,
+    #[serde(default = "default_transport_publish_max_event_bytes")]
+    pub max_event_bytes: usize,
+    #[serde(default = "default_transport_publish_max_targets_per_request")]
+    pub max_targets_per_request: usize,
+    #[serde(default = "default_transport_publish_job_list_limit")]
+    pub job_list_limit: usize,
+    #[serde(default = "default_transport_publish_max_concurrent_publish_jobs")]
+    pub max_concurrent_publish_jobs: usize,
+    #[serde(default = "default_transport_publish_database_path")]
+    pub database_path: PathBuf,
+    #[serde(default)]
+    pub nostr: TransportPublishNostrConfig,
+}
+
+impl Default for TransportPublishConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_transport_publish_enabled(),
+            connect_timeout_secs: default_transport_publish_connect_timeout_secs(),
+            max_event_bytes: default_transport_publish_max_event_bytes(),
+            max_targets_per_request: default_transport_publish_max_targets_per_request(),
+            job_list_limit: default_transport_publish_job_list_limit(),
+            max_concurrent_publish_jobs: default_transport_publish_max_concurrent_publish_jobs(),
+            database_path: default_transport_publish_database_path(),
+            nostr: TransportPublishNostrConfig::default(),
+        }
+    }
+}
+
+impl TransportPublishConfig {
     pub fn validate(&self) -> Result<()> {
         if self.max_event_bytes == 0 {
-            bail!("publish_proxy max_event_bytes must be greater than zero");
+            bail!("transport_publish max_event_bytes must be greater than zero");
         }
-        if self.max_relays_per_request == 0 {
-            bail!("publish_proxy max_relays_per_request must be greater than zero");
+        if self.max_targets_per_request == 0 {
+            bail!("transport_publish max_targets_per_request must be greater than zero");
         }
         if self.job_list_limit == 0 {
-            bail!("publish_proxy job_list_limit must be greater than zero");
+            bail!("transport_publish job_list_limit must be greater than zero");
         }
         if self.max_concurrent_publish_jobs == 0 {
-            bail!("publish_proxy max_concurrent_publish_jobs must be greater than zero");
+            bail!("transport_publish max_concurrent_publish_jobs must be greater than zero");
         }
         if self.connect_timeout_secs == 0 {
-            bail!("publish_proxy connect_timeout_secs must be greater than zero");
+            bail!("transport_publish connect_timeout_secs must be greater than zero");
         }
         Ok(())
     }
@@ -363,9 +373,7 @@ pub struct Configuration {
     #[serde(default)]
     pub nip46: Nip46Config,
     #[serde(default)]
-    pub publish_proxy: PublishProxyConfig,
-    #[serde(default, skip_serializing)]
-    pub(crate) obsolete_bridge_config_present: bool,
+    pub transport_publish: TransportPublishConfig,
 }
 
 impl Configuration {
@@ -374,10 +382,7 @@ impl Configuration {
     }
 
     pub fn validate(&self) -> Result<()> {
-        if self.obsolete_bridge_config_present {
-            bail!("config.bridge is obsolete; use config.publish_proxy");
-        }
-        self.publish_proxy.validate()?;
+        self.transport_publish.validate()?;
         Ok(())
     }
 }
@@ -399,7 +404,7 @@ mod tests {
     use std::path::PathBuf;
 
     use super::{
-        Configuration, Nip46Config, PublishProxyConfig, PublishProxyRelayUrlPolicy, RpcConfig,
+        Configuration, Nip46Config, NostrRelayUrlPolicy, RpcConfig, TransportPublishConfig,
         load_settings_from_path_with_resolver,
     };
     use crate::app::paths::{
@@ -465,19 +470,19 @@ mod tests {
     }
 
     #[test]
-    fn publish_proxy_defaults_are_expected() {
+    fn transport_publish_defaults_are_expected() {
         let paths = default_runtime_paths_for_process().expect("resolve process runtime paths");
-        let cfg = PublishProxyConfig::default();
+        let cfg = TransportPublishConfig::default();
         assert!(cfg.enabled);
         assert_eq!(cfg.connect_timeout_secs, 10);
         assert_eq!(cfg.max_event_bytes, 128 * 1024);
-        assert_eq!(cfg.max_relays_per_request, 20);
+        assert_eq!(cfg.max_targets_per_request, 20);
         assert_eq!(cfg.job_list_limit, 100);
         assert_eq!(cfg.max_concurrent_publish_jobs, 8);
-        assert_eq!(cfg.database_path, paths.publish_proxy_database_path);
-        assert_eq!(cfg.relay_url_policy, PublishProxyRelayUrlPolicy::Public);
-        assert!(cfg.author_relay_discovery_relays.is_empty());
-        assert!(cfg.daemon_default_publish_relays.is_empty());
+        assert_eq!(cfg.database_path, paths.transport_publish_database_path);
+        assert_eq!(cfg.nostr.relay_url_policy, NostrRelayUrlPolicy::Public);
+        assert!(cfg.nostr.author_relay_discovery_relays.is_empty());
+        assert!(cfg.nostr.daemon_default_relays.is_empty());
     }
 
     #[test]
@@ -490,8 +495,7 @@ mod tests {
             },
             rpc_addr: None,
             nip46: Nip46Config::default(),
-            publish_proxy: PublishProxyConfig::default(),
-            obsolete_bridge_config_present: false,
+            transport_publish: TransportPublishConfig::default(),
         };
         assert_eq!(cfg.rpc_addr(), "127.0.0.1:1111");
         cfg.rpc_addr = Some("127.0.0.1:2222".to_string());
@@ -499,20 +503,20 @@ mod tests {
     }
 
     #[test]
-    fn publish_proxy_validation_rejects_zero_limits() {
-        let mut cfg = PublishProxyConfig::default();
+    fn transport_publish_validation_rejects_zero_limits() {
+        let mut cfg = TransportPublishConfig::default();
         cfg.max_event_bytes = 0;
         assert!(cfg.validate().is_err());
-        let mut cfg = PublishProxyConfig::default();
-        cfg.max_relays_per_request = 0;
+        let mut cfg = TransportPublishConfig::default();
+        cfg.max_targets_per_request = 0;
         assert!(cfg.validate().is_err());
-        let mut cfg = PublishProxyConfig::default();
+        let mut cfg = TransportPublishConfig::default();
         cfg.job_list_limit = 0;
         assert!(cfg.validate().is_err());
-        let mut cfg = PublishProxyConfig::default();
+        let mut cfg = TransportPublishConfig::default();
         cfg.max_concurrent_publish_jobs = 0;
         assert!(cfg.validate().is_err());
-        let mut cfg = PublishProxyConfig::default();
+        let mut cfg = TransportPublishConfig::default();
         cfg.connect_timeout_secs = 0;
         assert!(cfg.validate().is_err());
     }
@@ -541,8 +545,10 @@ mod tests {
             )
         );
         assert_eq!(
-            paths.publish_proxy_database_path,
-            PathBuf::from("/home/treesap/.radroots/data/services/radrootsd/publish_proxy.sqlite")
+            paths.transport_publish_database_path,
+            PathBuf::from(
+                "/home/treesap/.radroots/data/services/radrootsd/transport_publish.sqlite"
+            )
         );
     }
 
@@ -568,8 +574,8 @@ mod tests {
             PathBuf::from("/etc/radroots/secrets/services/radrootsd/identity.secret.json")
         );
         assert_eq!(
-            paths.publish_proxy_database_path,
-            PathBuf::from("/var/lib/radroots/services/radrootsd/publish_proxy.sqlite")
+            paths.transport_publish_database_path,
+            PathBuf::from("/var/lib/radroots/services/radrootsd/transport_publish.sqlite")
         );
     }
 
@@ -596,8 +602,8 @@ mod tests {
             repo_local_root.join("secrets/services/radrootsd/identity.secret.json")
         );
         assert_eq!(
-            paths.publish_proxy_database_path,
-            repo_local_root.join("data/services/radrootsd/publish_proxy.sqlite")
+            paths.transport_publish_database_path,
+            repo_local_root.join("data/services/radrootsd/transport_publish.sqlite")
         );
     }
 
@@ -633,13 +639,15 @@ addr = "127.0.0.1:7070"
             "/home/treesap/.radroots/logs/services/radrootsd"
         );
         assert_eq!(
-            settings.config.publish_proxy.database_path,
-            PathBuf::from("/home/treesap/.radroots/data/services/radrootsd/publish_proxy.sqlite")
+            settings.config.transport_publish.database_path,
+            PathBuf::from(
+                "/home/treesap/.radroots/data/services/radrootsd/transport_publish.sqlite"
+            )
         );
     }
 
     #[test]
-    fn obsolete_config_is_rejected() {
+    fn obsolete_transport_publish_config_is_rejected() {
         let temp = tempfile::tempdir().expect("tempdir");
         let config_path = temp.path().join("radrootsd.toml");
         std::fs::write(
@@ -651,8 +659,8 @@ name = "radrootsd-test"
 [config]
 relays = []
 
-[config.bridge]
-enabled = true
+[config.transport_publish]
+relay_url_policy = "localhost"
 "#,
         )
         .expect("write config");
@@ -663,8 +671,10 @@ enabled = true
             RadrootsPathProfile::InteractiveUser,
             None,
         )
-        .expect_err("obsolete config should fail");
-        assert!(err.to_string().contains("config.bridge"));
+        .expect_err("obsolete transport_publish config should fail");
+        let err_chain = format!("{err:?}");
+        assert!(err_chain.contains("unknown field"));
+        assert!(err_chain.contains("relay_url_policy"));
     }
 
     #[test]
@@ -681,12 +691,14 @@ enabled = true
             contract.path_overrides.subordinate_path_override_keys,
             vec![
                 "config.service.logs_dir".to_owned(),
-                "config.publish_proxy.database_path".to_owned(),
+                "config.transport_publish.database_path".to_owned(),
             ]
         );
         assert_eq!(
-            contract.canonical_publish_proxy_database_path,
-            PathBuf::from("/home/treesap/.radroots/data/services/radrootsd/publish_proxy.sqlite")
+            contract.canonical_transport_publish_database_path,
+            PathBuf::from(
+                "/home/treesap/.radroots/data/services/radrootsd/transport_publish.sqlite"
+            )
         );
     }
 }

@@ -9,13 +9,13 @@
 #   interactive_user:
 #     logs_dir = ~/.radroots/logs/services/radrootsd
 #     service identity = ~/.radroots/secrets/services/radrootsd/identity.secret.json
-#     publish proxy database = ~/.radroots/data/services/radrootsd/publish_proxy.sqlite
+#     transport publish database = ~/.radroots/data/services/radrootsd/transport_publish.sqlite
 #   service_host:
 #     logs_dir = /var/log/radroots/services/radrootsd
 #     service identity = /etc/radroots/secrets/services/radrootsd/identity.secret.json
-#     publish proxy database = /var/lib/radroots/services/radrootsd/publish_proxy.sqlite
+#     transport publish database = /var/lib/radroots/services/radrootsd/transport_publish.sqlite
 # the canonical live service identity is always an encrypted local envelope
-# only override logs_dir or config.publish_proxy.database_path intentionally
+# only override logs_dir or config.transport_publish.database_path intentionally
 
 [metadata]
 name = "radrootsd"
@@ -36,15 +36,17 @@ relays = [
 [config.rpc]
 addr = "127.0.0.1:7070"
 
-[config.publish_proxy]
+[config.transport_publish]
 enabled = true
 max_event_bytes = 131072
-max_relays_per_request = 20
+max_targets_per_request = 20
 job_list_limit = 100
 max_concurrent_publish_jobs = 8
+
+[config.transport_publish.nostr]
 relay_url_policy = "localhost"
 author_relay_discovery_relays = []
-daemon_default_publish_relays = ["ws://127.0.0.1:8080"]
+daemon_default_relays = ["ws://127.0.0.1:8080"]
 
 [config.nip46]
 public_jsonrpc_enabled = false

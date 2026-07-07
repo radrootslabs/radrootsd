@@ -27,14 +27,14 @@ pub async fn start_rpc(
     addr: SocketAddr,
     rpc_cfg: &RpcConfig,
 ) -> Result<ServerHandle> {
-    state.publish_proxy.config.validate()?;
+    state.transport_publish.config.validate()?;
     let registry = MethodRegistry::default();
     let ctx = RpcContext::new(state, registry.clone());
-    let publish_proxy_store = ctx.state.publish_proxy.store.clone();
+    let transport_publish_store = ctx.state.transport_publish.store.clone();
 
     let mut root = RpcModule::new(ctx.clone());
     methods::register_all(&mut root, ctx, registry)?;
 
-    let handle = server::start_server(addr, rpc_cfg, publish_proxy_store, root).await?;
+    let handle = server::start_server(addr, rpc_cfg, transport_publish_store, root).await?;
     Ok(handle)
 }

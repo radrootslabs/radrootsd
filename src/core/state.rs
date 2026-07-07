@@ -4,8 +4,8 @@ use radroots_nostr::prelude::{
     RadrootsNostrClient, RadrootsNostrKeys, RadrootsNostrMetadata, RadrootsNostrPublicKey,
 };
 
-use crate::app::config::{Nip46Config, PublishProxyConfig};
-use crate::core::publish_proxy::PublishProxy;
+use crate::app::config::{Nip46Config, TransportPublishConfig};
+use crate::core::transport_publish::TransportPublish;
 
 #[derive(Clone)]
 pub struct Radrootsd {
@@ -14,7 +14,7 @@ pub struct Radrootsd {
     pub pubkey: RadrootsNostrPublicKey,
     pub metadata: RadrootsNostrMetadata,
     pub info: serde_json::Value,
-    pub publish_proxy: PublishProxy,
+    pub transport_publish: TransportPublish,
     pub(crate) nip46_sessions: crate::core::nip46::session::Nip46SessionStore,
     pub nip46_config: Nip46Config,
 }
@@ -23,7 +23,7 @@ impl Radrootsd {
     pub fn new(
         identity: RadrootsIdentity,
         metadata: RadrootsNostrMetadata,
-        publish_proxy_config: PublishProxyConfig,
+        transport_publish_config: TransportPublishConfig,
         nip46_config: Nip46Config,
     ) -> Result<Self> {
         let keys: RadrootsNostrKeys = identity.keys().clone();
@@ -34,9 +34,9 @@ impl Radrootsd {
             "build": option_env!("GIT_HASH").unwrap_or("unknown"),
         });
         #[cfg(test)]
-        let publish_proxy = PublishProxy::memory(publish_proxy_config)?;
+        let transport_publish = TransportPublish::memory(transport_publish_config)?;
         #[cfg(not(test))]
-        let publish_proxy = PublishProxy::open(publish_proxy_config)?;
+        let transport_publish = TransportPublish::open(transport_publish_config)?;
         let nip46_sessions = crate::core::nip46::session::Nip46SessionStore::new();
 
         Ok(Self {
@@ -45,7 +45,7 @@ impl Radrootsd {
             pubkey,
             metadata,
             info,
-            publish_proxy,
+            transport_publish,
             nip46_sessions,
             nip46_config,
         })
@@ -55,7 +55,7 @@ impl Radrootsd {
 #[cfg(test)]
 mod tests {
     use super::Radrootsd;
-    use crate::app::config::{Nip46Config, PublishProxyConfig};
+    use crate::app::config::{Nip46Config, TransportPublishConfig};
     use radroots_identity::RadrootsIdentity;
     use radroots_nostr::prelude::RadrootsNostrMetadata;
 
@@ -64,12 +64,12 @@ mod tests {
         let identity = RadrootsIdentity::generate();
         let metadata: RadrootsNostrMetadata =
             serde_json::from_str(r#"{"name":"radrootsd-test"}"#).expect("metadata");
-        let publish_proxy_cfg = PublishProxyConfig::default();
+        let transport_publish_cfg = TransportPublishConfig::default();
         let cfg = Nip46Config::default();
         let state = Radrootsd::new(
             identity.clone(),
             metadata.clone(),
-            publish_proxy_cfg.clone(),
+            transport_publish_cfg.clone(),
             cfg.clone(),
         )
         .expect("state");
@@ -77,8 +77,8 @@ mod tests {
         assert_eq!(state.pubkey, identity.public_key());
         assert_eq!(state.metadata, metadata);
         assert_eq!(
-            state.publish_proxy.config.enabled,
-            publish_proxy_cfg.enabled
+            state.transport_publish.config.enabled,
+            transport_publish_cfg.enabled
         );
         assert_eq!(state.nip46_config.session_ttl_secs, cfg.session_ttl_secs);
         assert_eq!(state.nip46_config.perms, cfg.perms);

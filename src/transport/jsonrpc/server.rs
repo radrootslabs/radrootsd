@@ -13,7 +13,7 @@ use jsonrpsee::server::{
 use jsonrpsee::types::{ErrorObject, Id};
 
 use crate::app::config::RpcConfig;
-use crate::core::publish_proxy::PublishProxyStore;
+use crate::core::transport_publish::TransportPublishStore;
 use crate::transport::jsonrpc::RpcContext;
 use crate::transport::jsonrpc::auth;
 
@@ -57,12 +57,12 @@ where
     ) -> impl Future<Output = Self::NotificationResponse> + Send + 'a {
         let service = self.service.clone();
         async move {
-            if notification.method_name().starts_with("publish.") {
+            if notification.method_name().starts_with("transport.publish.") {
                 MethodResponse::error(
                     Id::Null,
                     ErrorObject::owned(
                         -32600,
-                        "publish notifications are not accepted",
+                        "transport publish notifications are not accepted",
                         None::<()>,
                     ),
                 )
@@ -77,10 +77,11 @@ where
 mod tests {
     use super::start_server;
     use crate::app::config::{
-        Nip46Config, PublishProxyConfig, PublishProxyRelayUrlPolicy, RpcConfig,
+        Nip46Config, NostrRelayUrlPolicy, RpcConfig, TransportPublishConfig,
+        TransportPublishNostrConfig,
     };
     use crate::core::Radrootsd;
-    use crate::core::publish_proxy::{
+    use crate::core::transport_publish::{
         PublishJobVisibility, PublishPrincipalInit, PublishRelayResolveFuture,
         PublishRelayResolver, generate_bearer_token, hash_bearer_token,
     };
@@ -92,8 +93,10 @@ mod tests {
     use radroots_nostr::prelude::{
         RadrootsNostrMetadata, RadrootsNostrTimestamp, radroots_nostr_build_event,
     };
-    use radroots_publish_proxy_protocol::PublishRelayPolicy;
     use radroots_relay_transport::RadrootsMockRelayPublishAdapter;
+    use radroots_transport_publish_protocol::{
+        NostrPublishTargetSourcePolicy, TransportPublishTargetPolicyName,
+    };
     use serde_json::Value;
     use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener};
     use std::sync::Arc;
@@ -139,7 +142,7 @@ mod tests {
     }
 
     fn publish_server_state_with_config(
-        publish_proxy_config: PublishProxyConfig,
+        transport_publish_config: TransportPublishConfig,
         resolver: Option<Arc<dyn PublishRelayResolver>>,
     ) -> (
         Radrootsd,
@@ -153,27 +156,30 @@ mod tests {
         let mut state = Radrootsd::new(
             identity.clone(),
             metadata,
-            publish_proxy_config,
+            transport_publish_config,
             Nip46Config::default(),
         )
         .expect("state");
         let adapter = RadrootsMockRelayPublishAdapter::new();
-        let mut publish_proxy = state.publish_proxy.clone();
+        let mut transport_publish = state.transport_publish.clone();
         if let Some(resolver) = resolver {
-            publish_proxy = publish_proxy.with_relay_resolver(resolver);
+            transport_publish = transport_publish.with_relay_resolver(resolver);
         }
-        state.publish_proxy = publish_proxy.with_publisher(Arc::new(adapter.clone()));
+        state.transport_publish = transport_publish.with_publisher(Arc::new(adapter.clone()));
         let token = generate_bearer_token();
         state
-            .publish_proxy
+            .transport_publish
             .store
             .create_principal(PublishPrincipalInit {
                 label: "tester".to_owned(),
                 token_hash: hash_bearer_token(token.as_str()),
                 allowed_pubkeys: vec![identity.public_key_hex()],
                 allowed_kinds: vec![30_402],
-                allowed_relay_policies: vec![PublishRelayPolicy::DaemonDefaultOnly],
-                allow_request_relays: false,
+                allowed_target_policies: vec![TransportPublishTargetPolicyName::Nostr],
+                allowed_nostr_source_policies: vec![
+                    NostrPublishTargetSourcePolicy::DaemonDefaultOnly,
+                ],
+                allow_request_targets: false,
                 job_visibility: PublishJobVisibility::Own,
                 expires_at_unix: None,
             })
@@ -188,10 +194,13 @@ mod tests {
         RadrootsMockRelayPublishAdapter,
     ) {
         publish_server_state_with_config(
-            PublishProxyConfig {
-                daemon_default_publish_relays: vec![RELAY_PRIMARY.to_owned()],
-                relay_url_policy: PublishProxyRelayUrlPolicy::Localhost,
-                ..PublishProxyConfig::default()
+            TransportPublishConfig {
+                nostr: TransportPublishNostrConfig {
+                    daemon_default_relays: vec![RELAY_PRIMARY.to_owned()],
+                    relay_url_policy: NostrRelayUrlPolicy::Localhost,
+                    ..TransportPublishNostrConfig::default()
+                },
+                ..TransportPublishConfig::default()
             },
             None,
         )
@@ -223,7 +232,7 @@ mod tests {
         rpc_cfg: RpcConfig,
     ) -> (SocketAddr, jsonrpsee::server::ServerHandle) {
         let addr = unused_addr();
-        let store = state.publish_proxy.store.clone();
+        let store = state.transport_publish.store.clone();
         let registry = MethodRegistry::default();
         let ctx = RpcContext::new(state, registry.clone());
         let mut root = RpcModule::new(ctx.clone());
@@ -247,11 +256,10 @@ mod tests {
         let publish = format!(
             r#"{{
                 "jsonrpc":"2.0",
-                "method":"publish.event",
+                "method":"transport.publish.event",
                 "params":{{
                     "event":{},
-                    "relays":[],
-                    "relay_policy":"daemon_default_only",
+                    "target_policy":{{"kind":"nostr","source_policy":"daemon_default_only","relay_urls":[]}},
                     "delivery_policy":{{"mode":"any"}},
                     "idempotency_key":"raw-http-idem"
                 }},
@@ -274,7 +282,7 @@ mod tests {
         let get = format!(
             r#"{{
                 "jsonrpc":"2.0",
-                "method":"publish.job.get",
+                "method":"transport.publish.job.get",
                 "params":{{"job_id":"{job_id}"}},
                 "id":2
             }}"#
@@ -286,7 +294,7 @@ mod tests {
 
         let list = r#"{
             "jsonrpc":"2.0",
-            "method":"publish.job.list",
+            "method":"transport.publish.job.list",
             "params":{"limit":10},
             "id":3
         }"#;
@@ -303,10 +311,13 @@ mod tests {
     #[tokio::test]
     async fn raw_http_publish_event_rejects_public_relay_forbidden_dns_destination() {
         let (state, token, identity, adapter) = publish_server_state_with_config(
-            PublishProxyConfig {
-                daemon_default_publish_relays: vec![RELAY_PUBLIC.to_owned()],
-                relay_url_policy: PublishProxyRelayUrlPolicy::Public,
-                ..PublishProxyConfig::default()
+            TransportPublishConfig {
+                nostr: TransportPublishNostrConfig {
+                    daemon_default_relays: vec![RELAY_PUBLIC.to_owned()],
+                    relay_url_policy: NostrRelayUrlPolicy::Public,
+                    ..TransportPublishNostrConfig::default()
+                },
+                ..TransportPublishConfig::default()
             },
             Some(Arc::new(StaticPublishRelayResolver::forbidden_localhost())),
         );
@@ -315,11 +326,10 @@ mod tests {
         let publish = format!(
             r#"{{
                 "jsonrpc":"2.0",
-                "method":"publish.event",
+                "method":"transport.publish.event",
                 "params":{{
                     "event":{},
-                    "relays":[],
-                    "relay_policy":"daemon_default_only",
+                    "target_policy":{{"kind":"nostr","source_policy":"daemon_default_only","relay_urls":[]}},
                     "delivery_policy":{{"mode":"any"}},
                     "idempotency_key":"raw-http-public-dns-reject"
                 }},
@@ -333,30 +343,29 @@ mod tests {
         let publish_value = json_response_body(publish_response.as_str());
         let job = &publish_value["result"]["job"];
         assert_eq!(publish_value["result"]["deduplicated"], false);
-        assert_eq!(job["status"], "rejected");
-        assert_eq!(job["last_error"], "no_publish_relays");
-        let relays = job["relays"].as_array().expect("relay outcomes");
-        assert_eq!(relays.len(), 1);
-        assert_eq!(relays[0]["relay_url"], RELAY_PUBLIC);
-        assert_eq!(relays[0]["source"], "daemon_default");
-        assert_eq!(relays[0]["outcome_kind"], "relay_url_rejected");
-        assert_eq!(relays[0]["attempted"], false);
+        assert_eq!(job["status"], "delivery_unsatisfied_terminal");
+        assert_eq!(job["last_error"], "delivery_unsatisfied");
+        let targets = job["targets"].as_array().expect("target outcomes");
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0]["endpoint_uri"], RELAY_PUBLIC);
+        assert_eq!(targets[0]["source"], "daemon_default");
+        assert_eq!(targets[0]["outcome_kind"], "target_rejected");
+        assert_eq!(targets[0]["attempted"], false);
         assert!(adapter.captured_raw_events().is_empty());
     }
 
     #[tokio::test]
     async fn publish_notifications_do_not_create_jobs() {
         let (state, token, identity, _adapter) = publish_server_state();
-        let store = state.publish_proxy.store.clone();
+        let store = state.transport_publish.store.clone();
         let (addr, handle) = start_publish_server(state, RpcConfig::default()).await;
         let notification = format!(
             r#"{{
                 "jsonrpc":"2.0",
-                "method":"publish.event",
+                "method":"transport.publish.event",
                 "params":{{
                     "event":{},
-                    "relays":[],
-                    "relay_policy":"daemon_default_only",
+                    "target_policy":{{"kind":"nostr","source_policy":"daemon_default_only","relay_urls":[]}},
                     "delivery_policy":{{"mode":"any"}}
                 }}
             }}"#,
@@ -366,7 +375,7 @@ mod tests {
         handle.stop().expect("stop server");
 
         assert!(
-            response.contains("publish notifications are not accepted")
+            response.contains("transport publish notifications are not accepted")
                 || response.ends_with("\r\n\r\n")
         );
         let principal = store
@@ -384,16 +393,15 @@ mod tests {
     #[tokio::test]
     async fn batch_requests_are_disabled_by_default() {
         let (state, token, identity, _adapter) = publish_server_state();
-        let store = state.publish_proxy.store.clone();
+        let store = state.transport_publish.store.clone();
         let (addr, handle) = start_publish_server(state, RpcConfig::default()).await;
         let batch = format!(
             r#"[{{
                 "jsonrpc":"2.0",
-                "method":"publish.event",
+                "method":"transport.publish.event",
                 "params":{{
                     "event":{},
-                    "relays":[],
-                    "relay_policy":"daemon_default_only",
+                    "target_policy":{{"kind":"nostr","source_policy":"daemon_default_only","relay_urls":[]}},
                     "delivery_policy":{{"mode":"any"}}
                 }},
                 "id":1
@@ -423,7 +431,7 @@ mod tests {
 pub async fn start_server(
     addr: SocketAddr,
     rpc_cfg: &RpcConfig,
-    publish_proxy_store: PublishProxyStore,
+    transport_publish_store: TransportPublishStore,
     root: RpcModule<RpcContext>,
 ) -> Result<ServerHandle> {
     let mut builder = ServerConfigBuilder::new()
@@ -449,14 +457,14 @@ pub async fn start_server(
         .set_rpc_middleware(rpc_middleware)
         .set_http_middleware(tower::ServiceBuilder::new().map_request(
             move |mut request: HttpRequest<HttpBody>| {
-                let publish_proxy_auth = auth::authorize_publish_proxy_request(
+                let transport_publish_auth = auth::authorize_transport_publish_request(
                     request
                         .headers()
                         .get("authorization")
                         .and_then(|value| value.to_str().ok()),
-                    &publish_proxy_store,
+                    &transport_publish_store,
                 );
-                request.extensions_mut().insert(publish_proxy_auth);
+                request.extensions_mut().insert(transport_publish_auth);
                 request
             },
         ))

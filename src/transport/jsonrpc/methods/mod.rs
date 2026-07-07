@@ -6,15 +6,15 @@ use jsonrpsee::server::RpcModule;
 use crate::transport::jsonrpc::{MethodRegistry, RpcContext};
 
 pub mod nip46;
-pub mod publish_proxy;
+pub mod transport_publish;
 
 pub fn register_all(
     root: &mut RpcModule<RpcContext>,
     ctx: RpcContext,
     registry: MethodRegistry,
 ) -> Result<()> {
-    if ctx.state.publish_proxy.config.enabled {
-        root.merge(publish_proxy::module(ctx.clone(), registry.clone())?)?;
+    if ctx.state.transport_publish.config.enabled {
+        root.merge(transport_publish::module(ctx.clone(), registry.clone())?)?;
     }
     if ctx.state.nip46_config.public_jsonrpc_enabled {
         root.merge(nip46::module(ctx, registry)?)?;
@@ -29,42 +29,41 @@ mod tests {
     use radroots_nostr::prelude::RadrootsNostrMetadata;
 
     use super::register_all;
-    use crate::app::config::{Nip46Config, PublishProxyConfig};
+    use crate::app::config::{Nip46Config, TransportPublishConfig};
     use crate::core::Radrootsd;
-    use crate::transport::jsonrpc::auth::PublishProxyAuthorization;
+    use crate::transport::jsonrpc::auth::TransportPublishAuthorization;
     use crate::transport::jsonrpc::{MethodRegistry, RpcContext};
 
     mod removed_surface_fixtures {
         pub const BRIDGE_STATUS_METHOD: &str = "bridge.status";
     }
 
-    fn state(publish_proxy_enabled: bool, nip46_public_jsonrpc_enabled: bool) -> Radrootsd {
+    fn state(transport_publish_enabled: bool, nip46_public_jsonrpc_enabled: bool) -> Radrootsd {
         let identity = RadrootsIdentity::generate();
         let metadata: RadrootsNostrMetadata =
             serde_json::from_str(r#"{"name":"radrootsd-test"}"#).expect("metadata");
-        let publish_proxy = PublishProxyConfig {
-            enabled: publish_proxy_enabled,
-            ..PublishProxyConfig::default()
+        let transport_publish = TransportPublishConfig {
+            enabled: transport_publish_enabled,
+            ..TransportPublishConfig::default()
         };
         let nip46 = Nip46Config {
             public_jsonrpc_enabled: nip46_public_jsonrpc_enabled,
             ..Nip46Config::default()
         };
-        Radrootsd::new(identity, metadata, publish_proxy, nip46).expect("state")
+        Radrootsd::new(identity, metadata, transport_publish, nip46).expect("state")
     }
 
     #[test]
-    fn register_all_exposes_publish_proxy_methods_by_default() {
+    fn register_all_exposes_transport_publish_methods_by_default() {
         let registry = MethodRegistry::default();
         let ctx = RpcContext::new(state(true, false), registry.clone());
         let mut root = RpcModule::new(ctx.clone());
         register_all(&mut root, ctx, registry).expect("register");
 
-        assert!(root.method("publish.capabilities").is_some());
-        assert!(root.method("publish.event").is_some());
-        assert!(root.method("publish.job.get").is_some());
-        assert!(root.method("publish.job.list").is_some());
-        assert!(root.method("publish.relays.resolve").is_some());
+        assert!(root.method("transport.publish.capabilities").is_some());
+        assert!(root.method("transport.publish.event").is_some());
+        assert!(root.method("transport.publish.job.get").is_some());
+        assert!(root.method("transport.publish.job.list").is_some());
         assert!(
             root.method(removed_surface_fixtures::BRIDGE_STATUS_METHOD)
                 .is_none()
@@ -79,7 +78,7 @@ mod tests {
         let mut root = RpcModule::new(ctx.clone());
         register_all(&mut root, ctx, registry).expect("register");
 
-        assert!(root.method("publish.capabilities").is_some());
+        assert!(root.method("transport.publish.capabilities").is_some());
         assert!(root.method("nip46.connect").is_some());
     }
 
@@ -92,7 +91,7 @@ mod tests {
 
         let (response, _stream) = root
             .raw_json_request(
-                r#"{"jsonrpc":"2.0","method":"publish.capabilities","id":1}"#,
+                r#"{"jsonrpc":"2.0","method":"transport.publish.capabilities","id":1}"#,
                 1,
             )
             .await
@@ -106,29 +105,32 @@ mod tests {
         let ctx = RpcContext::new(state(true, false), registry.clone());
         let principal = ctx
             .state
-            .publish_proxy
+            .transport_publish
             .store
-            .create_principal(crate::core::publish_proxy::PublishPrincipalInit {
+            .create_principal(crate::core::transport_publish::PublishPrincipalInit {
                 label: "tester".to_owned(),
-                token_hash: crate::core::publish_proxy::hash_bearer_token("secret"),
+                token_hash: crate::core::transport_publish::hash_bearer_token("secret"),
                 allowed_pubkeys: vec!["a".repeat(64)],
                 allowed_kinds: vec![30_402],
-                allowed_relay_policies: vec![
-                    radroots_publish_proxy_protocol::PublishRelayPolicy::DaemonDefaultOnly,
+                allowed_target_policies: vec![
+                    radroots_transport_publish_protocol::TransportPublishTargetPolicyName::Nostr,
                 ],
-                allow_request_relays: false,
-                job_visibility: crate::core::publish_proxy::PublishJobVisibility::Own,
+                allowed_nostr_source_policies: vec![
+                    radroots_transport_publish_protocol::NostrPublishTargetSourcePolicy::DaemonDefaultOnly,
+                ],
+                allow_request_targets: false,
+                job_visibility: crate::core::transport_publish::PublishJobVisibility::Own,
                 expires_at_unix: None,
             })
             .expect("principal");
         let mut root = RpcModule::new(ctx.clone());
         root.extensions_mut()
-            .insert(PublishProxyAuthorization::Authorized(principal));
+            .insert(TransportPublishAuthorization::Authorized(principal));
         register_all(&mut root, ctx, registry).expect("register");
 
         let (response, _stream) = root
             .raw_json_request(
-                r#"{"jsonrpc":"2.0","method":"publish.capabilities","id":1}"#,
+                r#"{"jsonrpc":"2.0","method":"transport.publish.capabilities","id":1}"#,
                 1,
             )
             .await
