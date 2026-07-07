@@ -96,9 +96,7 @@ fn transport_publish_capabilities_expose_per_transport_readiness() {
         r#"\"transport_kind\":\"reticulum\""#,
         r#"\"implementation_state\":\"preview_unavailable\""#,
         r#"\"usable_for_delivery\":false"#,
-        "APPROVED_RETICULUM_UNAVAILABLE_MESSAGE",
-        "Reticulum transport is configured for future compatibility, ",
-        "but this build does not implement Reticulum delivery.",
+        "RADROOTS_RETICULUM_UNAVAILABLE_MESSAGE",
     ] {
         assert!(
             methods_source.contains(required),
@@ -114,7 +112,7 @@ fn transport_publish_capabilities_expose_per_transport_readiness() {
     for required in [
         "pub implementation_state: TransportPublishImplementationState,",
         "pub usable_for_delivery: bool,",
-        "Reticulum transport is configured for future compatibility, but this build does not implement Reticulum delivery.",
+        "RADROOTS_RETICULUM_UNAVAILABLE_MESSAGE",
     ] {
         assert!(
             protocol_source.contains(required),
