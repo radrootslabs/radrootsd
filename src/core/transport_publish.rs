@@ -1454,6 +1454,8 @@ fn finalize_job_view(view: &mut TransportPublishJobView) {
         view.status,
         TransportPublishJobStatus::DeliverySatisfied
             | TransportPublishJobStatus::DeliveryUnsatisfiedTerminal
+            | TransportPublishJobStatus::DeliveryDeferred
+            | TransportPublishJobStatus::DeliveryPreviewUnavailable
             | TransportPublishJobStatus::Rejected
     );
     view.delivery_satisfied = view.status == TransportPublishJobStatus::DeliverySatisfied;
@@ -2843,7 +2845,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn publish_event_records_reticulum_preview_unavailable_without_terminal_failure() {
+    async fn publish_event_records_reticulum_preview_unavailable_as_terminal_nonfailure() {
         let identity = RadrootsIdentity::generate();
         let (proxy, adapter) = transport_publish(TransportPublishConfig::default());
         let principal =
@@ -2863,9 +2865,10 @@ mod tests {
             response.job.status,
             TransportPublishJobStatus::DeliveryPreviewUnavailable
         );
-        assert!(!response.job.terminal);
+        assert!(response.job.terminal);
         assert!(!response.job.delivery_satisfied);
         assert_eq!(response.job.terminal_count, 0);
+        assert!(response.job.completed_at_ms.is_some());
         assert_eq!(
             response.job.last_error.as_deref(),
             Some("delivery_preview_unavailable")
@@ -2880,7 +2883,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn publish_event_records_reticulum_deferred_without_terminal_failure() {
+    async fn publish_event_records_reticulum_deferred_as_terminal_nonfailure() {
         let identity = RadrootsIdentity::generate();
         let (proxy, adapter) = transport_publish(TransportPublishConfig::default());
         let principal =
@@ -2900,9 +2903,10 @@ mod tests {
             response.job.status,
             TransportPublishJobStatus::DeliveryDeferred
         );
-        assert!(!response.job.terminal);
+        assert!(response.job.terminal);
         assert!(!response.job.delivery_satisfied);
         assert_eq!(response.job.terminal_count, 0);
+        assert!(response.job.completed_at_ms.is_some());
         assert_eq!(
             response.job.last_error.as_deref(),
             Some("delivery_deferred_until_implemented")
