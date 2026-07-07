@@ -85,6 +85,32 @@ fn transport_publish_sources_reject_removed_protocol_identifiers() {
 }
 
 #[test]
+fn transport_publish_sources_reject_proxy_explicit_targets() {
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let protocol_source = read_source(
+        manifest_dir
+            .join("../lib/crates/transport_publish_protocol/src/lib.rs")
+            .as_path(),
+    );
+    for required in [
+        "ExplicitProxyTarget",
+        "transport_kind == RadrootsTransportKind::Proxy",
+        "cannot be used as a daemon explicit target",
+    ] {
+        assert!(
+            protocol_source.contains(required),
+            "transport publish protocol must retain proxy explicit-target rejection witness `{required}`"
+        );
+    }
+
+    let daemon_source = read_source(manifest_dir.join("src/core/transport_publish.rs").as_path());
+    assert!(
+        daemon_source.contains("publish_event_rejects_proxy_target_before_recording_job"),
+        "daemon transport publish tests must prove proxy explicit targets are rejected before job recording"
+    );
+}
+
+#[test]
 fn transport_publish_capabilities_expose_per_transport_readiness() {
     let methods_source = read_source(
         Path::new(env!("CARGO_MANIFEST_DIR"))
