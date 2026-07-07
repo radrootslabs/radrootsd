@@ -21,7 +21,7 @@ use radroots_relay_transport::{
     RadrootsRelayPublishAdapter, RadrootsRelayPublishRelayReceipt, RadrootsRelayPublishRequest,
     RadrootsRelayTargetSet, RadrootsRelayTransportError, RadrootsRelayUrl, RadrootsRelayUrlPolicy,
 };
-use radroots_transport::RadrootsTransportSatisfactionPolicy;
+use radroots_transport::{RadrootsTransportKind, RadrootsTransportSatisfactionPolicy};
 use radroots_transport_publish_protocol::{
     NostrPublishTargetSourcePolicy, SignedNostrEventWire, TransportPublishDeliveryPolicy,
     TransportPublishEventRequest, TransportPublishEventResponse, TransportPublishJobStatus,
@@ -229,13 +229,19 @@ impl TransportPublish {
     ) -> Result<PublishRelayResolution, TransportPublishError> {
         let mut resolved = Vec::new();
         let mut outcomes = Vec::new();
-        for target in targets {
-            match target.transport_kind.as_str() {
-                TRANSPORT_KIND_NOSTR => {
+        for (index, target) in targets.iter().enumerate() {
+            match RadrootsTransportKind::parse_canonical(target.transport_kind.as_str()).map_err(
+                |error| {
+                    TransportPublishError::InvalidSignedEvent(format!(
+                        "transport target {index} kind is invalid: {error}"
+                    ))
+                },
+            )? {
+                RadrootsTransportKind::Nostr => {
                     self.resolve_request_target(&mut resolved, &mut outcomes, target)
                         .await;
                 }
-                TRANSPORT_KIND_RETICULUM => {
+                RadrootsTransportKind::Reticulum => {
                     outcomes.push(reticulum_preview_outcome(target));
                 }
                 _ => outcomes.push(unsupported_transport_outcome(target)),
@@ -2951,6 +2957,76 @@ mod tests {
                 .expect("jobs")
                 .is_empty()
         );
+    }
+
+    #[tokio::test]
+    async fn publish_event_rejects_noncanonical_reticulum_kind_before_recording_job() {
+        let identity = RadrootsIdentity::generate();
+        let (proxy, adapter) = transport_publish(TransportPublishConfig::default());
+        let principal =
+            explicit_target_principal(&proxy, identity.public_key_hex(), PublishJobVisibility::Own);
+        let mut request = reticulum_publish_request(
+            signed_event(&identity, "{}"),
+            TransportPublishPreviewBehavior::RejectDeliveryAttempts,
+        );
+        request.target_policy =
+            TransportPublishTargetPolicy::explicit_targets(vec![TransportPublishTarget {
+                transport_kind: "Reticulum".to_owned(),
+                endpoint_uri: "reticulum:preview-unavailable".to_owned(),
+                preview_behavior: Some(TransportPublishPreviewBehavior::RejectDeliveryAttempts),
+            }]);
+
+        let err = proxy
+            .publish_event(&principal, request)
+            .await
+            .expect_err("noncanonical Reticulum kind");
+
+        assert!(matches!(err, TransportPublishError::InvalidSignedEvent(_)));
+        assert!(adapter.captured_raw_events().is_empty());
+        assert!(
+            proxy
+                .store
+                .list_jobs_for_principal(&principal, 10)
+                .expect("jobs")
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn publish_event_rejects_removed_proxy_kind_before_recording_job() {
+        let identity = RadrootsIdentity::generate();
+        let (proxy, adapter) = transport_publish(TransportPublishConfig::default());
+        let principal =
+            explicit_target_principal(&proxy, identity.public_key_hex(), PublishJobVisibility::Own);
+        let mut request = reticulum_publish_request(
+            signed_event(&identity, "{}"),
+            TransportPublishPreviewBehavior::RejectDeliveryAttempts,
+        );
+        request.target_policy =
+            TransportPublishTargetPolicy::explicit_targets(vec![TransportPublishTarget {
+                transport_kind: removed_proxy_kind_string(),
+                endpoint_uri: "radrootsd-proxy:publish".to_owned(),
+                preview_behavior: None,
+            }]);
+
+        let err = proxy
+            .publish_event(&principal, request)
+            .await
+            .expect_err("removed proxy kind");
+
+        assert!(matches!(err, TransportPublishError::InvalidSignedEvent(_)));
+        assert!(adapter.captured_raw_events().is_empty());
+        assert!(
+            proxy
+                .store
+                .list_jobs_for_principal(&principal, 10)
+                .expect("jobs")
+                .is_empty()
+        );
+    }
+
+    fn removed_proxy_kind_string() -> String {
+        ["radrootsd", "_proxy"].concat()
     }
 
     #[tokio::test]

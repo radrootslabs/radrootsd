@@ -1918,6 +1918,7 @@ dependencies = [
 name = "radroots_transport_publish_protocol"
 version = "0.1.0-alpha.2"
 dependencies = [
+ "radroots_transport",
  "serde",
 ]
 
