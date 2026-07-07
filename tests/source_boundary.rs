@@ -10,6 +10,10 @@ struct ForbiddenConcept {
 
 const FORBIDDEN_DAEMON_TRANSPORT_CONCEPTS: &[ForbiddenConcept] = &[
     ForbiddenConcept {
+        pattern: "\"radrootsd_proxy\"",
+        reason: "proxy targets must use first-class shared proxy transport modeling",
+    },
+    ForbiddenConcept {
         pattern: "radrootsd.publish_proxy.v1",
         reason: "daemon publish proxy v1 is removed",
     },
@@ -92,6 +96,9 @@ fn transport_publish_capabilities_expose_per_transport_readiness() {
         r#"\"transport_kind\":\"reticulum\""#,
         r#"\"implementation_state\":\"preview_unavailable\""#,
         r#"\"usable_for_delivery\":false"#,
+        "APPROVED_RETICULUM_UNAVAILABLE_MESSAGE",
+        "Reticulum transport is configured for future compatibility, ",
+        "but this build does not implement Reticulum delivery.",
     ] {
         assert!(
             methods_source.contains(required),
@@ -107,6 +114,7 @@ fn transport_publish_capabilities_expose_per_transport_readiness() {
     for required in [
         "pub implementation_state: TransportPublishImplementationState,",
         "pub usable_for_delivery: bool,",
+        "Reticulum transport is configured for future compatibility, but this build does not implement Reticulum delivery.",
     ] {
         assert!(
             protocol_source.contains(required),

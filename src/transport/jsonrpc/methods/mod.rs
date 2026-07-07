@@ -34,6 +34,11 @@ mod tests {
     use crate::transport::jsonrpc::auth::TransportPublishAuthorization;
     use crate::transport::jsonrpc::{MethodRegistry, RpcContext};
 
+    const APPROVED_RETICULUM_UNAVAILABLE_MESSAGE: &str = concat!(
+        "Reticulum transport is configured for future compatibility, ",
+        "but this build does not implement Reticulum delivery."
+    );
+
     mod removed_surface_fixtures {
         pub const BRIDGE_STATUS_METHOD: &str = "bridge.status";
     }
@@ -145,5 +150,10 @@ mod tests {
                 .contains("\"implementation_state\":\"preview_unavailable\"")
         );
         assert!(response.get().contains("\"usable_for_delivery\":false"));
+        assert!(
+            response
+                .get()
+                .contains(APPROVED_RETICULUM_UNAVAILABLE_MESSAGE)
+        );
     }
 }
