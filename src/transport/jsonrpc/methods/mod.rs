@@ -137,5 +137,13 @@ mod tests {
             .expect("request");
         assert!(response.get().contains("\"scoped_bearer_token\""));
         assert!(response.get().contains("\"signed_event_ingress\":true"));
+        assert!(response.get().contains("\"transports\":["));
+        assert!(response.get().contains("\"transport_kind\":\"reticulum\""));
+        assert!(
+            response
+                .get()
+                .contains("\"implementation_state\":\"preview_unavailable\"")
+        );
+        assert!(response.get().contains("\"usable_for_delivery\":false"));
     }
 }

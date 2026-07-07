@@ -480,29 +480,13 @@ impl TransportPublish {
     ) -> Result<TransportPublishJobView, TransportPublishError> {
         let target_count = resolution.target_count();
         if resolution.targets.is_empty() {
-            let status = if resolution
-                .outcomes
-                .iter()
-                .any(|outcome| outcome.outcome_kind.is_retryable())
-            {
-                TransportPublishJobStatus::DeliveryUnsatisfiedRetryable
-            } else if resolution.outcomes.is_empty() {
-                TransportPublishJobStatus::Rejected
-            } else {
-                TransportPublishJobStatus::DeliveryUnsatisfiedTerminal
-            };
-            let last_error = if status == TransportPublishJobStatus::DeliveryUnsatisfiedRetryable {
-                "delivery_unsatisfied"
-            } else if resolution.outcomes.is_empty() {
-                "no_transport_publish_targets"
-            } else {
-                "delivery_unsatisfied"
-            };
+            let status = no_publishable_target_status(&resolution.outcomes);
+            let last_error = last_error_for_status(status);
             self.store.complete_publish_job(
                 job_id,
                 status,
                 resolution.outcomes,
-                Some(last_error.to_owned()),
+                last_error.map(str::to_owned),
             )?;
             return self.store.job_by_id(job_id);
         }
@@ -548,11 +532,7 @@ impl TransportPublish {
             publish_outcome_from_receipt(receipt, &source_by_relay, Some(latency_ms))
         }));
         let status = delivery_status(&delivery_policy, target_count, &outcomes);
-        let last_error = if status == TransportPublishJobStatus::DeliverySatisfied {
-            None
-        } else {
-            Some("delivery_unsatisfied".to_owned())
-        };
+        let last_error = last_error_for_status(status).map(str::to_owned);
         self.store
             .complete_publish_job(job_id, status, outcomes, last_error)?;
         self.store.job_by_id(job_id)
@@ -1677,10 +1657,10 @@ fn push_resolved_relay(
 fn reticulum_preview_outcome(target: &TransportPublishTarget) -> TransportPublishTargetOutcome {
     let outcome_kind = match target.preview_behavior.unwrap_or_default() {
         TransportPublishPreviewBehavior::RejectDeliveryAttempts => {
-            TransportPublishOutcomeKind::Unavailable
+            TransportPublishOutcomeKind::PreviewUnavailable
         }
         TransportPublishPreviewBehavior::DeferDeliveryPlans => {
-            TransportPublishOutcomeKind::Deferred
+            TransportPublishOutcomeKind::DeferredUntilImplemented
         }
     };
     TransportPublishTargetOutcome {
@@ -1829,11 +1809,11 @@ fn satisfaction_policy_from_delivery_policy(
     nostr_target_count: usize,
 ) -> RadrootsTransportSatisfactionPolicy {
     match delivery_policy {
-        TransportPublishDeliveryPolicy::Any => RadrootsTransportSatisfactionPolicy::AnyTarget,
-        TransportPublishDeliveryPolicy::All => RadrootsTransportSatisfactionPolicy::AllTargets,
+        TransportPublishDeliveryPolicy::Any => RadrootsTransportSatisfactionPolicy::any_accepted(),
+        TransportPublishDeliveryPolicy::All => RadrootsTransportSatisfactionPolicy::all_accepted(),
         TransportPublishDeliveryPolicy::Quorum { quorum } => {
             let required = (*quorum).min(target_count).min(nostr_target_count).max(1);
-            RadrootsTransportSatisfactionPolicy::AtLeast(
+            RadrootsTransportSatisfactionPolicy::quorum_accepted(
                 u16::try_from(required).unwrap_or(u16::MAX),
             )
         }
@@ -1858,8 +1838,47 @@ fn delivery_status(
         .any(|outcome| outcome.outcome_kind.is_retryable())
     {
         TransportPublishJobStatus::DeliveryUnsatisfiedRetryable
+    } else if outcomes.iter().any(|outcome| {
+        outcome.outcome_kind == TransportPublishOutcomeKind::DeferredUntilImplemented
+    }) && outcomes
+        .iter()
+        .all(|outcome| !outcome.outcome_kind.is_terminal_failure())
+    {
+        TransportPublishJobStatus::DeliveryDeferred
+    } else if outcomes
+        .iter()
+        .any(|outcome| outcome.outcome_kind == TransportPublishOutcomeKind::PreviewUnavailable)
+        && outcomes
+            .iter()
+            .all(|outcome| !outcome.outcome_kind.is_terminal_failure())
+    {
+        TransportPublishJobStatus::DeliveryPreviewUnavailable
     } else {
         TransportPublishJobStatus::DeliveryUnsatisfiedTerminal
+    }
+}
+
+fn no_publishable_target_status(
+    outcomes: &[TransportPublishTargetOutcome],
+) -> TransportPublishJobStatus {
+    if outcomes.is_empty() {
+        return TransportPublishJobStatus::Rejected;
+    }
+    delivery_status(&TransportPublishDeliveryPolicy::Any, 1, outcomes)
+}
+
+fn last_error_for_status(status: TransportPublishJobStatus) -> Option<&'static str> {
+    match status {
+        TransportPublishJobStatus::DeliverySatisfied => None,
+        TransportPublishJobStatus::Rejected => Some("no_transport_publish_targets"),
+        TransportPublishJobStatus::DeliveryDeferred => Some("delivery_deferred_until_implemented"),
+        TransportPublishJobStatus::DeliveryPreviewUnavailable => {
+            Some("delivery_preview_unavailable")
+        }
+        TransportPublishJobStatus::Accepted
+        | TransportPublishJobStatus::Publishing
+        | TransportPublishJobStatus::DeliveryUnsatisfiedRetryable
+        | TransportPublishJobStatus::DeliveryUnsatisfiedTerminal => Some("delivery_unsatisfied"),
     }
 }
 
@@ -1986,8 +2005,8 @@ mod tests {
     use radroots_transport_publish_protocol::{
         NostrPublishTargetSourcePolicy, SignedNostrEventWire, TransportPublishDeliveryPolicy,
         TransportPublishEventRequest, TransportPublishJobStatus, TransportPublishOutcomeKind,
-        TransportPublishTargetPolicy, TransportPublishTargetPolicyName,
-        TransportPublishTargetSource,
+        TransportPublishPreviewBehavior, TransportPublishTarget, TransportPublishTargetPolicy,
+        TransportPublishTargetPolicyName, TransportPublishTargetSource,
     };
     use std::collections::BTreeMap;
     use std::net::{IpAddr, Ipv4Addr};
@@ -2051,6 +2070,24 @@ mod tests {
         }
     }
 
+    fn reticulum_publish_request(
+        event: SignedNostrEventWire,
+        behavior: TransportPublishPreviewBehavior,
+    ) -> TransportPublishEventRequest {
+        TransportPublishEventRequest {
+            event,
+            target_policy: TransportPublishTargetPolicy::explicit_targets(vec![
+                TransportPublishTarget::reticulum_preview(
+                    "reticulum:preview-unavailable",
+                    behavior,
+                ),
+            ]),
+            delivery_policy: TransportPublishDeliveryPolicy::Any,
+            idempotency_key: None,
+            timeout_ms: Some(5_000),
+        }
+    }
+
     fn transport_publish(
         config: TransportPublishConfig,
     ) -> (TransportPublish, RadrootsMockRelayPublishAdapter) {
@@ -2086,6 +2123,27 @@ mod tests {
                 allowed_target_policies: vec![TransportPublishTargetPolicyName::Nostr],
                 allowed_nostr_source_policies: nostr_source_policies,
                 allow_request_targets,
+                job_visibility: visibility,
+                expires_at_unix: None,
+            })
+            .expect("principal")
+    }
+
+    fn explicit_target_principal(
+        proxy: &TransportPublish,
+        pubkey: String,
+        visibility: PublishJobVisibility,
+    ) -> PublishPrincipal {
+        proxy
+            .store
+            .create_principal(PublishPrincipalInit {
+                label: "explicit-target-tester".to_owned(),
+                token_hash: hash_bearer_token(generate_bearer_token().as_str()),
+                allowed_pubkeys: vec![pubkey],
+                allowed_kinds: vec![30_402],
+                allowed_target_policies: vec![TransportPublishTargetPolicyName::ExplicitTargets],
+                allowed_nostr_source_policies: Vec::new(),
+                allow_request_targets: true,
                 job_visibility: visibility,
                 expires_at_unix: None,
             })
@@ -2784,6 +2842,80 @@ mod tests {
             Some("no_transport_publish_targets")
         );
         assert!(response.job.targets.is_empty());
+        assert!(adapter.captured_raw_events().is_empty());
+    }
+
+    #[tokio::test]
+    async fn publish_event_records_reticulum_preview_unavailable_without_terminal_failure() {
+        let identity = RadrootsIdentity::generate();
+        let (proxy, adapter) = transport_publish(TransportPublishConfig::default());
+        let principal =
+            explicit_target_principal(&proxy, identity.public_key_hex(), PublishJobVisibility::Own);
+        let response = proxy
+            .publish_event(
+                &principal,
+                reticulum_publish_request(
+                    signed_event(&identity, "{}"),
+                    TransportPublishPreviewBehavior::RejectDeliveryAttempts,
+                ),
+            )
+            .await
+            .expect("publish");
+
+        assert_eq!(
+            response.job.status,
+            TransportPublishJobStatus::DeliveryPreviewUnavailable
+        );
+        assert!(!response.job.terminal);
+        assert!(!response.job.delivery_satisfied);
+        assert_eq!(response.job.terminal_count, 0);
+        assert_eq!(
+            response.job.last_error.as_deref(),
+            Some("delivery_preview_unavailable")
+        );
+        assert_eq!(response.job.targets.len(), 1);
+        assert_eq!(
+            response.job.targets[0].outcome_kind,
+            TransportPublishOutcomeKind::PreviewUnavailable
+        );
+        assert!(!response.job.targets[0].attempted);
+        assert!(adapter.captured_raw_events().is_empty());
+    }
+
+    #[tokio::test]
+    async fn publish_event_records_reticulum_deferred_without_terminal_failure() {
+        let identity = RadrootsIdentity::generate();
+        let (proxy, adapter) = transport_publish(TransportPublishConfig::default());
+        let principal =
+            explicit_target_principal(&proxy, identity.public_key_hex(), PublishJobVisibility::Own);
+        let response = proxy
+            .publish_event(
+                &principal,
+                reticulum_publish_request(
+                    signed_event(&identity, "{}"),
+                    TransportPublishPreviewBehavior::DeferDeliveryPlans,
+                ),
+            )
+            .await
+            .expect("publish");
+
+        assert_eq!(
+            response.job.status,
+            TransportPublishJobStatus::DeliveryDeferred
+        );
+        assert!(!response.job.terminal);
+        assert!(!response.job.delivery_satisfied);
+        assert_eq!(response.job.terminal_count, 0);
+        assert_eq!(
+            response.job.last_error.as_deref(),
+            Some("delivery_deferred_until_implemented")
+        );
+        assert_eq!(response.job.targets.len(), 1);
+        assert_eq!(
+            response.job.targets[0].outcome_kind,
+            TransportPublishOutcomeKind::DeferredUntilImplemented
+        );
+        assert!(!response.job.targets[0].attempted);
         assert!(adapter.captured_raw_events().is_empty());
     }
 
