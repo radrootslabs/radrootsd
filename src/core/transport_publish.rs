@@ -2960,6 +2960,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn publish_event_rejects_preview_behavior_on_non_reticulum_before_recording_job() {
+        let identity = RadrootsIdentity::generate();
+        let (proxy, adapter) = transport_publish(TransportPublishConfig::default());
+        let principal =
+            explicit_target_principal(&proxy, identity.public_key_hex(), PublishJobVisibility::Own);
+        let mut request = publish_request(
+            signed_event(&identity, "{}"),
+            vec![RELAY_PRIMARY.to_owned()],
+            NostrPublishTargetSourcePolicy::ExplicitOnly,
+            TransportPublishDeliveryPolicy::Any,
+            None,
+        );
+        request.target_policy =
+            TransportPublishTargetPolicy::explicit_targets(vec![TransportPublishTarget {
+                transport_kind: "nostr".to_owned(),
+                endpoint_uri: RELAY_PRIMARY.to_owned(),
+                preview_behavior: Some(TransportPublishPreviewBehavior::RejectDeliveryAttempts),
+            }]);
+
+        let err = proxy
+            .publish_event(&principal, request)
+            .await
+            .expect_err("non-Reticulum preview behavior");
+
+        assert!(matches!(err, TransportPublishError::InvalidSignedEvent(_)));
+        assert!(adapter.captured_raw_events().is_empty());
+        assert!(
+            proxy
+                .store
+                .list_jobs_for_principal(&principal, 10)
+                .expect("jobs")
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
     async fn publish_event_rejects_noncanonical_reticulum_kind_before_recording_job() {
         let identity = RadrootsIdentity::generate();
         let (proxy, adapter) = transport_publish(TransportPublishConfig::default());
