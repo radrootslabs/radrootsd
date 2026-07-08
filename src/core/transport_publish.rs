@@ -2139,7 +2139,6 @@ fn job_from_row(row: &Row<'_>) -> Result<PublishJobRow, rusqlite::Error> {
     let status: TransportPublishJobStatus = json_text(row, 3)?;
     let target_policy: TransportPublishTargetPolicy = json_text(row, 7)?;
     let delivery_policy: TransportPublishDeliveryPolicy = json_text(row, 8)?;
-    let target_count: i64 = row.get(9)?;
     Ok(PublishJobRow {
         principal_id: row.get(1)?,
         request_fingerprint: row.get(2)?,
@@ -2150,10 +2149,10 @@ fn job_from_row(row: &Row<'_>) -> Result<PublishJobRow, rusqlite::Error> {
             delivery_satisfied: false,
             event_id: row.get(4)?,
             pubkey: row.get(5)?,
-            event_kind: row.get::<_, i64>(6)? as u32,
+            event_kind: checked_event_kind_column(row, 6)?,
             target_policy,
             delivery_policy,
-            target_count: usize::try_from(target_count).unwrap_or(0),
+            target_count: checked_usize_column(row, 9, "effective_target_count")?,
             acknowledged_count: 0,
             retryable_count: 0,
             terminal_count: 0,
@@ -2177,9 +2176,7 @@ fn target_outcome_from_row(
         attempted: row.get(3)?,
         outcome_kind,
         message: row.get(5)?,
-        latency_ms: row
-            .get::<_, Option<i64>>(6)?
-            .map(|latency| u64::try_from(latency).unwrap_or(0)),
+        latency_ms: checked_optional_u64_column(row, 6, "latency_ms")?,
     })
 }
 
@@ -2774,11 +2771,89 @@ fn json_text<T: for<'de> Deserialize<'de>>(
     serde_json::from_str(value.as_str()).map_err(|error| conversion_error(index, error))
 }
 
+#[derive(Debug, Error)]
+#[error("{field} integer value {value} is outside {target} range")]
+struct TransportPublishStorageIntegerRangeError {
+    field: &'static str,
+    value: i64,
+    target: &'static str,
+}
+
+fn checked_event_kind_column(row: &Row<'_>, index: usize) -> Result<u32, rusqlite::Error> {
+    let value = row.get::<_, i64>(index)?;
+    if !(0..=i64::from(u16::MAX)).contains(&value) {
+        return Err(integer_conversion_error(
+            index,
+            TransportPublishStorageIntegerRangeError {
+                field: "event_kind",
+                value,
+                target: "u16",
+            },
+        ));
+    }
+    u32::try_from(value).map_err(|_| {
+        integer_conversion_error(
+            index,
+            TransportPublishStorageIntegerRangeError {
+                field: "event_kind",
+                value,
+                target: "u32",
+            },
+        )
+    })
+}
+
+fn checked_usize_column(
+    row: &Row<'_>,
+    index: usize,
+    field: &'static str,
+) -> Result<usize, rusqlite::Error> {
+    let value = row.get::<_, i64>(index)?;
+    usize::try_from(value).map_err(|_| {
+        integer_conversion_error(
+            index,
+            TransportPublishStorageIntegerRangeError {
+                field,
+                value,
+                target: "usize",
+            },
+        )
+    })
+}
+
+fn checked_optional_u64_column(
+    row: &Row<'_>,
+    index: usize,
+    field: &'static str,
+) -> Result<Option<u64>, rusqlite::Error> {
+    row.get::<_, Option<i64>>(index)?
+        .map(|value| {
+            u64::try_from(value).map_err(|_| {
+                integer_conversion_error(
+                    index,
+                    TransportPublishStorageIntegerRangeError {
+                        field,
+                        value,
+                        target: "u64",
+                    },
+                )
+            })
+        })
+        .transpose()
+}
+
 fn conversion_error<E>(index: usize, error: E) -> rusqlite::Error
 where
     E: std::error::Error + Send + Sync + 'static,
 {
     rusqlite::Error::FromSqlConversionFailure(index, Type::Text, Box::new(error))
+}
+
+fn integer_conversion_error<E>(index: usize, error: E) -> rusqlite::Error
+where
+    E: std::error::Error + Send + Sync + 'static,
+{
+    rusqlite::Error::FromSqlConversionFailure(index, Type::Integer, Box::new(error))
 }
 
 fn current_unix_secs() -> i64 {
@@ -2998,6 +3073,22 @@ mod tests {
     fn assert_invalid_job_state(error: TransportPublishError, expected: &str) {
         match error {
             TransportPublishError::InvalidPublishJobState(message) => {
+                assert!(message.contains(expected), "{message}");
+                assert!(!message.contains("rrd_tp_"));
+                assert!(!message.contains("token"));
+            }
+            error => panic!("unexpected error: {error}"),
+        }
+    }
+
+    fn assert_storage_integer_range_error(error: TransportPublishError, expected: &str) {
+        match error {
+            TransportPublishError::Sqlite(rusqlite::Error::FromSqlConversionFailure(
+                _,
+                rusqlite::types::Type::Integer,
+                source,
+            )) => {
+                let message = source.to_string();
                 assert!(message.contains(expected), "{message}");
                 assert!(!message.contains("rrd_tp_"));
                 assert!(!message.contains("token"));
@@ -3380,6 +3471,227 @@ mod tests {
                 })
                 .expect_err("invalid dedupe"),
             "job target_count 2 does not match 1 target outcomes",
+        );
+    }
+
+    #[test]
+    fn store_egress_rejects_impossible_persisted_event_kind_values() {
+        for invalid_kind in [-1_i64, i64::from(u16::MAX) + 1] {
+            let store = TransportPublishStore::memory().expect("store");
+            let pubkey = "a".repeat(64);
+            let principal = store_principal(&store, pubkey.as_str());
+            let request = request(pubkey.as_str(), 30_402);
+            let response = store
+                .record_publish_job(PublishJobInsert {
+                    principal_id: principal.principal_id.clone(),
+                    idempotency_key: Some(format!("idem-invalid-kind-{invalid_kind}")),
+                    request: request.clone(),
+                    request_fingerprint: format!("fingerprint-invalid-kind-{invalid_kind}"),
+                    effective_target_count: 1,
+                    target_snapshots: vec![accepted_target_outcome(
+                        RELAY_PRIMARY,
+                        TransportPublishTargetSource::DaemonDefault,
+                    )],
+                })
+                .expect("record job");
+            store
+                .complete_publish_job(
+                    response.job.job_id.as_str(),
+                    TransportPublishJobStatus::DeliverySatisfied,
+                    vec![accepted_target_outcome(
+                        RELAY_PRIMARY,
+                        TransportPublishTargetSource::DaemonDefault,
+                    )],
+                    None,
+                )
+                .expect("complete job");
+            {
+                let connection = store
+                    .inner
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                connection
+                    .execute(
+                        "UPDATE transport_publish_jobs SET event_kind = ?2 WHERE job_id = ?1",
+                        rusqlite::params![response.job.job_id.as_str(), invalid_kind],
+                    )
+                    .expect("corrupt event kind");
+            }
+
+            assert_storage_integer_range_error(
+                store
+                    .job_by_id(response.job.job_id.as_str())
+                    .expect_err("invalid get"),
+                "event_kind integer value",
+            );
+            assert_storage_integer_range_error(
+                store
+                    .list_jobs_for_principal(&principal, 50)
+                    .expect_err("invalid list"),
+                "event_kind integer value",
+            );
+            assert_storage_integer_range_error(
+                store
+                    .record_publish_job(PublishJobInsert {
+                        principal_id: principal.principal_id.clone(),
+                        idempotency_key: Some(format!("idem-invalid-kind-{invalid_kind}")),
+                        request,
+                        request_fingerprint: format!("fingerprint-invalid-kind-{invalid_kind}"),
+                        effective_target_count: 1,
+                        target_snapshots: vec![accepted_target_outcome(
+                            RELAY_PRIMARY,
+                            TransportPublishTargetSource::DaemonDefault,
+                        )],
+                    })
+                    .expect_err("invalid dedupe"),
+                "event_kind integer value",
+            );
+        }
+    }
+
+    #[test]
+    fn store_egress_rejects_negative_persisted_effective_target_count() {
+        let store = TransportPublishStore::memory().expect("store");
+        let pubkey = "a".repeat(64);
+        let principal = store_principal(&store, pubkey.as_str());
+        let request = request(pubkey.as_str(), 30_402);
+        let response = store
+            .record_publish_job(PublishJobInsert {
+                principal_id: principal.principal_id.clone(),
+                idempotency_key: Some("idem-negative-target-count".to_owned()),
+                request: request.clone(),
+                request_fingerprint: "fingerprint-negative-target-count".to_owned(),
+                effective_target_count: 1,
+                target_snapshots: vec![accepted_target_outcome(
+                    RELAY_PRIMARY,
+                    TransportPublishTargetSource::DaemonDefault,
+                )],
+            })
+            .expect("record job");
+        store
+            .complete_publish_job(
+                response.job.job_id.as_str(),
+                TransportPublishJobStatus::DeliverySatisfied,
+                vec![accepted_target_outcome(
+                    RELAY_PRIMARY,
+                    TransportPublishTargetSource::DaemonDefault,
+                )],
+                None,
+            )
+            .expect("complete job");
+        {
+            let connection = store
+                .inner
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            connection
+                .execute(
+                    "UPDATE transport_publish_jobs SET effective_target_count = -1 WHERE job_id = ?1",
+                    rusqlite::params![response.job.job_id.as_str()],
+                )
+                .expect("corrupt target count");
+        }
+
+        assert_storage_integer_range_error(
+            store
+                .job_by_id(response.job.job_id.as_str())
+                .expect_err("invalid get"),
+            "effective_target_count integer value -1 is outside usize range",
+        );
+        assert_storage_integer_range_error(
+            store
+                .list_jobs_for_principal(&principal, 50)
+                .expect_err("invalid list"),
+            "effective_target_count integer value -1 is outside usize range",
+        );
+        assert_storage_integer_range_error(
+            store
+                .record_publish_job(PublishJobInsert {
+                    principal_id: principal.principal_id.clone(),
+                    idempotency_key: Some("idem-negative-target-count".to_owned()),
+                    request,
+                    request_fingerprint: "fingerprint-negative-target-count".to_owned(),
+                    effective_target_count: 1,
+                    target_snapshots: vec![accepted_target_outcome(
+                        RELAY_PRIMARY,
+                        TransportPublishTargetSource::DaemonDefault,
+                    )],
+                })
+                .expect_err("invalid dedupe"),
+            "effective_target_count integer value -1 is outside usize range",
+        );
+    }
+
+    #[test]
+    fn store_egress_rejects_negative_persisted_target_latency() {
+        let store = TransportPublishStore::memory().expect("store");
+        let pubkey = "a".repeat(64);
+        let principal = store_principal(&store, pubkey.as_str());
+        let request = request(pubkey.as_str(), 30_402);
+        let response = store
+            .record_publish_job(PublishJobInsert {
+                principal_id: principal.principal_id.clone(),
+                idempotency_key: Some("idem-negative-latency".to_owned()),
+                request: request.clone(),
+                request_fingerprint: "fingerprint-negative-latency".to_owned(),
+                effective_target_count: 1,
+                target_snapshots: vec![accepted_target_outcome(
+                    RELAY_PRIMARY,
+                    TransportPublishTargetSource::DaemonDefault,
+                )],
+            })
+            .expect("record job");
+        store
+            .complete_publish_job(
+                response.job.job_id.as_str(),
+                TransportPublishJobStatus::DeliverySatisfied,
+                vec![accepted_target_outcome(
+                    RELAY_PRIMARY,
+                    TransportPublishTargetSource::DaemonDefault,
+                )],
+                None,
+            )
+            .expect("complete job");
+        {
+            let connection = store
+                .inner
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            connection
+                .execute(
+                    "UPDATE transport_publish_target_results SET latency_ms = -5 WHERE job_id = ?1",
+                    rusqlite::params![response.job.job_id.as_str()],
+                )
+                .expect("corrupt latency");
+        }
+
+        assert_storage_integer_range_error(
+            store
+                .job_by_id(response.job.job_id.as_str())
+                .expect_err("invalid get"),
+            "latency_ms integer value -5 is outside u64 range",
+        );
+        assert_storage_integer_range_error(
+            store
+                .list_jobs_for_principal(&principal, 50)
+                .expect_err("invalid list"),
+            "latency_ms integer value -5 is outside u64 range",
+        );
+        assert_storage_integer_range_error(
+            store
+                .record_publish_job(PublishJobInsert {
+                    principal_id: principal.principal_id.clone(),
+                    idempotency_key: Some("idem-negative-latency".to_owned()),
+                    request,
+                    request_fingerprint: "fingerprint-negative-latency".to_owned(),
+                    effective_target_count: 1,
+                    target_snapshots: vec![accepted_target_outcome(
+                        RELAY_PRIMARY,
+                        TransportPublishTargetSource::DaemonDefault,
+                    )],
+                })
+                .expect_err("invalid dedupe"),
+            "latency_ms integer value -5 is outside u64 range",
         );
     }
 
