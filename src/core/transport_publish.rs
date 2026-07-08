@@ -3459,6 +3459,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn publish_event_rejects_duplicate_explicit_targets_before_recording_job() {
+        let identity = RadrootsIdentity::generate();
+        let (proxy, adapter) = transport_publish(config_with_defaults(vec![RELAY_PRIMARY]));
+        let principal =
+            explicit_target_principal(&proxy, identity.public_key_hex(), PublishJobVisibility::Own);
+        let request = TransportPublishEventRequest {
+            event: signed_event(&identity, "{}"),
+            target_policy: TransportPublishTargetPolicy::explicit_targets(vec![
+                TransportPublishTarget::nostr(RELAY_PRIMARY),
+                TransportPublishTarget::nostr(RELAY_PRIMARY),
+            ]),
+            delivery_policy: TransportPublishDeliveryPolicy::Any,
+            idempotency_key: None,
+            timeout_ms: Some(5_000),
+        };
+
+        let err = proxy
+            .publish_event(&principal, request)
+            .await
+            .expect_err("duplicate explicit targets");
+
+        assert!(matches!(
+            err,
+            TransportPublishError::InvalidSignedEvent(ref message)
+                if message.contains("duplicates an earlier target")
+        ));
+        assert!(adapter.captured_raw_events().is_empty());
+        assert!(
+            proxy
+                .store
+                .list_jobs_for_principal(&principal, 10)
+                .expect("jobs")
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
     async fn publish_event_rejects_explicit_target_kind_not_allowed_before_recording_job() {
         let identity = RadrootsIdentity::generate();
         let (proxy, adapter) = transport_publish(TransportPublishConfig::default());
