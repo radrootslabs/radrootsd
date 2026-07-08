@@ -65,6 +65,8 @@ pub enum TransportPublishError {
     Relay(#[from] RadrootsRelayTransportError),
     #[error("transport publish transport error: {0}")]
     Transport(String),
+    #[error("transport publish job state validation failed: {0}")]
+    InvalidPublishJobState(String),
     #[error("transport publish concurrency limit reached")]
     ConcurrencyLimit,
     #[error("transport publish idempotency conflict for key `{0}`")]
@@ -1147,14 +1149,13 @@ impl TransportPublishStore {
             .query_row(sql.as_str(), params![job_id], job_from_row)
             .optional()?;
         drop(connection);
-        let Some(mut job) = row else {
+        let Some(job) = row else {
             return Ok(None);
         };
         if !principal.can_read_job(job.principal_id.as_str()) {
             return Ok(None);
         }
-        job.view.targets = self.target_outcomes(job.view.job_id.as_str())?;
-        finalize_job_view(&mut job.view);
+        let job = self.finalize_job_row_for_egress(job)?;
         Ok(Some(job.view))
     }
 
@@ -1187,9 +1188,8 @@ impl TransportPublishStore {
         drop(connection);
 
         rows.into_iter()
-            .map(|mut row| {
-                row.view.targets = self.target_outcomes(row.view.job_id.as_str())?;
-                finalize_job_view(&mut row.view);
+            .map(|row| {
+                let row = self.finalize_job_row_for_egress(row)?;
                 Ok(row.view)
             })
             .collect()
@@ -1213,11 +1213,10 @@ impl TransportPublishStore {
             )
             .optional()?;
         drop(connection);
-        let Some(mut job) = row else {
+        let Some(job) = row else {
             return Ok(None);
         };
-        job.view.targets = self.target_outcomes(job.view.job_id.as_str())?;
-        finalize_job_view(&mut job.view);
+        let job = self.finalize_job_row_for_egress(job)?;
         Ok(Some(job))
     }
 
@@ -1234,13 +1233,12 @@ impl TransportPublishStore {
             .query_row(sql.as_str(), params![job_id], job_from_row)
             .optional()?;
         drop(connection);
-        let Some(mut job) = row else {
+        let Some(job) = row else {
             return Err(TransportPublishError::InvalidScope(
                 "unknown publish job".to_owned(),
             ));
         };
-        job.view.targets = self.target_outcomes(job.view.job_id.as_str())?;
-        finalize_job_view(&mut job.view);
+        let job = self.finalize_job_row_for_egress(job)?;
         Ok(job.view)
     }
 
@@ -1343,6 +1341,18 @@ impl TransportPublishStore {
             .query_map(params![job_id], target_outcome_from_row)?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(outcomes)
+    }
+
+    fn finalize_job_row_for_egress(
+        &self,
+        mut job: PublishJobRow,
+    ) -> Result<PublishJobRow, TransportPublishError> {
+        job.view.targets = self.target_outcomes(job.view.job_id.as_str())?;
+        finalize_job_view(&mut job.view);
+        job.view
+            .validate()
+            .map_err(|error| TransportPublishError::InvalidPublishJobState(error.to_string()))?;
+        Ok(job)
     }
 }
 
@@ -2351,6 +2361,51 @@ mod tests {
         }
     }
 
+    fn accepted_target_outcome(
+        endpoint_uri: &str,
+        source: TransportPublishTargetSource,
+    ) -> TransportPublishTargetOutcome {
+        TransportPublishTargetOutcome {
+            transport_kind: TRANSPORT_KIND_NOSTR.to_owned(),
+            endpoint_uri: endpoint_uri.to_owned(),
+            source,
+            attempted: true,
+            outcome_kind: TransportPublishOutcomeKind::Accepted,
+            message: None,
+            latency_ms: Some(12),
+        }
+    }
+
+    fn store_principal(store: &TransportPublishStore, pubkey: &str) -> PublishPrincipal {
+        store
+            .create_principal(PublishPrincipalInit {
+                label: "tester".to_owned(),
+                token_hash: hash_bearer_token(generate_bearer_token().as_str()),
+                allowed_pubkeys: vec![pubkey.to_owned()],
+                allowed_kinds: vec![30_402],
+                allowed_target_policies: vec![TransportPublishTargetPolicyName::Nostr],
+                allowed_explicit_transport_kinds: Vec::new(),
+                allowed_nostr_source_policies: vec![
+                    NostrPublishTargetSourcePolicy::DaemonDefaultOnly,
+                ],
+                allow_request_targets: false,
+                job_visibility: PublishJobVisibility::Own,
+                expires_at_unix: None,
+            })
+            .expect("principal")
+    }
+
+    fn assert_invalid_job_state(error: TransportPublishError, expected: &str) {
+        match error {
+            TransportPublishError::InvalidPublishJobState(message) => {
+                assert!(message.contains(expected), "{message}");
+                assert!(!message.contains("rrd_tp_"));
+                assert!(!message.contains("token"));
+            }
+            error => panic!("unexpected error: {error}"),
+        }
+    }
+
     fn transport_publish(
         config: TransportPublishConfig,
     ) -> (TransportPublish, RadrootsMockRelayPublishAdapter) {
@@ -2656,6 +2711,122 @@ mod tests {
     }
 
     #[test]
+    fn store_egress_rejects_malformed_target_counts_for_get_list_and_dedupe() {
+        let store = TransportPublishStore::memory().expect("store");
+        let pubkey = "a".repeat(64);
+        let principal = store_principal(&store, pubkey.as_str());
+        let request = request(pubkey.as_str(), 30_402);
+        let response = store
+            .record_publish_job(PublishJobInsert {
+                principal_id: principal.principal_id.clone(),
+                idempotency_key: Some("idem-invalid-target-count".to_owned()),
+                request: request.clone(),
+                request_fingerprint: "fingerprint-invalid-target-count".to_owned(),
+                effective_target_count: 1,
+                target_snapshots: vec![accepted_target_outcome(
+                    RELAY_PRIMARY,
+                    TransportPublishTargetSource::DaemonDefault,
+                )],
+            })
+            .expect("record job");
+        store
+            .complete_publish_job(
+                response.job.job_id.as_str(),
+                TransportPublishJobStatus::DeliverySatisfied,
+                vec![accepted_target_outcome(
+                    RELAY_PRIMARY,
+                    TransportPublishTargetSource::DaemonDefault,
+                )],
+                None,
+            )
+            .expect("complete job");
+        {
+            let connection = store
+                .inner
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            connection
+                .execute(
+                    "UPDATE transport_publish_jobs SET effective_target_count = 2 WHERE job_id = ?1",
+                    rusqlite::params![response.job.job_id.as_str()],
+                )
+                .expect("corrupt target count");
+        }
+
+        assert_invalid_job_state(
+            store
+                .job_by_id(response.job.job_id.as_str())
+                .expect_err("invalid get"),
+            "job target_count 2 does not match 1 target outcomes",
+        );
+        assert_invalid_job_state(
+            store
+                .list_jobs_for_principal(&principal, 50)
+                .expect_err("invalid list"),
+            "job target_count 2 does not match 1 target outcomes",
+        );
+        assert_invalid_job_state(
+            store
+                .record_publish_job(PublishJobInsert {
+                    principal_id: principal.principal_id.clone(),
+                    idempotency_key: Some("idem-invalid-target-count".to_owned()),
+                    request,
+                    request_fingerprint: "fingerprint-invalid-target-count".to_owned(),
+                    effective_target_count: 1,
+                    target_snapshots: vec![accepted_target_outcome(
+                        RELAY_PRIMARY,
+                        TransportPublishTargetSource::DaemonDefault,
+                    )],
+                })
+                .expect_err("invalid dedupe"),
+            "job target_count 2 does not match 1 target outcomes",
+        );
+    }
+
+    #[test]
+    fn store_egress_rejects_explicit_target_outcome_drift() {
+        let store = TransportPublishStore::memory().expect("store");
+        let pubkey = "a".repeat(64);
+        let principal = store_principal(&store, pubkey.as_str());
+        let mut request = request(pubkey.as_str(), 30_402);
+        request.target_policy =
+            TransportPublishTargetPolicy::explicit_targets(vec![TransportPublishTarget::nostr(
+                RELAY_PRIMARY,
+            )]);
+        let response = store
+            .record_publish_job(PublishJobInsert {
+                principal_id: principal.principal_id.clone(),
+                idempotency_key: Some("idem-explicit-drift".to_owned()),
+                request,
+                request_fingerprint: "fingerprint-explicit-drift".to_owned(),
+                effective_target_count: 1,
+                target_snapshots: vec![accepted_target_outcome(
+                    RELAY_PRIMARY,
+                    TransportPublishTargetSource::Request,
+                )],
+            })
+            .expect("record job");
+        store
+            .complete_publish_job(
+                response.job.job_id.as_str(),
+                TransportPublishJobStatus::DeliverySatisfied,
+                vec![accepted_target_outcome(
+                    RELAY_SECONDARY,
+                    TransportPublishTargetSource::Request,
+                )],
+                None,
+            )
+            .expect("complete drifted job");
+
+        assert_invalid_job_state(
+            store
+                .job_by_id(response.job.job_id.as_str())
+                .expect_err("invalid explicit drift"),
+            "transport target outcome 0 does not match explicit target policy",
+        );
+    }
+
+    #[test]
     fn store_open_recovers_interrupted_publishing_jobs() {
         let directory = tempfile::tempdir().expect("tempdir");
         let database_path = directory.path().join("publish-proxy.sqlite");
@@ -2719,6 +2890,49 @@ mod tests {
             .expect("listed jobs");
         assert_eq!(listed.len(), 1);
         listed[0].validate().expect("valid listed recovered job");
+    }
+
+    #[test]
+    fn store_egress_rejects_recovered_explicit_target_snapshot_drift() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let database_path = directory.path().join("publish-proxy-drift.sqlite");
+        let pubkey = "a".repeat(64);
+        let (job_id, principal) = {
+            let store = TransportPublishStore::open(database_path.clone()).expect("store");
+            let principal = store_principal(&store, pubkey.as_str());
+            let mut request = request(pubkey.as_str(), 30_402);
+            request.target_policy = TransportPublishTargetPolicy::explicit_targets(vec![
+                TransportPublishTarget::nostr(RELAY_PRIMARY),
+            ]);
+            let response = store
+                .record_publish_job(PublishJobInsert {
+                    principal_id: principal.principal_id.clone(),
+                    idempotency_key: Some("idem-recovered-drift".to_owned()),
+                    request,
+                    request_fingerprint: "fingerprint-recovered-drift".to_owned(),
+                    effective_target_count: 1,
+                    target_snapshots: vec![accepted_target_outcome(
+                        RELAY_SECONDARY,
+                        TransportPublishTargetSource::Request,
+                    )],
+                })
+                .expect("record job");
+            (response.job.job_id, principal)
+        };
+
+        let reopened = TransportPublishStore::open(database_path).expect("reopen store");
+        assert_invalid_job_state(
+            reopened
+                .job_by_id(job_id.as_str())
+                .expect_err("invalid get"),
+            "transport target outcome 0 does not match explicit target policy",
+        );
+        assert_invalid_job_state(
+            reopened
+                .list_jobs_for_principal(&principal, 50)
+                .expect_err("invalid list"),
+            "transport target outcome 0 does not match explicit target policy",
+        );
     }
 
     #[test]
