@@ -132,6 +132,28 @@ fn transport_publish_sources_require_principal_explicit_kind_scope() {
 }
 
 #[test]
+fn transport_publish_store_egress_requires_protocol_validation() {
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let daemon_source = read_source(manifest_dir.join("src/core/transport_publish.rs").as_path());
+
+    for required in [
+        "fn finalize_job_row_for_egress",
+        "job.view.targets = self.target_outcomes(job.view.job_id.as_str())?;",
+        "finalize_job_view(&mut job.view);",
+        "job.view\n            .validate()",
+        "TransportPublishError::InvalidPublishJobState",
+        "store_egress_rejects_malformed_target_counts_for_get_list_and_dedupe",
+        "store_egress_rejects_explicit_target_outcome_drift",
+        "store_egress_rejects_recovered_explicit_target_snapshot_drift",
+    ] {
+        assert!(
+            daemon_source.contains(required),
+            "daemon transport publish store must retain validated public egress witness `{required}`"
+        );
+    }
+}
+
+#[test]
 fn transport_publish_capabilities_expose_per_transport_readiness() {
     let methods_source = read_source(
         Path::new(env!("CARGO_MANIFEST_DIR"))
