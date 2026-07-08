@@ -41,7 +41,7 @@ use crate::app::config::TransportPublishConfig;
 
 const TOKEN_PREFIX: &str = "rrd_tp_";
 const TOKEN_HASH_PREFIX: &str = "sha256:";
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 const TRANSPORT_KIND_NOSTR: &str = "nostr";
 const TRANSPORT_KIND_RETICULUM: &str = "reticulum";
 
@@ -165,12 +165,14 @@ impl TransportPublish {
         let resolution = self
             .resolve_targets_for_request(signed_event.pubkey.as_str(), &request)
             .await?;
+        let target_snapshots = target_snapshots_from_resolution(&resolution);
         let response = self.store.record_publish_job(PublishJobInsert {
             principal_id: principal.principal_id.clone(),
             idempotency_key: request.idempotency_key.clone(),
             request: request.clone(),
             request_fingerprint,
             effective_target_count: resolution.target_count(),
+            target_snapshots,
         })?;
         if response.deduplicated {
             return Ok(response);
@@ -719,6 +721,7 @@ pub struct PublishJobInsert {
     pub request: TransportPublishEventRequest,
     pub request_fingerprint: String,
     pub effective_target_count: usize,
+    pub target_snapshots: Vec<TransportPublishTargetOutcome>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -890,6 +893,20 @@ impl TransportPublishStore {
                 PRIMARY KEY(job_id, transport_kind, endpoint_uri),
                 FOREIGN KEY(job_id) REFERENCES transport_publish_jobs(job_id)
             );
+            CREATE TABLE IF NOT EXISTS transport_publish_target_snapshots (
+                job_id TEXT NOT NULL,
+                target_index INTEGER NOT NULL,
+                transport_kind TEXT NOT NULL,
+                endpoint_uri TEXT NOT NULL,
+                source TEXT NOT NULL,
+                attempted INTEGER NOT NULL,
+                outcome_kind TEXT NOT NULL,
+                message TEXT,
+                latency_ms INTEGER,
+                created_at_ms INTEGER NOT NULL,
+                PRIMARY KEY(job_id, target_index),
+                FOREIGN KEY(job_id) REFERENCES transport_publish_jobs(job_id)
+            );
             CREATE TABLE IF NOT EXISTS transport_publish_nostr_author_cache (
                 pubkey TEXT PRIMARY KEY NOT NULL,
                 relays_json TEXT NOT NULL,
@@ -1027,6 +1044,11 @@ impl TransportPublishStore {
         &self,
         insert: PublishJobInsert,
     ) -> Result<TransportPublishEventResponse, TransportPublishError> {
+        if insert.effective_target_count != insert.target_snapshots.len() {
+            return Err(TransportPublishError::InvalidScope(
+                "publish job target snapshot count must match effective target count".to_owned(),
+            ));
+        }
         if let Some(idempotency_key) = insert.idempotency_key.as_deref() {
             if let Some(existing) =
                 self.job_for_principal_id_and_key(insert.principal_id.as_str(), idempotency_key)?
@@ -1046,11 +1068,12 @@ impl TransportPublishStore {
         let job_id = Uuid::new_v4().to_string();
         let now = current_unix_millis();
         let request_json = serde_json::to_string(&insert.request)?;
-        let connection = self
+        let mut connection = self
             .inner
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let insert_result = connection.execute(
+        let transaction = connection.transaction()?;
+        let insert_result = transaction.execute(
             r#"
             INSERT INTO transport_publish_jobs (
                 job_id,
@@ -1100,6 +1123,8 @@ impl TransportPublishStore {
             }
             Err(error) => return Err(error.into()),
         }
+        insert_target_snapshots(&transaction, job_id.as_str(), &insert.target_snapshots, now)?;
+        transaction.commit()?;
         drop(connection);
         let job = self.job_by_id(job_id.as_str())?;
         Ok(TransportPublishEventResponse {
@@ -1227,6 +1252,7 @@ impl TransportPublishStore {
         last_error: Option<String>,
     ) -> Result<(), TransportPublishError> {
         let now = current_unix_millis();
+        let target_count = outcomes.len();
         let connection = self
             .inner
             .lock()
@@ -1237,7 +1263,8 @@ impl TransportPublishStore {
             SET status = ?2,
                 updated_at_ms = ?3,
                 completed_at_ms = ?4,
-                last_error = ?5
+                last_error = ?5,
+                effective_target_count = ?6
             WHERE job_id = ?1
             "#,
             params![
@@ -1246,43 +1273,10 @@ impl TransportPublishStore {
                 now,
                 now,
                 last_error,
+                target_count,
             ],
         )?;
-        connection.execute(
-            "DELETE FROM transport_publish_target_results WHERE job_id = ?1",
-            params![job_id],
-        )?;
-        for outcome in outcomes {
-            connection.execute(
-                r#"
-                INSERT OR REPLACE INTO transport_publish_target_results (
-                    job_id,
-                    transport_kind,
-                    endpoint_uri,
-                    source,
-                    attempted,
-                    outcome_kind,
-                    message,
-                    latency_ms,
-                    updated_at_ms
-                )
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
-                "#,
-                params![
-                    job_id,
-                    outcome.transport_kind,
-                    outcome.endpoint_uri,
-                    serde_json::to_string(&outcome.source)?,
-                    outcome.attempted,
-                    serde_json::to_string(&outcome.outcome_kind)?,
-                    outcome.message,
-                    outcome
-                        .latency_ms
-                        .and_then(|value| i64::try_from(value).ok()),
-                    now,
-                ],
-            )?;
-        }
+        replace_target_outcomes(&connection, job_id, &outcomes, now)?;
         Ok(())
     }
 
@@ -1376,24 +1370,169 @@ fn ensure_transport_publish_schema(connection: &Connection) -> Result<(), Transp
 
 fn recover_interrupted_publish_jobs(connection: &Connection) -> Result<(), TransportPublishError> {
     let now = current_unix_millis();
-    connection.execute(
-        r#"
-        UPDATE transport_publish_jobs
-        SET status = ?1,
-            updated_at_ms = ?2,
-            completed_at_ms = ?3,
-            last_error = ?4
-        WHERE status = ?5
-        "#,
-        params![
-            serde_json::to_string(&TransportPublishJobStatus::DeliveryUnsatisfiedRetryable)?,
-            now,
-            now,
-            "publish_attempt_interrupted",
-            serde_json::to_string(&TransportPublishJobStatus::Publishing)?,
-        ],
-    )?;
+    let publishing = serde_json::to_string(&TransportPublishJobStatus::Publishing)?;
+    let sql = job_select_sql("WHERE status = ?1");
+    let rows = connection
+        .prepare(sql.as_str())?
+        .query_map(params![publishing], job_from_row)?
+        .collect::<Result<Vec<_>, _>>()?;
+    for row in rows {
+        let job_id = row.view.job_id.clone();
+        let snapshots = target_snapshot_outcomes(connection, job_id.as_str())?;
+        if snapshots.is_empty() {
+            connection.execute(
+                r#"
+                UPDATE transport_publish_jobs
+                SET status = ?2,
+                    updated_at_ms = ?3,
+                    completed_at_ms = ?4,
+                    last_error = ?5,
+                    effective_target_count = 0
+                WHERE job_id = ?1
+                "#,
+                params![
+                    job_id.as_str(),
+                    serde_json::to_string(&TransportPublishJobStatus::Rejected)?,
+                    now,
+                    now,
+                    "publish_attempt_interrupted_missing_target_snapshot",
+                ],
+            )?;
+            replace_target_outcomes(connection, job_id.as_str(), &[], now)?;
+            continue;
+        }
+        let status = delivery_status(&row.view.delivery_policy, snapshots.len(), &snapshots);
+        let last_error = if status == TransportPublishJobStatus::DeliveryUnsatisfiedRetryable {
+            Some("publish_attempt_interrupted".to_owned())
+        } else {
+            last_error_for_status(status).map(str::to_owned)
+        };
+        connection.execute(
+            r#"
+            UPDATE transport_publish_jobs
+            SET status = ?2,
+                updated_at_ms = ?3,
+                completed_at_ms = ?4,
+                last_error = ?5,
+                effective_target_count = ?6
+            WHERE job_id = ?1
+            "#,
+            params![
+                job_id.as_str(),
+                serde_json::to_string(&status)?,
+                now,
+                now,
+                last_error,
+                snapshots.len(),
+            ],
+        )?;
+        replace_target_outcomes(connection, job_id.as_str(), &snapshots, now)?;
+    }
     Ok(())
+}
+
+fn insert_target_snapshots(
+    connection: &Connection,
+    job_id: &str,
+    outcomes: &[TransportPublishTargetOutcome],
+    now: i64,
+) -> Result<(), TransportPublishError> {
+    for (target_index, outcome) in outcomes.iter().enumerate() {
+        connection.execute(
+            r#"
+            INSERT INTO transport_publish_target_snapshots (
+                job_id,
+                target_index,
+                transport_kind,
+                endpoint_uri,
+                source,
+                attempted,
+                outcome_kind,
+                message,
+                latency_ms,
+                created_at_ms
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+            "#,
+            params![
+                job_id,
+                i64::try_from(target_index).unwrap_or(i64::MAX),
+                outcome.transport_kind,
+                outcome.endpoint_uri,
+                serde_json::to_string(&outcome.source)?,
+                outcome.attempted,
+                serde_json::to_string(&outcome.outcome_kind)?,
+                outcome.message,
+                outcome
+                    .latency_ms
+                    .and_then(|value| i64::try_from(value).ok()),
+                now,
+            ],
+        )?;
+    }
+    Ok(())
+}
+
+fn replace_target_outcomes(
+    connection: &Connection,
+    job_id: &str,
+    outcomes: &[TransportPublishTargetOutcome],
+    now: i64,
+) -> Result<(), TransportPublishError> {
+    connection.execute(
+        "DELETE FROM transport_publish_target_results WHERE job_id = ?1",
+        params![job_id],
+    )?;
+    for outcome in outcomes {
+        connection.execute(
+            r#"
+            INSERT OR REPLACE INTO transport_publish_target_results (
+                job_id,
+                transport_kind,
+                endpoint_uri,
+                source,
+                attempted,
+                outcome_kind,
+                message,
+                latency_ms,
+                updated_at_ms
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+            "#,
+            params![
+                job_id,
+                outcome.transport_kind,
+                outcome.endpoint_uri,
+                serde_json::to_string(&outcome.source)?,
+                outcome.attempted,
+                serde_json::to_string(&outcome.outcome_kind)?,
+                outcome.message,
+                outcome
+                    .latency_ms
+                    .and_then(|value| i64::try_from(value).ok()),
+                now,
+            ],
+        )?;
+    }
+    Ok(())
+}
+
+fn target_snapshot_outcomes(
+    connection: &Connection,
+    job_id: &str,
+) -> Result<Vec<TransportPublishTargetOutcome>, TransportPublishError> {
+    let mut stmt = connection.prepare(
+        r#"
+        SELECT transport_kind, endpoint_uri, source, attempted, outcome_kind, message, latency_ms
+        FROM transport_publish_target_snapshots
+        WHERE job_id = ?1
+        ORDER BY target_index
+        "#,
+    )?;
+    let outcomes = stmt
+        .query_map(params![job_id], target_outcome_from_row)?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(outcomes)
 }
 
 fn job_select_sql(tail: &str) -> String {
@@ -1794,6 +1933,27 @@ fn relay_resolution_connection_failure(
     }
 }
 
+fn target_snapshots_from_resolution(
+    resolution: &PublishRelayResolution,
+) -> Vec<TransportPublishTargetOutcome> {
+    let mut snapshots = resolution.outcomes.clone();
+    snapshots.extend(
+        resolution
+            .targets
+            .iter()
+            .map(|target| TransportPublishTargetOutcome {
+                transport_kind: TRANSPORT_KIND_NOSTR.to_owned(),
+                endpoint_uri: target.url.as_str().to_owned(),
+                source: target.source,
+                attempted: true,
+                outcome_kind: TransportPublishOutcomeKind::ConnectionFailed,
+                message: Some("publish_attempt_interrupted".to_owned()),
+                latency_ms: None,
+            }),
+    );
+    snapshots
+}
+
 fn relay_socket_target(url: &RadrootsRelayUrl) -> Result<(String, u16), std::io::Error> {
     let parsed = url::Url::parse(url.as_str())
         .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error))?;
@@ -2095,8 +2255,9 @@ mod tests {
     use radroots_transport_publish_protocol::{
         NostrPublishTargetSourcePolicy, SignedNostrEventWire, TransportPublishDeliveryPolicy,
         TransportPublishEventRequest, TransportPublishJobStatus, TransportPublishOutcomeKind,
-        TransportPublishPreviewBehavior, TransportPublishTarget, TransportPublishTargetPolicy,
-        TransportPublishTargetPolicyName, TransportPublishTargetSource,
+        TransportPublishPreviewBehavior, TransportPublishTarget, TransportPublishTargetOutcome,
+        TransportPublishTargetPolicy, TransportPublishTargetPolicyName,
+        TransportPublishTargetSource,
     };
     use std::collections::BTreeMap;
     use std::net::{IpAddr, Ipv4Addr};
@@ -2172,6 +2333,21 @@ mod tests {
             delivery_policy: TransportPublishDeliveryPolicy::Any,
             idempotency_key: None,
             timeout_ms: Some(5_000),
+        }
+    }
+
+    fn interrupted_target_snapshot(
+        endpoint_uri: &str,
+        source: TransportPublishTargetSource,
+    ) -> TransportPublishTargetOutcome {
+        TransportPublishTargetOutcome {
+            transport_kind: TRANSPORT_KIND_NOSTR.to_owned(),
+            endpoint_uri: endpoint_uri.to_owned(),
+            source,
+            attempted: true,
+            outcome_kind: TransportPublishOutcomeKind::ConnectionFailed,
+            message: Some("publish_attempt_interrupted".to_owned()),
+            latency_ms: None,
         }
     }
 
@@ -2448,6 +2624,10 @@ mod tests {
                 request: accepted.clone(),
                 request_fingerprint: "fingerprint-1".to_owned(),
                 effective_target_count: 1,
+                target_snapshots: vec![interrupted_target_snapshot(
+                    RELAY_PRIMARY,
+                    TransportPublishTargetSource::DaemonDefault,
+                )],
             })
             .expect("record job");
         assert!(!response.deduplicated);
@@ -2458,6 +2638,10 @@ mod tests {
                 request: accepted,
                 request_fingerprint: "fingerprint-1".to_owned(),
                 effective_target_count: 1,
+                target_snapshots: vec![interrupted_target_snapshot(
+                    RELAY_PRIMARY,
+                    TransportPublishTargetSource::DaemonDefault,
+                )],
             })
             .expect("dedupe");
         assert!(duplicate.deduplicated);
@@ -2478,7 +2662,7 @@ mod tests {
         let token_hash = hash_bearer_token(generate_bearer_token().as_str());
         let pubkey = "a".repeat(64);
         let request = request(pubkey.as_str(), 30_402);
-        let job_id = {
+        let (job_id, principal) = {
             let store = TransportPublishStore::open(database_path.clone()).expect("store");
             let principal = store
                 .create_principal(PublishPrincipalInit {
@@ -2498,15 +2682,19 @@ mod tests {
                 .expect("principal");
             let response = store
                 .record_publish_job(PublishJobInsert {
-                    principal_id: principal.principal_id,
+                    principal_id: principal.principal_id.clone(),
                     idempotency_key: Some("idem-interrupted".to_owned()),
                     request,
                     request_fingerprint: "fingerprint-interrupted".to_owned(),
                     effective_target_count: 1,
+                    target_snapshots: vec![interrupted_target_snapshot(
+                        RELAY_PRIMARY,
+                        TransportPublishTargetSource::DaemonDefault,
+                    )],
                 })
                 .expect("record job");
             assert_eq!(response.job.status, TransportPublishJobStatus::Publishing);
-            response.job.job_id
+            (response.job.job_id, principal)
         };
 
         let reopened = TransportPublishStore::open(database_path).expect("reopen store");
@@ -2520,7 +2708,107 @@ mod tests {
             Some("publish_attempt_interrupted")
         );
         assert!(recovered.completed_at_ms.is_some());
+        assert_eq!(recovered.targets.len(), 1);
+        assert_eq!(
+            recovered.targets[0].outcome_kind,
+            TransportPublishOutcomeKind::ConnectionFailed
+        );
+        recovered.validate().expect("valid recovered job");
+        let listed = reopened
+            .list_jobs_for_principal(&principal, 50)
+            .expect("listed jobs");
+        assert_eq!(listed.len(), 1);
+        listed[0].validate().expect("valid listed recovered job");
+    }
+
+    #[test]
+    fn store_open_rejects_interrupted_jobs_without_target_snapshots() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let database_path = directory
+            .path()
+            .join("publish-proxy-missing-snapshot.sqlite");
+        let token_hash = hash_bearer_token(generate_bearer_token().as_str());
+        let pubkey = "a".repeat(64);
+        let request = request(pubkey.as_str(), 30_402);
+        {
+            let store = TransportPublishStore::open(database_path.clone()).expect("store");
+            let principal = store
+                .create_principal(PublishPrincipalInit {
+                    label: "tester".to_owned(),
+                    token_hash,
+                    allowed_pubkeys: vec![pubkey],
+                    allowed_kinds: vec![30_402],
+                    allowed_target_policies: vec![TransportPublishTargetPolicyName::Nostr],
+                    allowed_explicit_transport_kinds: Vec::new(),
+                    allowed_nostr_source_policies: vec![
+                        NostrPublishTargetSourcePolicy::DaemonDefaultOnly,
+                    ],
+                    allow_request_targets: false,
+                    job_visibility: PublishJobVisibility::Own,
+                    expires_at_unix: None,
+                })
+                .expect("principal");
+            let now = super::current_unix_millis();
+            let connection = store
+                .inner
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            connection
+                .execute(
+                    r#"
+                    INSERT INTO transport_publish_jobs (
+                        job_id,
+                        principal_id,
+                        idempotency_key,
+                        request_fingerprint,
+                        status,
+                        event_id,
+                        event_pubkey,
+                        event_kind,
+                        target_policy_json,
+                        delivery_policy_json,
+                        requested_target_count,
+                        effective_target_count,
+                        request_json,
+                        requested_at_ms,
+                        updated_at_ms
+                    )
+                    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+                    "#,
+                    rusqlite::params![
+                        "job-missing-snapshot",
+                        principal.principal_id,
+                        "idem-missing-snapshot",
+                        "fingerprint-missing-snapshot",
+                        serde_json::to_string(&TransportPublishJobStatus::Publishing)
+                            .expect("status"),
+                        request.event.id,
+                        request.event.pubkey,
+                        request.event.kind,
+                        serde_json::to_string(&request.target_policy).expect("target policy"),
+                        serde_json::to_string(&request.delivery_policy).expect("delivery policy"),
+                        request.target_policy.request_target_count(),
+                        1_i64,
+                        serde_json::to_string(&request).expect("request"),
+                        now,
+                        now,
+                    ],
+                )
+                .expect("insert historical job");
+        }
+
+        let reopened = TransportPublishStore::open(database_path).expect("reopen store");
+        let recovered = reopened
+            .job_by_id("job-missing-snapshot")
+            .expect("recovered job");
+        assert_eq!(recovered.status, TransportPublishJobStatus::Rejected);
+        assert_eq!(
+            recovered.last_error.as_deref(),
+            Some("publish_attempt_interrupted_missing_target_snapshot")
+        );
+        assert_eq!(recovered.target_count, 0);
         assert!(recovered.targets.is_empty());
+        recovered.validate().expect("valid rejected recovered job");
     }
 
     #[test]
