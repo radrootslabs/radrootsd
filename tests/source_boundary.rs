@@ -132,6 +132,34 @@ fn transport_publish_sources_require_principal_explicit_kind_scope() {
 }
 
 #[test]
+fn transport_publish_sources_reject_runtime_principal_schema_repair() {
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let daemon_source = read_source(manifest_dir.join("src/core/transport_publish.rs").as_path());
+
+    for required in [
+        "validate_transport_publish_schema",
+        "TransportPublishError::Schema",
+        "transport_store_open_validates_current_principal_schema",
+        "transport_store_open_rejects_legacy_principal_schema_without_explicit_kind_allowlist",
+    ] {
+        assert!(
+            daemon_source.contains(required),
+            "daemon transport publish source must retain strict schema validation witness `{required}`"
+        );
+    }
+
+    for forbidden in [
+        concat!("ensure_transport_publish", "_schema"),
+        concat!("ALTER TABLE ", "transport_publish_principals"),
+    ] {
+        assert!(
+            !daemon_source.contains(forbidden),
+            "daemon transport publish source must not contain runtime schema repair `{forbidden}`"
+        );
+    }
+}
+
+#[test]
 fn transport_publish_store_egress_requires_protocol_validation() {
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     let daemon_source = read_source(manifest_dir.join("src/core/transport_publish.rs").as_path());

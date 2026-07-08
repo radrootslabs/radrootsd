@@ -65,6 +65,8 @@ pub enum TransportPublishError {
     Relay(#[from] RadrootsRelayTransportError),
     #[error("transport publish transport error: {0}")]
     Transport(String),
+    #[error("transport publish schema incompatible for table `{table}`: {detail}")]
+    Schema { table: &'static str, detail: String },
     #[error("transport publish job state validation failed: {0}")]
     InvalidPublishJobState(String),
     #[error("transport publish concurrency limit reached")]
@@ -916,7 +918,7 @@ impl TransportPublishStore {
             );
             "#,
         )?;
-        ensure_transport_publish_schema(&connection)?;
+        validate_transport_publish_schema(&connection)?;
         recover_interrupted_publish_jobs(&connection)?;
         connection.pragma_update(None, "user_version", SCHEMA_VERSION)?;
         Ok(Self {
@@ -1362,18 +1364,185 @@ struct PublishJobRow {
     view: TransportPublishJobView,
 }
 
-fn ensure_transport_publish_schema(connection: &Connection) -> Result<(), TransportPublishError> {
-    let has_explicit_kinds = connection
-        .prepare("PRAGMA table_info(transport_publish_principals)")?
-        .query_map([], |row| row.get::<_, String>(1))?
-        .collect::<Result<Vec<_>, _>>()?
-        .into_iter()
-        .any(|column| column == "allowed_explicit_transport_kinds_json");
-    if !has_explicit_kinds {
-        connection.execute(
-            "ALTER TABLE transport_publish_principals ADD COLUMN allowed_explicit_transport_kinds_json TEXT NOT NULL DEFAULT '[]'",
-            [],
-        )?;
+fn validate_transport_publish_schema(connection: &Connection) -> Result<(), TransportPublishError> {
+    validate_table_columns(
+        connection,
+        "transport_publish_principals",
+        &[
+            RequiredColumn::text_not_null("principal_id"),
+            RequiredColumn::text_not_null("label"),
+            RequiredColumn::text_not_null("token_hash"),
+            RequiredColumn::text_not_null("allowed_pubkeys_json"),
+            RequiredColumn::text_not_null("allowed_kinds_json"),
+            RequiredColumn::text_not_null("allowed_target_policies_json"),
+            RequiredColumn::text_not_null("allowed_explicit_transport_kinds_json"),
+            RequiredColumn::text_not_null("allowed_nostr_source_policies_json"),
+            RequiredColumn::integer_not_null("allow_request_targets"),
+            RequiredColumn::text_not_null("job_visibility"),
+            RequiredColumn::integer_nullable("expires_at_unix"),
+            RequiredColumn::integer_nullable("revoked_at_unix"),
+            RequiredColumn::integer_not_null("created_at_unix"),
+        ],
+    )?;
+    validate_table_columns(
+        connection,
+        "transport_publish_jobs",
+        &[
+            RequiredColumn::text_not_null("job_id"),
+            RequiredColumn::text_not_null("principal_id"),
+            RequiredColumn::text_nullable("idempotency_key"),
+            RequiredColumn::text_not_null("request_fingerprint"),
+            RequiredColumn::text_not_null("status"),
+            RequiredColumn::text_not_null("event_id"),
+            RequiredColumn::text_not_null("event_pubkey"),
+            RequiredColumn::integer_not_null("event_kind"),
+            RequiredColumn::text_not_null("target_policy_json"),
+            RequiredColumn::text_not_null("delivery_policy_json"),
+            RequiredColumn::integer_not_null("requested_target_count"),
+            RequiredColumn::integer_not_null("effective_target_count"),
+            RequiredColumn::text_not_null("request_json"),
+            RequiredColumn::integer_not_null("requested_at_ms"),
+            RequiredColumn::integer_not_null("updated_at_ms"),
+            RequiredColumn::integer_nullable("completed_at_ms"),
+            RequiredColumn::text_nullable("last_error"),
+        ],
+    )?;
+    validate_table_columns(
+        connection,
+        "transport_publish_target_results",
+        &[
+            RequiredColumn::text_not_null("job_id"),
+            RequiredColumn::text_not_null("transport_kind"),
+            RequiredColumn::text_not_null("endpoint_uri"),
+            RequiredColumn::text_not_null("source"),
+            RequiredColumn::integer_not_null("attempted"),
+            RequiredColumn::text_not_null("outcome_kind"),
+            RequiredColumn::text_nullable("message"),
+            RequiredColumn::integer_nullable("latency_ms"),
+            RequiredColumn::integer_not_null("updated_at_ms"),
+        ],
+    )?;
+    validate_table_columns(
+        connection,
+        "transport_publish_target_snapshots",
+        &[
+            RequiredColumn::text_not_null("job_id"),
+            RequiredColumn::integer_not_null("target_index"),
+            RequiredColumn::text_not_null("transport_kind"),
+            RequiredColumn::text_not_null("endpoint_uri"),
+            RequiredColumn::text_not_null("source"),
+            RequiredColumn::integer_not_null("attempted"),
+            RequiredColumn::text_not_null("outcome_kind"),
+            RequiredColumn::text_nullable("message"),
+            RequiredColumn::integer_nullable("latency_ms"),
+            RequiredColumn::integer_not_null("created_at_ms"),
+        ],
+    )?;
+    validate_table_columns(
+        connection,
+        "transport_publish_nostr_author_cache",
+        &[
+            RequiredColumn::text_not_null("pubkey"),
+            RequiredColumn::text_not_null("relays_json"),
+            RequiredColumn::integer_not_null("updated_at_ms"),
+        ],
+    )
+}
+
+#[derive(Clone, Copy)]
+struct RequiredColumn {
+    name: &'static str,
+    column_type: &'static str,
+    not_null: bool,
+}
+
+impl RequiredColumn {
+    const fn text_not_null(name: &'static str) -> Self {
+        Self {
+            name,
+            column_type: "TEXT",
+            not_null: true,
+        }
+    }
+
+    const fn text_nullable(name: &'static str) -> Self {
+        Self {
+            name,
+            column_type: "TEXT",
+            not_null: false,
+        }
+    }
+
+    const fn integer_not_null(name: &'static str) -> Self {
+        Self {
+            name,
+            column_type: "INTEGER",
+            not_null: true,
+        }
+    }
+
+    const fn integer_nullable(name: &'static str) -> Self {
+        Self {
+            name,
+            column_type: "INTEGER",
+            not_null: false,
+        }
+    }
+}
+
+fn validate_table_columns(
+    connection: &Connection,
+    table: &'static str,
+    required_columns: &[RequiredColumn],
+) -> Result<(), TransportPublishError> {
+    let columns = connection
+        .prepare(format!("PRAGMA table_info({table})").as_str())?
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(1)?,
+                (
+                    row.get::<_, String>(2)?.to_ascii_uppercase(),
+                    row.get::<_, i64>(3)? != 0,
+                ),
+            ))
+        })?
+        .collect::<Result<BTreeMap<_, _>, _>>()?;
+    if columns.is_empty() {
+        return Err(TransportPublishError::Schema {
+            table,
+            detail: "table is missing".to_owned(),
+        });
+    }
+    for required in required_columns {
+        let Some((column_type, not_null)) = columns.get(required.name) else {
+            return Err(TransportPublishError::Schema {
+                table,
+                detail: format!("missing required column `{}`", required.name),
+            });
+        };
+        if column_type != required.column_type {
+            return Err(TransportPublishError::Schema {
+                table,
+                detail: format!(
+                    "column `{}` must have type {}, got {}",
+                    required.name, required.column_type, column_type
+                ),
+            });
+        }
+        if *not_null != required.not_null {
+            return Err(TransportPublishError::Schema {
+                table,
+                detail: format!(
+                    "column `{}` must be {}",
+                    required.name,
+                    if required.not_null {
+                        "NOT NULL"
+                    } else {
+                        "nullable"
+                    }
+                ),
+            });
+        }
     }
     Ok(())
 }
@@ -3026,7 +3195,34 @@ mod tests {
     }
 
     #[test]
-    fn transport_store_open_migrates_principal_schema_with_empty_explicit_kind_allowlist() {
+    fn transport_store_open_validates_current_principal_schema() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let database_path = directory.path().join("publish-proxy-current.sqlite");
+        let store = TransportPublishStore::open(database_path).expect("open current schema");
+        let connection = store
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let columns = connection
+            .prepare("PRAGMA table_info(transport_publish_principals)")
+            .expect("prepare schema")
+            .query_map([], |row| row.get::<_, String>(1))
+            .expect("query schema")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("columns");
+        assert!(
+            columns
+                .iter()
+                .any(|column| column == "allowed_explicit_transport_kinds_json")
+        );
+        let version = connection
+            .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+            .expect("user version");
+        assert_eq!(version, SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn transport_store_open_rejects_legacy_principal_schema_without_explicit_kind_allowlist() {
         let directory = tempfile::tempdir().expect("tempdir");
         let database_path = directory.path().join("publish-proxy-v1.sqlite");
         let token_hash = hash_bearer_token(generate_bearer_token().as_str());
@@ -3092,17 +3288,35 @@ mod tests {
                 .expect("principal");
         }
 
-        let store = TransportPublishStore::open(database_path.clone()).expect("migrate");
-        let principal = store
-            .principal_by_id("principal-v1")
-            .expect("lookup")
-            .expect("principal");
-        assert!(principal.allowed_explicit_transport_kinds.is_empty());
-        let version = rusqlite::Connection::open(database_path.as_path())
-            .expect("open migrated")
+        let error = match TransportPublishStore::open(database_path.clone()) {
+            Ok(_) => panic!("legacy schema opened"),
+            Err(error) => error,
+        };
+        match error {
+            TransportPublishError::Schema { table, detail } => {
+                assert_eq!(table, "transport_publish_principals");
+                assert!(detail.contains("allowed_explicit_transport_kinds_json"));
+            }
+            error => panic!("unexpected error: {error}"),
+        }
+
+        let connection = rusqlite::Connection::open(database_path.as_path()).expect("open legacy");
+        let columns = connection
+            .prepare("PRAGMA table_info(transport_publish_principals)")
+            .expect("prepare schema")
+            .query_map([], |row| row.get::<_, String>(1))
+            .expect("query schema")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("columns");
+        assert!(
+            !columns
+                .iter()
+                .any(|column| column == "allowed_explicit_transport_kinds_json")
+        );
+        let version = connection
             .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
             .expect("user version");
-        assert_eq!(version, SCHEMA_VERSION);
+        assert_eq!(version, 1);
     }
 
     #[tokio::test]
