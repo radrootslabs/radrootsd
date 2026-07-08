@@ -7,6 +7,11 @@ use tracing::{info, warn};
 use crate::app::identity_storage::load_service_identity;
 use crate::app::{cli, config, paths};
 use crate::core::Radrootsd;
+use crate::core::transport_publish::{
+    PublishPrincipalInit, TransportPublishStore, generate_bearer_token, hash_bearer_token,
+    parse_explicit_transport_kind, parse_nostr_source_policy, parse_target_policy,
+    write_token_file,
+};
 use crate::transport::jsonrpc;
 #[cfg(not(test))]
 use crate::transport::nostr::listener::spawn_nip46_listener;
@@ -386,45 +391,41 @@ async fn handle_command(command: cli::Command, settings: &config::Settings) -> R
         cli::Command::TransportPublish(command) => match command.command {
             cli::TransportPublishSubcommand::Principal(command) => match command.command {
                 cli::PrincipalSubcommand::Init(args) => {
-                    let token = crate::core::transport_publish::generate_bearer_token();
-                    let token_hash =
-                        crate::core::transport_publish::hash_bearer_token(token.as_str());
-                    let store = crate::core::transport_publish::TransportPublishStore::open(
+                    let token = generate_bearer_token();
+                    let token_hash = hash_bearer_token(token.as_str());
+                    let store = TransportPublishStore::open(
                         settings.config.transport_publish.database_path.clone(),
                     )?;
-                    let principal = store.create_principal(
-                        crate::core::transport_publish::PublishPrincipalInit {
-                            label: args.label,
-                            token_hash,
-                            allowed_pubkeys: args.allowed_pubkey,
-                            allowed_kinds: args.allowed_kind,
-                            allowed_target_policies: args
-                                .allowed_target_policy
-                                .iter()
-                                .map(|policy| {
-                                    crate::core::transport_publish::parse_target_policy(
-                                        policy.as_str(),
-                                    )
-                                })
-                                .collect::<Result<Vec<_>, _>>()?,
-                            allowed_nostr_source_policies: args
-                                .allowed_nostr_source_policy
-                                .iter()
-                                .map(|policy| {
-                                    crate::core::transport_publish::parse_nostr_source_policy(
-                                        policy.as_str(),
-                                    )
-                                })
-                                .collect::<Result<Vec<_>, _>>()?,
-                            allow_request_targets: args.allow_request_targets,
-                            job_visibility: args.job_visibility.parse()?,
-                            expires_at_unix: None,
-                        },
-                    )?;
-                    crate::core::transport_publish::write_token_file(
-                        &args.token_file,
-                        token.as_str(),
-                    )?;
+                    let allowed_target_policies = args
+                        .allowed_target_policy
+                        .iter()
+                        .map(|policy| parse_target_policy(policy.as_str()))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    let allowed_explicit_transport_kinds = args
+                        .allowed_explicit_transport_kind
+                        .iter()
+                        .map(|transport_kind| {
+                            parse_explicit_transport_kind(transport_kind.as_str())
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
+                    let allowed_nostr_source_policies = args
+                        .allowed_nostr_source_policy
+                        .iter()
+                        .map(|policy| parse_nostr_source_policy(policy.as_str()))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    let principal = store.create_principal(PublishPrincipalInit {
+                        label: args.label,
+                        token_hash,
+                        allowed_pubkeys: args.allowed_pubkey,
+                        allowed_kinds: args.allowed_kind,
+                        allowed_target_policies,
+                        allowed_explicit_transport_kinds,
+                        allowed_nostr_source_policies,
+                        allow_request_targets: args.allow_request_targets,
+                        job_visibility: args.job_visibility.parse()?,
+                        expires_at_unix: None,
+                    })?;
+                    write_token_file(&args.token_file, token.as_str())?;
                     println!(
                         "{}",
                         serde_json::json!({

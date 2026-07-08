@@ -56,6 +56,8 @@ pub struct PrincipalInitArgs {
     #[arg(long)]
     pub allowed_target_policy: Vec<String>,
     #[arg(long)]
+    pub allowed_explicit_transport_kind: Vec<String>,
+    #[arg(long)]
     pub allowed_nostr_source_policy: Vec<String>,
     #[arg(long)]
     pub job_visibility: String,

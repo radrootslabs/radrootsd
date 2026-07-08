@@ -197,6 +197,7 @@ mod tests {
                 allowed_pubkeys: vec![identity.public_key_hex()],
                 allowed_kinds: vec![30_402],
                 allowed_target_policies: vec![TransportPublishTargetPolicyName::Nostr],
+                allowed_explicit_transport_kinds: Vec::new(),
                 allowed_nostr_source_policies: vec![
                     NostrPublishTargetSourcePolicy::DaemonDefaultOnly,
                 ],

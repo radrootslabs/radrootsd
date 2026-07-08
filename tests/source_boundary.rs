@@ -26,7 +26,7 @@ const FORBIDDEN_DAEMON_TRANSPORT_CONCEPTS: &[ForbiddenConcept] = &[
         reason: "publish.event is replaced by transport.publish.event",
     },
     ForbiddenConcept {
-        pattern: "transport_kinds",
+        pattern: "\"transport_kinds\"",
         reason: "capabilities must expose per-transport readiness instead of kind-only lists",
     },
     ForbiddenConcept {
@@ -108,6 +108,27 @@ fn transport_publish_sources_reject_proxy_explicit_targets() {
         daemon_source.contains("publish_event_rejects_proxy_target_before_recording_job"),
         "daemon transport publish tests must prove proxy explicit targets are rejected before job recording"
     );
+}
+
+#[test]
+fn transport_publish_sources_require_principal_explicit_kind_scope() {
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let daemon_source = read_source(manifest_dir.join("src/core/transport_publish.rs").as_path());
+
+    for required in [
+        "allowed_explicit_transport_kinds_json",
+        "pub allowed_explicit_transport_kinds: Vec<String>,",
+        "parse_explicit_transport_kind",
+        "principal must include at least one allowed explicit transport kind",
+        "principal is not allowed to use explicit transport target kind",
+        "publish_event_records_explicit_nostr_target_when_kind_allowed",
+        "publish_event_rejects_explicit_target_kind_not_allowed_before_recording_job",
+    ] {
+        assert!(
+            daemon_source.contains(required),
+            "daemon transport publish sources must retain explicit target kind-scope witness `{required}`"
+        );
+    }
 }
 
 #[test]

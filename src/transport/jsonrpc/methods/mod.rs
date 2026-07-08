@@ -116,6 +116,7 @@ mod tests {
                 allowed_target_policies: vec![
                     radroots_transport_publish_protocol::TransportPublishTargetPolicyName::Nostr,
                 ],
+                allowed_explicit_transport_kinds: Vec::new(),
                 allowed_nostr_source_policies: vec![
                     radroots_transport_publish_protocol::NostrPublishTargetSourcePolicy::DaemonDefaultOnly,
                 ],

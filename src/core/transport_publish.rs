@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::future::Future;
 use std::net::IpAddr;
@@ -41,7 +41,7 @@ use crate::app::config::TransportPublishConfig;
 
 const TOKEN_PREFIX: &str = "rrd_tp_";
 const TOKEN_HASH_PREFIX: &str = "sha256:";
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 const TRANSPORT_KIND_NOSTR: &str = "nostr";
 const TRANSPORT_KIND_RETICULUM: &str = "reticulum";
 
@@ -604,6 +604,7 @@ pub struct PublishPrincipalInit {
     pub allowed_pubkeys: Vec<String>,
     pub allowed_kinds: Vec<u32>,
     pub allowed_target_policies: Vec<TransportPublishTargetPolicyName>,
+    pub allowed_explicit_transport_kinds: Vec<String>,
     pub allowed_nostr_source_policies: Vec<NostrPublishTargetSourcePolicy>,
     pub allow_request_targets: bool,
     pub job_visibility: PublishJobVisibility,
@@ -617,6 +618,7 @@ pub struct PublishPrincipal {
     pub allowed_pubkeys: Vec<String>,
     pub allowed_kinds: Vec<u32>,
     pub allowed_target_policies: Vec<TransportPublishTargetPolicyName>,
+    pub allowed_explicit_transport_kinds: Vec<String>,
     pub allowed_nostr_source_policies: Vec<NostrPublishTargetSourcePolicy>,
     pub allow_request_targets: bool,
     pub job_visibility: PublishJobVisibility,
@@ -657,6 +659,25 @@ impl PublishPrincipal {
                     return Err(TransportPublishError::InvalidScope(
                         "principal is not allowed to provide request targets".to_owned(),
                     ));
+                }
+                for target in targets {
+                    let kind =
+                        RadrootsTransportKind::parse_canonical(target.transport_kind.as_str())
+                            .map_err(|error| {
+                                TransportPublishError::InvalidScope(format!(
+                                    "principal explicit target kind check failed: {error}"
+                                ))
+                            })?;
+                    let transport_kind = kind.canonical_label();
+                    if !self
+                        .allowed_explicit_transport_kinds
+                        .iter()
+                        .any(|allowed| allowed == &transport_kind)
+                    {
+                        return Err(TransportPublishError::InvalidScope(format!(
+                            "principal is not allowed to use explicit transport target kind `{transport_kind}`"
+                        )));
+                    }
                 }
             }
             TransportPublishTargetPolicy::Nostr {
@@ -825,6 +846,7 @@ impl TransportPublishStore {
                 allowed_pubkeys_json TEXT NOT NULL,
                 allowed_kinds_json TEXT NOT NULL,
                 allowed_target_policies_json TEXT NOT NULL,
+                allowed_explicit_transport_kinds_json TEXT NOT NULL,
                 allowed_nostr_source_policies_json TEXT NOT NULL,
                 allow_request_targets INTEGER NOT NULL,
                 job_visibility TEXT NOT NULL,
@@ -875,6 +897,7 @@ impl TransportPublishStore {
             );
             "#,
         )?;
+        ensure_transport_publish_schema(&connection)?;
         recover_interrupted_publish_jobs(&connection)?;
         connection.pragma_update(None, "user_version", SCHEMA_VERSION)?;
         Ok(Self {
@@ -902,6 +925,7 @@ impl TransportPublishStore {
                 allowed_pubkeys_json,
                 allowed_kinds_json,
                 allowed_target_policies_json,
+                allowed_explicit_transport_kinds_json,
                 allowed_nostr_source_policies_json,
                 allow_request_targets,
                 job_visibility,
@@ -909,7 +933,7 @@ impl TransportPublishStore {
                 revoked_at_unix,
                 created_at_unix
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, NULL, ?11)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, NULL, ?12)
             "#,
             params![
                 principal_id,
@@ -918,6 +942,7 @@ impl TransportPublishStore {
                 serde_json::to_string(&input.allowed_pubkeys)?,
                 serde_json::to_string(&input.allowed_kinds)?,
                 serde_json::to_string(&input.allowed_target_policies)?,
+                serde_json::to_string(&input.allowed_explicit_transport_kinds)?,
                 serde_json::to_string(&input.allowed_nostr_source_policies)?,
                 input.allow_request_targets,
                 input.job_visibility.to_string(),
@@ -949,6 +974,7 @@ impl TransportPublishStore {
                     allowed_pubkeys_json,
                     allowed_kinds_json,
                     allowed_target_policies_json,
+                    allowed_explicit_transport_kinds_json,
                     allowed_nostr_source_policies_json,
                     allow_request_targets,
                     job_visibility,
@@ -982,6 +1008,7 @@ impl TransportPublishStore {
                     allowed_pubkeys_json,
                     allowed_kinds_json,
                     allowed_target_policies_json,
+                    allowed_explicit_transport_kinds_json,
                     allowed_nostr_source_policies_json,
                     allow_request_targets,
                     job_visibility,
@@ -1331,6 +1358,22 @@ struct PublishJobRow {
     view: TransportPublishJobView,
 }
 
+fn ensure_transport_publish_schema(connection: &Connection) -> Result<(), TransportPublishError> {
+    let has_explicit_kinds = connection
+        .prepare("PRAGMA table_info(transport_publish_principals)")?
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .any(|column| column == "allowed_explicit_transport_kinds_json");
+    if !has_explicit_kinds {
+        connection.execute(
+            "ALTER TABLE transport_publish_principals ADD COLUMN allowed_explicit_transport_kinds_json TEXT NOT NULL DEFAULT '[]'",
+            [],
+        )?;
+    }
+    Ok(())
+}
+
 fn recover_interrupted_publish_jobs(connection: &Connection) -> Result<(), TransportPublishError> {
     let now = current_unix_millis();
     connection.execute(
@@ -1377,18 +1420,19 @@ fn job_select_sql(tail: &str) -> String {
 }
 
 fn principal_from_row(row: &Row<'_>) -> Result<PublishPrincipal, rusqlite::Error> {
-    let visibility: String = row.get(7)?;
+    let visibility: String = row.get(8)?;
     Ok(PublishPrincipal {
         principal_id: row.get(0)?,
         label: row.get(1)?,
         allowed_pubkeys: json_column(row, 2)?,
         allowed_kinds: json_column(row, 3)?,
         allowed_target_policies: json_column(row, 4)?,
-        allowed_nostr_source_policies: json_column(row, 5)?,
-        allow_request_targets: row.get(6)?,
+        allowed_explicit_transport_kinds: json_column(row, 5)?,
+        allowed_nostr_source_policies: json_column(row, 6)?,
+        allow_request_targets: row.get(7)?,
         job_visibility: PublishJobVisibility::from_str(visibility.as_str())
-            .map_err(|error| conversion_error(7, error))?,
-        expires_at_unix: row.get(8)?,
+            .map_err(|error| conversion_error(8, error))?,
+        expires_at_unix: row.get(9)?,
     })
 }
 
@@ -1505,6 +1549,29 @@ fn validate_principal_init(input: &PublishPrincipalInit) -> Result<(), Transport
             "principal must include at least one allowed target policy".to_owned(),
         ));
     }
+    let allows_explicit_targets = input
+        .allowed_target_policies
+        .contains(&TransportPublishTargetPolicyName::ExplicitTargets);
+    if allows_explicit_targets && input.allowed_explicit_transport_kinds.is_empty() {
+        return Err(TransportPublishError::InvalidScope(
+            "principal must include at least one allowed explicit transport kind".to_owned(),
+        ));
+    }
+    if !allows_explicit_targets && !input.allowed_explicit_transport_kinds.is_empty() {
+        return Err(TransportPublishError::InvalidScope(
+            "principal cannot include explicit transport kinds without explicit target policy"
+                .to_owned(),
+        ));
+    }
+    let mut explicit_transport_kinds = BTreeSet::new();
+    for transport_kind in &input.allowed_explicit_transport_kinds {
+        let canonical = parse_explicit_transport_kind(transport_kind)?;
+        if canonical != *transport_kind || !explicit_transport_kinds.insert(canonical) {
+            return Err(TransportPublishError::InvalidScope(
+                "allowed explicit transport kinds must be canonical and unique".to_owned(),
+            ));
+        }
+    }
     if input
         .allowed_target_policies
         .contains(&TransportPublishTargetPolicyName::Nostr)
@@ -1565,6 +1632,20 @@ pub fn parse_target_policy(
             "unknown target policy `{other}`"
         ))),
     }
+}
+
+pub fn parse_explicit_transport_kind(value: &str) -> Result<String, TransportPublishError> {
+    let kind = RadrootsTransportKind::parse_canonical(value).map_err(|error| {
+        TransportPublishError::InvalidScope(format!(
+            "unknown explicit transport kind `{value}`: {error}"
+        ))
+    })?;
+    if kind == RadrootsTransportKind::Proxy {
+        return Err(TransportPublishError::InvalidScope(
+            "proxy cannot be used as a daemon explicit target transport kind".to_owned(),
+        ));
+    }
+    Ok(kind.canonical_label())
 }
 
 fn signed_event_from_wire(
@@ -1998,8 +2079,9 @@ fn current_unix_millis() -> i64 {
 mod tests {
     use super::{
         PublishJobInsert, PublishJobVisibility, PublishPrincipal, PublishPrincipalInit,
-        TransportPublish, TransportPublishError, TransportPublishStore, generate_bearer_token,
-        hash_bearer_token, parse_nostr_source_policy,
+        SCHEMA_VERSION, TRANSPORT_KIND_NOSTR, TRANSPORT_KIND_RETICULUM, TransportPublish,
+        TransportPublishError, TransportPublishStore, generate_bearer_token, hash_bearer_token,
+        parse_nostr_source_policy,
     };
     use crate::app::config::{
         NostrRelayUrlPolicy, TransportPublishConfig, TransportPublishNostrConfig,
@@ -2126,6 +2208,7 @@ mod tests {
                 allowed_pubkeys: vec![pubkey],
                 allowed_kinds: vec![30_402],
                 allowed_target_policies: vec![TransportPublishTargetPolicyName::Nostr],
+                allowed_explicit_transport_kinds: Vec::new(),
                 allowed_nostr_source_policies: nostr_source_policies,
                 allow_request_targets,
                 job_visibility: visibility,
@@ -2139,6 +2222,23 @@ mod tests {
         pubkey: String,
         visibility: PublishJobVisibility,
     ) -> PublishPrincipal {
+        explicit_target_principal_with_kinds(
+            proxy,
+            pubkey,
+            vec![
+                TRANSPORT_KIND_NOSTR.to_owned(),
+                TRANSPORT_KIND_RETICULUM.to_owned(),
+            ],
+            visibility,
+        )
+    }
+
+    fn explicit_target_principal_with_kinds(
+        proxy: &TransportPublish,
+        pubkey: String,
+        allowed_explicit_transport_kinds: Vec<String>,
+        visibility: PublishJobVisibility,
+    ) -> PublishPrincipal {
         proxy
             .store
             .create_principal(PublishPrincipalInit {
@@ -2147,6 +2247,7 @@ mod tests {
                 allowed_pubkeys: vec![pubkey],
                 allowed_kinds: vec![30_402],
                 allowed_target_policies: vec![TransportPublishTargetPolicyName::ExplicitTargets],
+                allowed_explicit_transport_kinds,
                 allowed_nostr_source_policies: Vec::new(),
                 allow_request_targets: true,
                 job_visibility: visibility,
@@ -2163,6 +2264,69 @@ mod tests {
             },
             ..TransportPublishConfig::default()
         }
+    }
+
+    #[test]
+    fn explicit_target_principals_require_canonical_allowed_transport_kinds() {
+        let store = TransportPublishStore::memory().expect("store");
+        let base = PublishPrincipalInit {
+            label: "explicit-target-tester".to_owned(),
+            token_hash: hash_bearer_token(generate_bearer_token().as_str()),
+            allowed_pubkeys: vec!["a".repeat(64)],
+            allowed_kinds: vec![30_402],
+            allowed_target_policies: vec![TransportPublishTargetPolicyName::ExplicitTargets],
+            allowed_explicit_transport_kinds: Vec::new(),
+            allowed_nostr_source_policies: Vec::new(),
+            allow_request_targets: true,
+            job_visibility: PublishJobVisibility::Own,
+            expires_at_unix: None,
+        };
+
+        assert!(matches!(
+            store.create_principal(base.clone()),
+            Err(TransportPublishError::InvalidScope(message))
+                if message.contains("allowed explicit transport kind")
+        ));
+
+        let mut uppercase = base.clone();
+        uppercase.allowed_explicit_transport_kinds = vec!["Nostr".to_owned()];
+        assert!(matches!(
+            store.create_principal(uppercase),
+            Err(TransportPublishError::InvalidScope(message))
+                if message.contains("explicit transport kind")
+        ));
+
+        let mut duplicate = base.clone();
+        duplicate.allowed_explicit_transport_kinds = vec![
+            TRANSPORT_KIND_NOSTR.to_owned(),
+            TRANSPORT_KIND_NOSTR.to_owned(),
+        ];
+        assert!(matches!(
+            store.create_principal(duplicate),
+            Err(TransportPublishError::InvalidScope(message))
+                if message.contains("canonical and unique")
+        ));
+
+        let mut proxy_kind = base.clone();
+        proxy_kind.allowed_explicit_transport_kinds = vec!["proxy".to_owned()];
+        assert!(matches!(
+            store.create_principal(proxy_kind),
+            Err(TransportPublishError::InvalidScope(message))
+                if message.contains("proxy cannot be used")
+        ));
+
+        let mut nostr_policy_with_explicit_kinds = base;
+        nostr_policy_with_explicit_kinds.allowed_target_policies =
+            vec![TransportPublishTargetPolicyName::Nostr];
+        nostr_policy_with_explicit_kinds.allowed_explicit_transport_kinds =
+            vec![TRANSPORT_KIND_NOSTR.to_owned()];
+        nostr_policy_with_explicit_kinds.allowed_nostr_source_policies =
+            vec![NostrPublishTargetSourcePolicy::DaemonDefaultOnly];
+        assert!(matches!(
+            store.create_principal(nostr_policy_with_explicit_kinds),
+            Err(TransportPublishError::InvalidScope(message))
+                if message.contains("without explicit target policy")
+        ));
     }
 
     #[derive(Default)]
@@ -2255,6 +2419,7 @@ mod tests {
                 allowed_pubkeys: vec!["a".repeat(64)],
                 allowed_kinds: vec![30_402],
                 allowed_target_policies: vec![TransportPublishTargetPolicyName::Nostr],
+                allowed_explicit_transport_kinds: Vec::new(),
                 allowed_nostr_source_policies: vec![
                     NostrPublishTargetSourcePolicy::DaemonDefaultOnly,
                 ],
@@ -2322,6 +2487,7 @@ mod tests {
                     allowed_pubkeys: vec![pubkey],
                     allowed_kinds: vec![30_402],
                     allowed_target_policies: vec![TransportPublishTargetPolicyName::Nostr],
+                    allowed_explicit_transport_kinds: Vec::new(),
                     allowed_nostr_source_policies: vec![
                         NostrPublishTargetSourcePolicy::DaemonDefaultOnly,
                     ],
@@ -2355,6 +2521,86 @@ mod tests {
         );
         assert!(recovered.completed_at_ms.is_some());
         assert!(recovered.targets.is_empty());
+    }
+
+    #[test]
+    fn transport_store_open_migrates_principal_schema_with_empty_explicit_kind_allowlist() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let database_path = directory.path().join("publish-proxy-v1.sqlite");
+        let token_hash = hash_bearer_token(generate_bearer_token().as_str());
+        {
+            let connection = rusqlite::Connection::open(database_path.as_path()).expect("open");
+            connection
+                .execute_batch(
+                    r#"
+                    PRAGMA user_version = 1;
+                    CREATE TABLE transport_publish_principals (
+                        principal_id TEXT PRIMARY KEY NOT NULL,
+                        label TEXT NOT NULL,
+                        token_hash TEXT NOT NULL UNIQUE,
+                        allowed_pubkeys_json TEXT NOT NULL,
+                        allowed_kinds_json TEXT NOT NULL,
+                        allowed_target_policies_json TEXT NOT NULL,
+                        allowed_nostr_source_policies_json TEXT NOT NULL,
+                        allow_request_targets INTEGER NOT NULL,
+                        job_visibility TEXT NOT NULL,
+                        expires_at_unix INTEGER,
+                        revoked_at_unix INTEGER,
+                        created_at_unix INTEGER NOT NULL
+                    );
+                    "#,
+                )
+                .expect("schema");
+            connection
+                .execute(
+                    r#"
+                    INSERT INTO transport_publish_principals (
+                        principal_id,
+                        label,
+                        token_hash,
+                        allowed_pubkeys_json,
+                        allowed_kinds_json,
+                        allowed_target_policies_json,
+                        allowed_nostr_source_policies_json,
+                        allow_request_targets,
+                        job_visibility,
+                        expires_at_unix,
+                        revoked_at_unix,
+                        created_at_unix
+                    )
+                    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL, NULL, ?10)
+                    "#,
+                    rusqlite::params![
+                        "principal-v1",
+                        "v1",
+                        token_hash,
+                        serde_json::to_string(&vec!["a".repeat(64)]).expect("pubkeys"),
+                        serde_json::to_string(&vec![30_402]).expect("kinds"),
+                        serde_json::to_string(&vec![TransportPublishTargetPolicyName::Nostr])
+                            .expect("policies"),
+                        serde_json::to_string(&vec![
+                            NostrPublishTargetSourcePolicy::DaemonDefaultOnly
+                        ])
+                        .expect("source policies"),
+                        false,
+                        PublishJobVisibility::Own.to_string(),
+                        1_i64,
+                    ],
+                )
+                .expect("principal");
+        }
+
+        let store = TransportPublishStore::open(database_path.clone()).expect("migrate");
+        let principal = store
+            .principal_by_id("principal-v1")
+            .expect("lookup")
+            .expect("principal");
+        assert!(principal.allowed_explicit_transport_kinds.is_empty());
+        let version = rusqlite::Connection::open(database_path.as_path())
+            .expect("open migrated")
+            .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+            .expect("user version");
+        assert_eq!(version, SCHEMA_VERSION);
     }
 
     #[tokio::test]
@@ -2886,6 +3132,75 @@ mod tests {
         );
         assert!(!response.job.targets[0].attempted);
         assert!(adapter.captured_raw_events().is_empty());
+    }
+
+    #[tokio::test]
+    async fn publish_event_records_explicit_nostr_target_when_kind_allowed() {
+        let identity = RadrootsIdentity::generate();
+        let (proxy, adapter) = transport_publish(config_with_defaults(vec![RELAY_PRIMARY]));
+        let principal =
+            explicit_target_principal(&proxy, identity.public_key_hex(), PublishJobVisibility::Own);
+        let event = signed_event(&identity, "{}");
+        let raw_event = serde_json::to_string(&event).expect("raw event");
+        let request = TransportPublishEventRequest {
+            event,
+            target_policy: TransportPublishTargetPolicy::explicit_targets(vec![
+                TransportPublishTarget::nostr(RELAY_PRIMARY),
+            ]),
+            delivery_policy: TransportPublishDeliveryPolicy::Any,
+            idempotency_key: None,
+            timeout_ms: Some(5_000),
+        };
+
+        let response = proxy
+            .publish_event(&principal, request)
+            .await
+            .expect("publish");
+
+        assert_eq!(
+            response.job.status,
+            TransportPublishJobStatus::DeliverySatisfied
+        );
+        assert_eq!(response.job.targets.len(), 1);
+        assert_eq!(
+            response.job.targets[0].source,
+            TransportPublishTargetSource::Request
+        );
+        assert_eq!(response.job.targets[0].endpoint_uri, RELAY_PRIMARY);
+        assert_eq!(adapter.captured_raw_events(), vec![raw_event]);
+    }
+
+    #[tokio::test]
+    async fn publish_event_rejects_explicit_target_kind_not_allowed_before_recording_job() {
+        let identity = RadrootsIdentity::generate();
+        let (proxy, adapter) = transport_publish(TransportPublishConfig::default());
+        let principal = explicit_target_principal_with_kinds(
+            &proxy,
+            identity.public_key_hex(),
+            vec![TRANSPORT_KIND_NOSTR.to_owned()],
+            PublishJobVisibility::Own,
+        );
+
+        let err = proxy
+            .publish_event(
+                &principal,
+                reticulum_publish_request(
+                    signed_event(&identity, "{}"),
+                    TransportPublishPreviewBehavior::RejectDeliveryAttempts,
+                ),
+            )
+            .await
+            .expect_err("disallowed explicit target kind");
+
+        assert!(matches!(err, TransportPublishError::InvalidScope(_)));
+        assert!(adapter.captured_raw_events().is_empty());
+        assert!(
+            proxy
+                .store
+                .list_jobs_for_principal(&principal, 10)
+                .expect("jobs")
+                .is_empty()
+        );
     }
 
     #[tokio::test]
