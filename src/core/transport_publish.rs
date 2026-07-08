@@ -44,6 +44,85 @@ const TOKEN_HASH_PREFIX: &str = "sha256:";
 const SCHEMA_VERSION: i64 = 3;
 const TRANSPORT_KIND_NOSTR: &str = "nostr";
 const TRANSPORT_KIND_RETICULUM: &str = "reticulum";
+const TRANSPORT_PUBLISH_SCHEMA_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS transport_publish_principals (
+    principal_id TEXT PRIMARY KEY NOT NULL,
+    label TEXT NOT NULL,
+    token_hash TEXT NOT NULL UNIQUE,
+    allowed_pubkeys_json TEXT NOT NULL,
+    allowed_kinds_json TEXT NOT NULL,
+    allowed_target_policies_json TEXT NOT NULL,
+    allowed_explicit_transport_kinds_json TEXT NOT NULL,
+    allowed_nostr_source_policies_json TEXT NOT NULL,
+    allow_request_targets INTEGER NOT NULL,
+    job_visibility TEXT NOT NULL,
+    expires_at_unix INTEGER,
+    revoked_at_unix INTEGER,
+    created_at_unix INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS transport_publish_jobs (
+    job_id TEXT PRIMARY KEY NOT NULL,
+    principal_id TEXT NOT NULL,
+    idempotency_key TEXT,
+    request_fingerprint TEXT NOT NULL,
+    status TEXT NOT NULL,
+    event_id TEXT NOT NULL,
+    event_pubkey TEXT NOT NULL,
+    event_kind INTEGER NOT NULL,
+    target_policy_json TEXT NOT NULL,
+    delivery_policy_json TEXT NOT NULL,
+    requested_target_count INTEGER NOT NULL,
+    effective_target_count INTEGER NOT NULL,
+    request_json TEXT NOT NULL,
+    requested_at_ms INTEGER NOT NULL,
+    updated_at_ms INTEGER NOT NULL,
+    completed_at_ms INTEGER,
+    last_error TEXT,
+    FOREIGN KEY(principal_id) REFERENCES transport_publish_principals(principal_id)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS transport_publish_jobs_principal_idempotency_idx
+    ON transport_publish_jobs(principal_id, idempotency_key)
+    WHERE idempotency_key IS NOT NULL;
+CREATE TABLE IF NOT EXISTS transport_publish_target_results (
+    job_id TEXT NOT NULL,
+    transport_kind TEXT NOT NULL,
+    endpoint_uri TEXT NOT NULL,
+    source TEXT NOT NULL,
+    attempted INTEGER NOT NULL,
+    outcome_kind TEXT NOT NULL,
+    message TEXT,
+    latency_ms INTEGER,
+    updated_at_ms INTEGER NOT NULL,
+    PRIMARY KEY(job_id, transport_kind, endpoint_uri),
+    FOREIGN KEY(job_id) REFERENCES transport_publish_jobs(job_id)
+);
+CREATE TABLE IF NOT EXISTS transport_publish_target_snapshots (
+    job_id TEXT NOT NULL,
+    target_index INTEGER NOT NULL,
+    transport_kind TEXT NOT NULL,
+    endpoint_uri TEXT NOT NULL,
+    source TEXT NOT NULL,
+    attempted INTEGER NOT NULL,
+    outcome_kind TEXT NOT NULL,
+    message TEXT,
+    latency_ms INTEGER,
+    created_at_ms INTEGER NOT NULL,
+    PRIMARY KEY(job_id, target_index),
+    FOREIGN KEY(job_id) REFERENCES transport_publish_jobs(job_id)
+);
+CREATE TABLE IF NOT EXISTS transport_publish_nostr_author_cache (
+    pubkey TEXT PRIMARY KEY NOT NULL,
+    relays_json TEXT NOT NULL,
+    updated_at_ms INTEGER NOT NULL
+);
+"#;
+const TRANSPORT_PUBLISH_TABLES: &[&str] = &[
+    "transport_publish_principals",
+    "transport_publish_jobs",
+    "transport_publish_target_results",
+    "transport_publish_target_snapshots",
+    "transport_publish_nostr_author_cache",
+];
 
 #[derive(Debug, Error)]
 pub enum TransportPublishError {
@@ -843,84 +922,19 @@ impl TransportPublishStore {
     }
 
     fn from_connection(connection: Connection) -> Result<Self, TransportPublishError> {
-        connection.execute_batch(
-            r#"
-            PRAGMA foreign_keys = ON;
-            CREATE TABLE IF NOT EXISTS transport_publish_principals (
-                principal_id TEXT PRIMARY KEY NOT NULL,
-                label TEXT NOT NULL,
-                token_hash TEXT NOT NULL UNIQUE,
-                allowed_pubkeys_json TEXT NOT NULL,
-                allowed_kinds_json TEXT NOT NULL,
-                allowed_target_policies_json TEXT NOT NULL,
-                allowed_explicit_transport_kinds_json TEXT NOT NULL,
-                allowed_nostr_source_policies_json TEXT NOT NULL,
-                allow_request_targets INTEGER NOT NULL,
-                job_visibility TEXT NOT NULL,
-                expires_at_unix INTEGER,
-                revoked_at_unix INTEGER,
-                created_at_unix INTEGER NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS transport_publish_jobs (
-                job_id TEXT PRIMARY KEY NOT NULL,
-                principal_id TEXT NOT NULL,
-                idempotency_key TEXT,
-                request_fingerprint TEXT NOT NULL,
-                status TEXT NOT NULL,
-                event_id TEXT NOT NULL,
-                event_pubkey TEXT NOT NULL,
-                event_kind INTEGER NOT NULL,
-                target_policy_json TEXT NOT NULL,
-                delivery_policy_json TEXT NOT NULL,
-                requested_target_count INTEGER NOT NULL,
-                effective_target_count INTEGER NOT NULL,
-                request_json TEXT NOT NULL,
-                requested_at_ms INTEGER NOT NULL,
-                updated_at_ms INTEGER NOT NULL,
-                completed_at_ms INTEGER,
-                last_error TEXT,
-                FOREIGN KEY(principal_id) REFERENCES transport_publish_principals(principal_id)
-            );
-            CREATE UNIQUE INDEX IF NOT EXISTS transport_publish_jobs_principal_idempotency_idx
-                ON transport_publish_jobs(principal_id, idempotency_key)
-                WHERE idempotency_key IS NOT NULL;
-            CREATE TABLE IF NOT EXISTS transport_publish_target_results (
-                job_id TEXT NOT NULL,
-                transport_kind TEXT NOT NULL,
-                endpoint_uri TEXT NOT NULL,
-                source TEXT NOT NULL,
-                attempted INTEGER NOT NULL,
-                outcome_kind TEXT NOT NULL,
-                message TEXT,
-                latency_ms INTEGER,
-                updated_at_ms INTEGER NOT NULL,
-                PRIMARY KEY(job_id, transport_kind, endpoint_uri),
-                FOREIGN KEY(job_id) REFERENCES transport_publish_jobs(job_id)
-            );
-            CREATE TABLE IF NOT EXISTS transport_publish_target_snapshots (
-                job_id TEXT NOT NULL,
-                target_index INTEGER NOT NULL,
-                transport_kind TEXT NOT NULL,
-                endpoint_uri TEXT NOT NULL,
-                source TEXT NOT NULL,
-                attempted INTEGER NOT NULL,
-                outcome_kind TEXT NOT NULL,
-                message TEXT,
-                latency_ms INTEGER,
-                created_at_ms INTEGER NOT NULL,
-                PRIMARY KEY(job_id, target_index),
-                FOREIGN KEY(job_id) REFERENCES transport_publish_jobs(job_id)
-            );
-            CREATE TABLE IF NOT EXISTS transport_publish_nostr_author_cache (
-                pubkey TEXT PRIMARY KEY NOT NULL,
-                relays_json TEXT NOT NULL,
-                updated_at_ms INTEGER NOT NULL
-            );
-            "#,
-        )?;
-        validate_transport_publish_schema(&connection)?;
+        connection.execute_batch("PRAGMA foreign_keys = ON;")?;
+        match transport_publish_schema_state(&connection)? {
+            TransportPublishSchemaState::Fresh => {
+                connection.execute_batch(TRANSPORT_PUBLISH_SCHEMA_SQL)?;
+                connection.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+                validate_transport_publish_schema(&connection)?;
+            }
+            TransportPublishSchemaState::Existing => {
+                validate_transport_publish_schema_version(&connection)?;
+                validate_transport_publish_schema(&connection)?;
+            }
+        }
         recover_interrupted_publish_jobs(&connection)?;
-        connection.pragma_update(None, "user_version", SCHEMA_VERSION)?;
         Ok(Self {
             inner: Arc::new(Mutex::new(connection)),
         })
@@ -1364,7 +1378,57 @@ struct PublishJobRow {
     view: TransportPublishJobView,
 }
 
+enum TransportPublishSchemaState {
+    Fresh,
+    Existing,
+}
+
+fn transport_publish_schema_state(
+    connection: &Connection,
+) -> Result<TransportPublishSchemaState, TransportPublishError> {
+    let names = connection
+        .prepare(
+            "SELECT name FROM sqlite_schema WHERE type = 'table' AND name LIKE 'transport_publish_%'",
+        )?
+        .query_map([], |row| row.get::<_, String>(0))?
+        .collect::<Result<BTreeSet<_>, _>>()?;
+    if names.is_empty() {
+        let version = transport_publish_schema_version(connection)?;
+        if version == 0 {
+            Ok(TransportPublishSchemaState::Fresh)
+        } else {
+            Err(TransportPublishError::Schema {
+                table: "transport_publish_schema",
+                detail: format!(
+                    "fresh schema initialization requires user_version 0, got {version}"
+                ),
+            })
+        }
+    } else {
+        Ok(TransportPublishSchemaState::Existing)
+    }
+}
+
+fn transport_publish_schema_version(connection: &Connection) -> Result<i64, TransportPublishError> {
+    Ok(connection.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))?)
+}
+
+fn validate_transport_publish_schema_version(
+    connection: &Connection,
+) -> Result<(), TransportPublishError> {
+    let version = transport_publish_schema_version(connection)?;
+    if version == SCHEMA_VERSION {
+        Ok(())
+    } else {
+        Err(TransportPublishError::Schema {
+            table: "transport_publish_schema",
+            detail: format!("user_version must be {SCHEMA_VERSION}, got {version}"),
+        })
+    }
+}
+
 fn validate_transport_publish_schema(connection: &Connection) -> Result<(), TransportPublishError> {
+    validate_foreign_keys_enabled(connection)?;
     validate_table_columns(
         connection,
         "transport_publish_principals",
@@ -1383,6 +1447,17 @@ fn validate_transport_publish_schema(connection: &Connection) -> Result<(), Tran
             RequiredColumn::integer_nullable("revoked_at_unix"),
             RequiredColumn::integer_not_null("created_at_unix"),
         ],
+    )?;
+    validate_primary_key(
+        connection,
+        "transport_publish_principals",
+        &["principal_id"],
+    )?;
+    validate_unique_index(
+        connection,
+        "transport_publish_principals",
+        &["token_hash"],
+        None,
     )?;
     validate_table_columns(
         connection,
@@ -1407,6 +1482,20 @@ fn validate_transport_publish_schema(connection: &Connection) -> Result<(), Tran
             RequiredColumn::text_nullable("last_error"),
         ],
     )?;
+    validate_primary_key(connection, "transport_publish_jobs", &["job_id"])?;
+    validate_foreign_key(
+        connection,
+        "transport_publish_jobs",
+        &["principal_id"],
+        "transport_publish_principals",
+        &["principal_id"],
+    )?;
+    validate_unique_index(
+        connection,
+        "transport_publish_jobs",
+        &["principal_id", "idempotency_key"],
+        Some("WHERE idempotency_key IS NOT NULL"),
+    )?;
     validate_table_columns(
         connection,
         "transport_publish_target_results",
@@ -1421,6 +1510,18 @@ fn validate_transport_publish_schema(connection: &Connection) -> Result<(), Tran
             RequiredColumn::integer_nullable("latency_ms"),
             RequiredColumn::integer_not_null("updated_at_ms"),
         ],
+    )?;
+    validate_primary_key(
+        connection,
+        "transport_publish_target_results",
+        &["job_id", "transport_kind", "endpoint_uri"],
+    )?;
+    validate_foreign_key(
+        connection,
+        "transport_publish_target_results",
+        &["job_id"],
+        "transport_publish_jobs",
+        &["job_id"],
     )?;
     validate_table_columns(
         connection,
@@ -1438,6 +1539,18 @@ fn validate_transport_publish_schema(connection: &Connection) -> Result<(), Tran
             RequiredColumn::integer_not_null("created_at_ms"),
         ],
     )?;
+    validate_primary_key(
+        connection,
+        "transport_publish_target_snapshots",
+        &["job_id", "target_index"],
+    )?;
+    validate_foreign_key(
+        connection,
+        "transport_publish_target_snapshots",
+        &["job_id"],
+        "transport_publish_jobs",
+        &["job_id"],
+    )?;
     validate_table_columns(
         connection,
         "transport_publish_nostr_author_cache",
@@ -1446,7 +1559,16 @@ fn validate_transport_publish_schema(connection: &Connection) -> Result<(), Tran
             RequiredColumn::text_not_null("relays_json"),
             RequiredColumn::integer_not_null("updated_at_ms"),
         ],
-    )
+    )?;
+    validate_primary_key(
+        connection,
+        "transport_publish_nostr_author_cache",
+        &["pubkey"],
+    )?;
+    for table in TRANSPORT_PUBLISH_TABLES {
+        validate_table_present(connection, table)?;
+    }
+    Ok(())
 }
 
 #[derive(Clone, Copy)]
@@ -1490,23 +1612,267 @@ impl RequiredColumn {
     }
 }
 
+struct TableColumnInfo {
+    column_type: String,
+    not_null: bool,
+    primary_key_position: i64,
+}
+
+struct ForeignKeyEntry {
+    target_table: String,
+    from_columns: Vec<String>,
+    to_columns: Vec<String>,
+}
+
+fn validate_foreign_keys_enabled(connection: &Connection) -> Result<(), TransportPublishError> {
+    let enabled =
+        connection.pragma_query_value(None, "foreign_keys", |row| row.get::<_, i64>(0))?;
+    if enabled == 1 {
+        Ok(())
+    } else {
+        Err(TransportPublishError::Schema {
+            table: "transport_publish_schema",
+            detail: "foreign key enforcement must be enabled".to_owned(),
+        })
+    }
+}
+
+fn validate_table_present(
+    connection: &Connection,
+    table: &'static str,
+) -> Result<(), TransportPublishError> {
+    let exists = connection
+        .query_row(
+            "SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = ?1",
+            params![table],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some();
+    if exists {
+        Ok(())
+    } else {
+        Err(TransportPublishError::Schema {
+            table,
+            detail: "table is missing".to_owned(),
+        })
+    }
+}
+
+fn table_columns(
+    connection: &Connection,
+    table: &'static str,
+) -> Result<BTreeMap<String, TableColumnInfo>, TransportPublishError> {
+    Ok(connection
+        .prepare(format!("PRAGMA table_info({table})").as_str())?
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(1)?,
+                TableColumnInfo {
+                    column_type: row.get::<_, String>(2)?.to_ascii_uppercase(),
+                    not_null: row.get::<_, i64>(3)? != 0,
+                    primary_key_position: row.get::<_, i64>(5)?,
+                },
+            ))
+        })?
+        .collect::<Result<BTreeMap<_, _>, _>>()?)
+}
+
+fn validate_primary_key(
+    connection: &Connection,
+    table: &'static str,
+    expected_columns: &[&'static str],
+) -> Result<(), TransportPublishError> {
+    let columns = table_columns(connection, table)?;
+    let mut primary_key = columns
+        .iter()
+        .filter_map(|(name, column)| {
+            (column.primary_key_position > 0)
+                .then_some((column.primary_key_position, name.as_str()))
+        })
+        .collect::<Vec<_>>();
+    primary_key.sort_by_key(|(position, _)| *position);
+    let actual_columns = primary_key
+        .into_iter()
+        .map(|(_, name)| name)
+        .collect::<Vec<_>>();
+    if actual_columns == expected_columns {
+        Ok(())
+    } else {
+        Err(TransportPublishError::Schema {
+            table,
+            detail: format!("primary key must be ({})", expected_columns.join(", ")),
+        })
+    }
+}
+
+fn validate_unique_index(
+    connection: &Connection,
+    table: &'static str,
+    expected_columns: &[&'static str],
+    partial_where: Option<&'static str>,
+) -> Result<(), TransportPublishError> {
+    let indexes = connection
+        .prepare(format!("PRAGMA index_list({table})").as_str())?
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)? != 0,
+                row.get::<_, i64>(4)? != 0,
+            ))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    for (index_name, unique, partial) in indexes {
+        if !unique {
+            continue;
+        }
+        if partial_where.is_some() != partial {
+            continue;
+        }
+        let index_columns = index_columns(connection, index_name.as_str())?;
+        if !columns_match(index_columns.as_slice(), expected_columns) {
+            continue;
+        }
+        let where_matches = match partial_where {
+            Some(required_where) => {
+                index_sql_contains_where(connection, table, index_name.as_str(), required_where)?
+            }
+            None => true,
+        };
+        if where_matches {
+            return Ok(());
+        }
+    }
+    Err(TransportPublishError::Schema {
+        table,
+        detail: format!(
+            "missing required unique index on ({})",
+            expected_columns.join(", ")
+        ),
+    })
+}
+
+fn index_columns(
+    connection: &Connection,
+    index_name: &str,
+) -> Result<Vec<String>, TransportPublishError> {
+    let mut columns = connection
+        .prepare(format!("PRAGMA index_info({index_name})").as_str())?
+        .query_map([], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(2)?))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    columns.sort_by_key(|(position, _)| *position);
+    Ok(columns.into_iter().map(|(_, name)| name).collect())
+}
+
+fn index_sql_contains_where(
+    connection: &Connection,
+    table: &'static str,
+    index_name: &str,
+    required_where: &str,
+) -> Result<bool, TransportPublishError> {
+    let sql = connection
+        .query_row(
+            "SELECT sql FROM sqlite_schema WHERE type = 'index' AND tbl_name = ?1 AND name = ?2",
+            params![table, index_name],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .optional()?
+        .flatten()
+        .unwrap_or_default();
+    Ok(normalized_sql(sql.as_str()).contains(normalized_sql(required_where).as_str()))
+}
+
+fn normalized_sql(sql: &str) -> String {
+    sql.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_uppercase()
+}
+
+fn validate_foreign_key(
+    connection: &Connection,
+    table: &'static str,
+    expected_from_columns: &[&'static str],
+    expected_target_table: &'static str,
+    expected_to_columns: &[&'static str],
+) -> Result<(), TransportPublishError> {
+    for foreign_key in foreign_keys(connection, table)? {
+        if foreign_key.target_table == expected_target_table
+            && columns_match(foreign_key.from_columns.as_slice(), expected_from_columns)
+            && columns_match(foreign_key.to_columns.as_slice(), expected_to_columns)
+        {
+            return Ok(());
+        }
+    }
+    Err(TransportPublishError::Schema {
+        table,
+        detail: format!(
+            "missing required foreign key ({}) references {}({})",
+            expected_from_columns.join(", "),
+            expected_target_table,
+            expected_to_columns.join(", ")
+        ),
+    })
+}
+
+fn foreign_keys(
+    connection: &Connection,
+    table: &'static str,
+) -> Result<Vec<ForeignKeyEntry>, TransportPublishError> {
+    let mut groups = BTreeMap::<i64, (String, Vec<(i64, String, String)>)>::new();
+    let rows = connection
+        .prepare(format!("PRAGMA foreign_key_list({table})").as_str())?
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+            ))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    for (id, seq, target_table, from_column, to_column) in rows {
+        let entry = groups
+            .entry(id)
+            .or_insert_with(|| (target_table, Vec::new()));
+        entry.1.push((seq, from_column, to_column));
+    }
+    let mut foreign_keys = Vec::new();
+    for (_, (target_table, mut columns)) in groups {
+        columns.sort_by_key(|(seq, _, _)| *seq);
+        foreign_keys.push(ForeignKeyEntry {
+            target_table,
+            from_columns: columns
+                .iter()
+                .map(|(_, from_column, _)| from_column.clone())
+                .collect(),
+            to_columns: columns
+                .into_iter()
+                .map(|(_, _, to_column)| to_column)
+                .collect(),
+        });
+    }
+    Ok(foreign_keys)
+}
+
+fn columns_match(actual: &[String], expected: &[&'static str]) -> bool {
+    actual.len() == expected.len()
+        && actual
+            .iter()
+            .map(String::as_str)
+            .zip(expected.iter().copied())
+            .all(|(actual, expected)| actual == expected)
+}
+
 fn validate_table_columns(
     connection: &Connection,
     table: &'static str,
     required_columns: &[RequiredColumn],
 ) -> Result<(), TransportPublishError> {
-    let columns = connection
-        .prepare(format!("PRAGMA table_info({table})").as_str())?
-        .query_map([], |row| {
-            Ok((
-                row.get::<_, String>(1)?,
-                (
-                    row.get::<_, String>(2)?.to_ascii_uppercase(),
-                    row.get::<_, i64>(3)? != 0,
-                ),
-            ))
-        })?
-        .collect::<Result<BTreeMap<_, _>, _>>()?;
+    let columns = table_columns(connection, table)?;
     if columns.is_empty() {
         return Err(TransportPublishError::Schema {
             table,
@@ -1514,22 +1880,22 @@ fn validate_table_columns(
         });
     }
     for required in required_columns {
-        let Some((column_type, not_null)) = columns.get(required.name) else {
+        let Some(column) = columns.get(required.name) else {
             return Err(TransportPublishError::Schema {
                 table,
                 detail: format!("missing required column `{}`", required.name),
             });
         };
-        if column_type != required.column_type {
+        if column.column_type != required.column_type {
             return Err(TransportPublishError::Schema {
                 table,
                 detail: format!(
                     "column `{}` must have type {}, got {}",
-                    required.name, required.column_type, column_type
+                    required.name, required.column_type, column.column_type
                 ),
             });
         }
-        if *not_null != required.not_null {
+        if column.not_null != required.not_null {
             return Err(TransportPublishError::Schema {
                 table,
                 detail: format!(
@@ -1543,6 +1909,21 @@ fn validate_table_columns(
                 ),
             });
         }
+    }
+    if columns.len() != required_columns.len() {
+        let required = required_columns
+            .iter()
+            .map(|column| column.name)
+            .collect::<BTreeSet<_>>();
+        let extras = columns
+            .keys()
+            .filter(|column| !required.contains(column.as_str()))
+            .cloned()
+            .collect::<Vec<_>>();
+        return Err(TransportPublishError::Schema {
+            table,
+            detail: format!("unexpected columns: {}", extras.join(", ")),
+        });
     }
     Ok(())
 }
@@ -2418,9 +2799,9 @@ fn current_unix_millis() -> i64 {
 mod tests {
     use super::{
         PublishJobInsert, PublishJobVisibility, PublishPrincipal, PublishPrincipalInit,
-        SCHEMA_VERSION, TRANSPORT_KIND_NOSTR, TRANSPORT_KIND_RETICULUM, TransportPublish,
-        TransportPublishError, TransportPublishStore, generate_bearer_token, hash_bearer_token,
-        parse_nostr_source_policy,
+        SCHEMA_VERSION, TRANSPORT_KIND_NOSTR, TRANSPORT_KIND_RETICULUM,
+        TRANSPORT_PUBLISH_SCHEMA_SQL, TransportPublish, TransportPublishError,
+        TransportPublishStore, generate_bearer_token, hash_bearer_token, parse_nostr_source_policy,
     };
     use crate::app::config::{
         NostrRelayUrlPolicy, TransportPublishConfig, TransportPublishNostrConfig,
@@ -2469,6 +2850,56 @@ mod tests {
             idempotency_key: Some("idem-1".to_owned()),
             timeout_ms: None,
         }
+    }
+
+    fn schema_with_replacement(fragment: &str, replacement: &str) -> String {
+        assert!(TRANSPORT_PUBLISH_SCHEMA_SQL.contains(fragment));
+        TRANSPORT_PUBLISH_SCHEMA_SQL.replace(fragment, replacement)
+    }
+
+    fn create_existing_schema(
+        database_path: &std::path::Path,
+        schema_sql: &str,
+        user_version: Option<i64>,
+    ) {
+        let connection = rusqlite::Connection::open(database_path).expect("open schema database");
+        connection.execute_batch(schema_sql).expect("create schema");
+        if let Some(version) = user_version {
+            connection
+                .pragma_update(None, "user_version", version)
+                .expect("set schema version");
+        }
+    }
+
+    fn open_schema_error(database_path: &std::path::Path) -> TransportPublishError {
+        match TransportPublishStore::open(database_path.to_path_buf()) {
+            Ok(_) => panic!("malformed schema opened"),
+            Err(error) => error,
+        }
+    }
+
+    fn assert_schema_error(
+        error: TransportPublishError,
+        expected_table: &'static str,
+        expected_detail: &str,
+    ) {
+        match error {
+            TransportPublishError::Schema { table, detail } => {
+                assert_eq!(table, expected_table);
+                assert!(
+                    detail.contains(expected_detail),
+                    "schema detail `{detail}` did not contain `{expected_detail}`"
+                );
+            }
+            error => panic!("unexpected error: {error}"),
+        }
+    }
+
+    fn database_user_version(database_path: &std::path::Path) -> i64 {
+        let connection = rusqlite::Connection::open(database_path).expect("open schema database");
+        connection
+            .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+            .expect("user version")
     }
 
     fn signed_event(identity: &RadrootsIdentity, content: &str) -> SignedNostrEventWire {
@@ -3231,7 +3662,7 @@ mod tests {
             connection
                 .execute_batch(
                     r#"
-                    PRAGMA user_version = 1;
+                    PRAGMA user_version = 3;
                     CREATE TABLE transport_publish_principals (
                         principal_id TEXT PRIMARY KEY NOT NULL,
                         label TEXT NOT NULL,
@@ -3313,10 +3744,131 @@ mod tests {
                 .iter()
                 .any(|column| column == "allowed_explicit_transport_kinds_json")
         );
-        let version = connection
-            .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
-            .expect("user version");
-        assert_eq!(version, 1);
+        assert_eq!(
+            database_user_version(database_path.as_path()),
+            SCHEMA_VERSION
+        );
+    }
+
+    #[test]
+    fn transport_store_open_rejects_current_schema_missing_user_version() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let database_path = directory
+            .path()
+            .join("publish-proxy-missing-version.sqlite");
+        create_existing_schema(database_path.as_path(), TRANSPORT_PUBLISH_SCHEMA_SQL, None);
+
+        assert_schema_error(
+            open_schema_error(database_path.as_path()),
+            "transport_publish_schema",
+            "user_version",
+        );
+        assert_eq!(database_user_version(database_path.as_path()), 0);
+    }
+
+    #[test]
+    fn transport_store_open_rejects_current_schema_without_token_hash_unique_index() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let database_path = directory
+            .path()
+            .join("publish-proxy-missing-token-unique.sqlite");
+        let schema = schema_with_replacement(
+            "token_hash TEXT NOT NULL UNIQUE",
+            "token_hash TEXT NOT NULL",
+        );
+        create_existing_schema(
+            database_path.as_path(),
+            schema.as_str(),
+            Some(SCHEMA_VERSION),
+        );
+
+        assert_schema_error(
+            open_schema_error(database_path.as_path()),
+            "transport_publish_principals",
+            "token_hash",
+        );
+        assert_eq!(
+            database_user_version(database_path.as_path()),
+            SCHEMA_VERSION
+        );
+    }
+
+    #[test]
+    fn transport_store_open_rejects_current_schema_without_idempotency_unique_index() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let database_path = directory
+            .path()
+            .join("publish-proxy-missing-idempotency-index.sqlite");
+        let schema = schema_with_replacement(
+            r#"CREATE UNIQUE INDEX IF NOT EXISTS transport_publish_jobs_principal_idempotency_idx
+    ON transport_publish_jobs(principal_id, idempotency_key)
+    WHERE idempotency_key IS NOT NULL;"#,
+            "",
+        );
+        create_existing_schema(
+            database_path.as_path(),
+            schema.as_str(),
+            Some(SCHEMA_VERSION),
+        );
+
+        assert_schema_error(
+            open_schema_error(database_path.as_path()),
+            "transport_publish_jobs",
+            "principal_id, idempotency_key",
+        );
+        assert_eq!(
+            database_user_version(database_path.as_path()),
+            SCHEMA_VERSION
+        );
+    }
+
+    #[test]
+    fn transport_store_open_rejects_current_schema_without_job_primary_key() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let database_path = directory.path().join("publish-proxy-missing-job-pk.sqlite");
+        let schema =
+            schema_with_replacement("job_id TEXT PRIMARY KEY NOT NULL", "job_id TEXT NOT NULL");
+        create_existing_schema(
+            database_path.as_path(),
+            schema.as_str(),
+            Some(SCHEMA_VERSION),
+        );
+
+        assert_schema_error(
+            open_schema_error(database_path.as_path()),
+            "transport_publish_jobs",
+            "primary key",
+        );
+        assert_eq!(
+            database_user_version(database_path.as_path()),
+            SCHEMA_VERSION
+        );
+    }
+
+    #[test]
+    fn transport_store_open_rejects_current_schema_without_job_foreign_key() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let database_path = directory.path().join("publish-proxy-missing-job-fk.sqlite");
+        let schema = schema_with_replacement(
+            ",
+    FOREIGN KEY(principal_id) REFERENCES transport_publish_principals(principal_id)",
+            "",
+        );
+        create_existing_schema(
+            database_path.as_path(),
+            schema.as_str(),
+            Some(SCHEMA_VERSION),
+        );
+
+        assert_schema_error(
+            open_schema_error(database_path.as_path()),
+            "transport_publish_jobs",
+            "foreign key",
+        );
+        assert_eq!(
+            database_user_version(database_path.as_path()),
+            SCHEMA_VERSION
+        );
     }
 
     #[tokio::test]
