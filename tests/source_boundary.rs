@@ -240,6 +240,35 @@ fn transport_publish_capabilities_expose_per_transport_readiness() {
     }
 }
 
+#[test]
+fn transport_publish_reticulum_preview_outcomes_use_shared_unavailable_message() {
+    let daemon_source = read_source(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("src/core/transport_publish.rs")
+            .as_path(),
+    );
+    for required in [
+        "RADROOTS_RETICULUM_UNAVAILABLE_MESSAGE",
+        "message: Some(RADROOTS_RETICULUM_UNAVAILABLE_MESSAGE.to_owned())",
+        "publish_event_records_reticulum_preview_unavailable_as_terminal_nonfailure",
+    ] {
+        assert!(
+            daemon_source.contains(required),
+            "daemon Reticulum preview publish outcomes must retain shared unavailable-message witness `{required}`"
+        );
+    }
+
+    let retired_message = [
+        "reticulum transport is registered for preview",
+        "not routable by radrootsd",
+    ]
+    .join(" but ");
+    assert!(
+        !daemon_source.contains(retired_message.as_str()),
+        "daemon Reticulum preview publish outcomes must not revive local unavailable-message copy"
+    );
+}
+
 fn rust_source_files(root: &Path) -> Vec<PathBuf> {
     let mut paths = Vec::new();
     collect_rust_source_files(root, &mut paths);

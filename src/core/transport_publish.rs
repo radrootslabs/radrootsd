@@ -16,7 +16,10 @@ use radroots_nostr::prelude::{
     RadrootsNostrClient, RadrootsNostrEventVerification, RadrootsNostrFilter, RadrootsNostrKind,
     RadrootsNostrPublicKey, radroots_nostr_verify_event,
 };
-use radroots_transport::{RadrootsTransportKind, RadrootsTransportSatisfactionPolicy};
+use radroots_transport::{
+    RADROOTS_RETICULUM_UNAVAILABLE_MESSAGE, RadrootsTransportKind,
+    RadrootsTransportSatisfactionPolicy,
+};
 use radroots_transport_nostr::{
     RadrootsNostrClientPublishAdapter, RadrootsRelayOutcome, RadrootsRelayOutcomeKind,
     RadrootsRelayPublishAdapter, RadrootsRelayPublishRelayReceipt, RadrootsRelayPublishRequest,
@@ -2454,10 +2457,7 @@ fn reticulum_preview_outcome(target: &TransportPublishTarget) -> TransportPublis
         source: TransportPublishTargetSource::ReticulumPreview,
         attempted: false,
         outcome_kind,
-        message: Some(
-            "reticulum transport is registered for preview but not routable by radrootsd"
-                .to_owned(),
-        ),
+        message: Some(RADROOTS_RETICULUM_UNAVAILABLE_MESSAGE.to_owned()),
         latency_ms: None,
     }
 }
@@ -2886,6 +2886,7 @@ mod tests {
     use radroots_nostr::prelude::{
         RadrootsNostrEventVerification, RadrootsNostrTimestamp, radroots_nostr_build_event,
     };
+    use radroots_transport::RADROOTS_RETICULUM_UNAVAILABLE_MESSAGE;
     use radroots_transport_nostr::{RadrootsMockRelayPublishAdapter, RadrootsRelayOutcome};
     use radroots_transport_publish_protocol::{
         NostrPublishTargetSourcePolicy, SignedNostrEventWire, TransportPublishDeliveryPolicy,
@@ -4709,6 +4710,10 @@ mod tests {
         assert_eq!(
             response.job.targets[0].outcome_kind,
             TransportPublishOutcomeKind::PreviewUnavailable
+        );
+        assert_eq!(
+            response.job.targets[0].message.as_deref(),
+            Some(RADROOTS_RETICULUM_UNAVAILABLE_MESSAGE)
         );
         assert!(!response.job.targets[0].attempted);
         assert!(adapter.captured_raw_events().is_empty());
