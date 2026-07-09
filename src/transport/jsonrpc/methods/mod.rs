@@ -140,11 +140,17 @@ mod tests {
         assert!(response.get().contains("\"scoped_bearer_token\""));
         assert!(response.get().contains("\"signed_event_ingress\":true"));
         assert!(response.get().contains("\"transports\":["));
-        assert!(response.get().contains("\"transport_kind\":\"reticulum\""));
         assert!(
             response
                 .get()
-                .contains("\"implementation_state\":\"preview_unavailable\"")
+                .contains("\"api_version\":\"radrootsd.transport_publish.v3\"")
+        );
+        assert!(response.get().contains("\"transport\":\"reticulum\""));
+        assert!(response.get().contains("\"configured\":true"));
+        assert!(
+            response
+                .get()
+                .contains("\"implementation\":\"preview_unavailable\"")
         );
         assert!(response.get().contains("\"usable_for_delivery\":false"));
         assert!(

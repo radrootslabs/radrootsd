@@ -212,8 +212,10 @@ fn transport_publish_capabilities_expose_per_transport_readiness() {
     );
     for required in [
         "transport.publish.capabilities",
-        r#"\"transport_kind\":\"reticulum\""#,
-        r#"\"implementation_state\":\"preview_unavailable\""#,
+        r#"\"api_version\":\"radrootsd.transport_publish.v3\""#,
+        r#"\"transport\":\"reticulum\""#,
+        r#"\"configured\":true"#,
+        r#"\"implementation\":\"preview_unavailable\""#,
         r#"\"usable_for_delivery\":false"#,
         "RADROOTS_RETICULUM_UNAVAILABLE_MESSAGE",
     ] {
@@ -229,13 +231,32 @@ fn transport_publish_capabilities_expose_per_transport_readiness() {
             .as_path(),
     );
     for required in [
-        "pub implementation_state: TransportPublishImplementationState,",
+        "pub transport: String,",
+        "pub configured: bool,",
+        "pub implementation: TransportPublishImplementation,",
         "pub usable_for_delivery: bool,",
         "RADROOTS_RETICULUM_UNAVAILABLE_MESSAGE",
     ] {
         assert!(
             protocol_source.contains(required),
             "transport publish protocol must retain capability field `{required}`"
+        );
+    }
+    let capability_source = source_window(
+        protocol_source.as_str(),
+        "pub struct TransportPublishTransportCapability",
+        "#[cfg_attr(feature = \"serde\", derive(serde::Serialize, serde::Deserialize))]\n#[cfg_attr(feature = \"serde\", serde(rename_all = \"snake_case\"))]\n#[derive(Clone, Copy, Debug, PartialEq, Eq)]\npub enum TransportPublishDeliveryPolicyName",
+    );
+    for forbidden in [
+        "pub transport_kind: String,",
+        concat!(
+            "pub implementation",
+            "_state: TransportPublishImplementationState,"
+        ),
+    ] {
+        assert!(
+            !capability_source.contains(forbidden),
+            "transport publish capability rows must not retain removed field `{forbidden}`"
         );
     }
 }
@@ -300,6 +321,21 @@ fn relative_path(root: &Path, path: &Path) -> String {
         .expect("source path is under repo root")
         .to_string_lossy()
         .replace('\\', "/")
+}
+
+fn source_window<'source>(
+    source: &'source str,
+    start_marker: &str,
+    end_marker: &str,
+) -> &'source str {
+    let start = source
+        .find(start_marker)
+        .unwrap_or_else(|| panic!("source must contain start marker `{start_marker}`"));
+    let end = source[start..]
+        .find(end_marker)
+        .map(|index| start + index)
+        .unwrap_or_else(|| panic!("source must contain end marker `{end_marker}`"));
+    &source[start..end]
 }
 
 fn contains_forbidden_concept(source: &str, pattern: &str) -> bool {
