@@ -49,6 +49,10 @@ const FORBIDDEN_DAEMON_TRANSPORT_CONCEPTS: &[ForbiddenConcept] = &[
         pattern: "PublishRelaySource",
         reason: "old relay-shaped publish source names must not return",
     },
+    ForbiddenConcept {
+        pattern: "radroots_relay_transport",
+        reason: "daemon must depend on radroots_transport_nostr directly without a dependency alias",
+    },
 ];
 
 #[test]
@@ -76,6 +80,24 @@ fn transport_publish_sources_reject_removed_protocol_identifiers() {
             ));
         }
     }
+
+    let manifest_source = read_source(manifest_dir.join("Cargo.toml").as_path());
+    for concept in FORBIDDEN_DAEMON_TRANSPORT_CONCEPTS {
+        if contains_forbidden_concept(manifest_source.as_str(), concept.pattern) {
+            findings.push(format!(
+                "Cargo.toml contains removed daemon transport concept `{}`: {}",
+                concept.pattern, concept.reason
+            ));
+        }
+    }
+    assert!(
+        manifest_source.contains("radroots_transport_nostr = { path = "),
+        "Cargo.toml must depend on radroots_transport_nostr directly"
+    );
+    assert!(
+        !manifest_source.contains("package = \"radroots_transport_nostr\""),
+        "Cargo.toml must not disguise radroots_transport_nostr through a package alias"
+    );
 
     assert!(
         findings.is_empty(),

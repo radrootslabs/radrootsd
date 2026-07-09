@@ -93,7 +93,7 @@ mod tests {
     use radroots_nostr::prelude::{
         RadrootsNostrMetadata, RadrootsNostrTimestamp, radroots_nostr_build_event,
     };
-    use radroots_relay_transport::RadrootsMockRelayPublishAdapter;
+    use radroots_transport_nostr::RadrootsMockRelayPublishAdapter;
     use radroots_transport_publish_protocol::{
         NostrPublishTargetSourcePolicy, TransportPublishTargetPolicyName,
     };
@@ -222,7 +222,7 @@ mod tests {
     impl PublishRelayResolver for StaticPublishRelayResolver {
         fn resolve<'a>(
             &'a self,
-            _url: &'a radroots_relay_transport::RadrootsRelayUrl,
+            _url: &'a radroots_transport_nostr::RadrootsRelayUrl,
         ) -> PublishRelayResolveFuture<'a> {
             Box::pin(async move { Ok(self.addresses.clone()) })
         }

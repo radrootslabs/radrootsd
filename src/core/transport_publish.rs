@@ -16,12 +16,12 @@ use radroots_nostr::prelude::{
     RadrootsNostrClient, RadrootsNostrEventVerification, RadrootsNostrFilter, RadrootsNostrKind,
     RadrootsNostrPublicKey, radroots_nostr_verify_event,
 };
-use radroots_relay_transport::{
+use radroots_transport::{RadrootsTransportKind, RadrootsTransportSatisfactionPolicy};
+use radroots_transport_nostr::{
     RadrootsNostrClientPublishAdapter, RadrootsRelayOutcome, RadrootsRelayOutcomeKind,
     RadrootsRelayPublishAdapter, RadrootsRelayPublishRelayReceipt, RadrootsRelayPublishRequest,
     RadrootsRelayTargetSet, RadrootsRelayTransportError, RadrootsRelayUrl, RadrootsRelayUrlPolicy,
 };
-use radroots_transport::{RadrootsTransportKind, RadrootsTransportSatisfactionPolicy};
 use radroots_transport_publish_protocol::{
     NostrPublishTargetSourcePolicy, SignedNostrEventWire, TransportPublishDeliveryPolicy,
     TransportPublishEventRequest, TransportPublishEventResponse, TransportPublishJobStatus,
@@ -2886,7 +2886,7 @@ mod tests {
     use radroots_nostr::prelude::{
         RadrootsNostrEventVerification, RadrootsNostrTimestamp, radroots_nostr_build_event,
     };
-    use radroots_relay_transport::{RadrootsMockRelayPublishAdapter, RadrootsRelayOutcome};
+    use radroots_transport_nostr::{RadrootsMockRelayPublishAdapter, RadrootsRelayOutcome};
     use radroots_transport_publish_protocol::{
         NostrPublishTargetSourcePolicy, SignedNostrEventWire, TransportPublishDeliveryPolicy,
         TransportPublishEventRequest, TransportPublishJobStatus, TransportPublishOutcomeKind,
@@ -3275,7 +3275,7 @@ mod tests {
     impl super::PublishRelayResolver for StaticPublishRelayResolver {
         fn resolve<'a>(
             &'a self,
-            url: &'a radroots_relay_transport::RadrootsRelayUrl,
+            url: &'a radroots_transport_nostr::RadrootsRelayUrl,
         ) -> super::PublishRelayResolveFuture<'a> {
             Box::pin(async move {
                 match self.results.get(url.as_str()) {

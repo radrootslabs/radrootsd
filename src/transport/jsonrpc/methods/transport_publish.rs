@@ -144,7 +144,7 @@ mod tests {
     use radroots_nostr::prelude::{
         RadrootsNostrMetadata, RadrootsNostrTimestamp, radroots_nostr_build_event,
     };
-    use radroots_relay_transport::RadrootsMockRelayPublishAdapter;
+    use radroots_transport_nostr::RadrootsMockRelayPublishAdapter;
     use radroots_transport_publish_protocol::{
         NostrPublishTargetSourcePolicy, SignedNostrEventWire, TransportPublishTargetPolicyName,
     };
