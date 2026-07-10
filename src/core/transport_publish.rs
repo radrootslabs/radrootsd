@@ -17,8 +17,9 @@ use radroots_nostr::prelude::{
     RadrootsNostrPublicKey, radroots_nostr_verify_event,
 };
 use radroots_transport::{
-    RADROOTS_RETICULUM_UNAVAILABLE_MESSAGE, RadrootsTransportKind,
-    RadrootsTransportSatisfactionPolicy,
+    RADROOTS_RETICULUM_UNAVAILABLE_MESSAGE, RadrootsTransportKind, RadrootsTransportMeshScopeId,
+    RadrootsTransportSatisfactionClass, RadrootsTransportSatisfactionPolicy,
+    RadrootsTransportTarget, RadrootsTransportTargetFingerprint, RadrootsTransportTargetLabel,
 };
 use radroots_transport_nostr::{
     RadrootsNostrClientPublishAdapter, RadrootsRelayOutcome, RadrootsRelayOutcomeKind,
@@ -255,6 +256,7 @@ impl TransportPublish {
         let resolution = self
             .resolve_targets_for_request(signed_event.pubkey.as_str(), &request)
             .await?;
+        validate_delivery_policy_for_resolution(&request.delivery_policy, &resolution)?;
         let target_snapshots = target_snapshots_from_resolution(&resolution);
         let response = self.store.record_publish_job(PublishJobInsert {
             principal_id: principal.principal_id.clone(),
@@ -600,7 +602,11 @@ impl TransportPublish {
     ) -> Result<TransportPublishJobView, TransportPublishError> {
         let target_count = resolution.target_count();
         if resolution.targets.is_empty() {
-            let status = no_publishable_target_status(&resolution.outcomes);
+            let status = if resolution.outcomes.is_empty() {
+                TransportPublishJobStatus::Rejected
+            } else {
+                delivery_status(&delivery_policy, target_count, &resolution.outcomes)
+            };
             let last_error = last_error_for_status(status);
             self.store.complete_publish_job(
                 job_id,
@@ -630,8 +636,8 @@ impl TransportPublish {
         let satisfaction_policy = satisfaction_policy_from_delivery_policy(
             &delivery_policy,
             target_count,
-            resolution.targets.len(),
-        );
+            resolution.targets.as_slice(),
+        )?;
         let publish_relays = target_set.relays().to_vec();
         let publish_request =
             RadrootsRelayPublishRequest::new(signed_event, target_set, current_unix_millis())
@@ -853,6 +859,44 @@ pub struct PublishRelayResolution {
 impl PublishRelayResolution {
     fn target_count(&self) -> usize {
         self.targets.len() + self.outcomes.len()
+    }
+
+    fn target_fingerprints(
+        &self,
+    ) -> Result<Vec<RadrootsTransportTargetFingerprint>, TransportPublishError> {
+        let mut fingerprints = Vec::with_capacity(self.target_count());
+        for target in &self.targets {
+            fingerprints.push(target.fingerprint()?);
+        }
+        for (index, outcome) in self.outcomes.iter().enumerate() {
+            fingerprints.push(target_outcome_fingerprint(outcome, index)?);
+        }
+        Ok(fingerprints)
+    }
+}
+
+impl ResolvedPublishRelay {
+    fn fingerprint(&self) -> Result<RadrootsTransportTargetFingerprint, TransportPublishError> {
+        let scope = self
+            .target_scope
+            .as_deref()
+            .map(RadrootsTransportMeshScopeId::parse)
+            .transpose()
+            .map_err(|error| TransportPublishError::Transport(error.to_string()))?;
+        let label = self
+            .target_label
+            .as_deref()
+            .map(RadrootsTransportTargetLabel::parse)
+            .transpose()
+            .map_err(|error| TransportPublishError::Transport(error.to_string()))?;
+        let target = RadrootsTransportTarget::new_with_metadata(
+            RadrootsTransportKind::Nostr,
+            self.url.as_str(),
+            scope,
+            label,
+        )
+        .map_err(|error| TransportPublishError::Transport(error.to_string()))?;
+        Ok(target.fingerprint)
     }
 }
 
@@ -2679,19 +2723,126 @@ fn publish_outcome_kind(kind: RadrootsRelayOutcomeKind) -> TransportPublishOutco
     }
 }
 
+fn target_outcome_fingerprint(
+    target: &TransportPublishTargetOutcome,
+    index: usize,
+) -> Result<RadrootsTransportTargetFingerprint, TransportPublishError> {
+    let transport_kind = RadrootsTransportKind::parse_canonical(target.transport_kind.as_str())
+        .map_err(|error| {
+            TransportPublishError::InvalidPublishJobState(format!(
+                "target outcome {index} has invalid transport kind: {error}"
+            ))
+        })?;
+    let scope = target
+        .target_scope
+        .as_deref()
+        .map(RadrootsTransportMeshScopeId::parse)
+        .transpose()
+        .map_err(|error| {
+            TransportPublishError::InvalidPublishJobState(format!(
+                "target outcome {index} has invalid target scope: {error}"
+            ))
+        })?;
+    let label = target
+        .target_label
+        .as_deref()
+        .map(RadrootsTransportTargetLabel::parse)
+        .transpose()
+        .map_err(|error| {
+            TransportPublishError::InvalidPublishJobState(format!(
+                "target outcome {index} has invalid target label: {error}"
+            ))
+        })?;
+    let target = RadrootsTransportTarget::new_with_metadata(
+        transport_kind,
+        target.endpoint_uri.as_str(),
+        scope,
+        label,
+    )
+    .map_err(|error| {
+        TransportPublishError::InvalidPublishJobState(format!(
+            "target outcome {index} fingerprint failed: {error}"
+        ))
+    })?;
+    Ok(target.fingerprint)
+}
+
+fn validate_delivery_policy_for_resolution(
+    delivery_policy: &TransportPublishDeliveryPolicy,
+    resolution: &PublishRelayResolution,
+) -> Result<(), TransportPublishError> {
+    if !matches!(
+        delivery_policy,
+        TransportPublishDeliveryPolicy::RequiredTargets { .. }
+    ) {
+        return Ok(());
+    }
+    let target_fingerprints = resolution.target_fingerprints()?;
+    delivery_policy
+        .validate_target_membership(target_fingerprints.as_slice())
+        .map_err(|error| {
+            TransportPublishError::InvalidSignedEvent(format!(
+                "publish request delivery policy validation failed: {error}"
+            ))
+        })
+}
+
+fn required_outcomes_for_policy<'a>(
+    required_targets: &[RadrootsTransportTargetFingerprint],
+    outcomes: &'a [TransportPublishTargetOutcome],
+) -> Vec<&'a TransportPublishTargetOutcome> {
+    required_targets
+        .iter()
+        .filter_map(|required| {
+            outcomes.iter().enumerate().find_map(|(index, outcome)| {
+                target_outcome_fingerprint(outcome, index)
+                    .ok()
+                    .filter(|fingerprint| fingerprint == required)
+                    .map(|_| outcome)
+            })
+        })
+        .collect()
+}
+
 fn satisfaction_policy_from_delivery_policy(
     delivery_policy: &TransportPublishDeliveryPolicy,
     target_count: usize,
-    nostr_target_count: usize,
-) -> RadrootsTransportSatisfactionPolicy {
+    nostr_targets: &[ResolvedPublishRelay],
+) -> Result<RadrootsTransportSatisfactionPolicy, TransportPublishError> {
     match delivery_policy {
-        TransportPublishDeliveryPolicy::Any => RadrootsTransportSatisfactionPolicy::any_accepted(),
-        TransportPublishDeliveryPolicy::All => RadrootsTransportSatisfactionPolicy::all_accepted(),
+        TransportPublishDeliveryPolicy::Any => {
+            Ok(RadrootsTransportSatisfactionPolicy::any_accepted())
+        }
+        TransportPublishDeliveryPolicy::All => {
+            Ok(RadrootsTransportSatisfactionPolicy::all_accepted())
+        }
         TransportPublishDeliveryPolicy::Quorum { quorum } => {
-            let required = (*quorum).min(target_count).min(nostr_target_count).max(1);
-            RadrootsTransportSatisfactionPolicy::quorum_accepted(
+            let required = (*quorum).min(target_count).min(nostr_targets.len()).max(1);
+            Ok(RadrootsTransportSatisfactionPolicy::quorum_accepted(
                 u16::try_from(required).unwrap_or(u16::MAX),
-            )
+            ))
+        }
+        TransportPublishDeliveryPolicy::RequiredTargets { targets } => {
+            let nostr_required_targets = targets
+                .iter()
+                .filter_map(|required| {
+                    nostr_targets.iter().find_map(|target| {
+                        target
+                            .fingerprint()
+                            .ok()
+                            .filter(|fingerprint| fingerprint == required)
+                    })
+                })
+                .collect::<Vec<_>>();
+            if nostr_required_targets.is_empty() {
+                Ok(RadrootsTransportSatisfactionPolicy::no_wait())
+            } else {
+                Ok(RadrootsTransportSatisfactionPolicy::required_targets(
+                    RadrootsTransportSatisfactionClass::Accepted,
+                    nostr_required_targets,
+                )
+                .map_err(|error| TransportPublishError::Transport(error.to_string()))?)
+            }
         }
     }
 }
@@ -2701,30 +2852,48 @@ fn delivery_status(
     target_count: usize,
     outcomes: &[TransportPublishTargetOutcome],
 ) -> TransportPublishJobStatus {
-    let required = delivery_policy.required_target_count(target_count);
-    let acknowledged = outcomes
-        .iter()
-        .filter(|outcome| outcome.outcome_kind.counts_toward_satisfaction())
-        .count();
-    if acknowledged >= required {
+    let (satisfied, status_outcomes) = match delivery_policy {
+        TransportPublishDeliveryPolicy::RequiredTargets { targets } => {
+            let required_outcomes = required_outcomes_for_policy(targets, outcomes);
+            let satisfied = required_outcomes.len() == targets.len()
+                && required_outcomes
+                    .iter()
+                    .all(|outcome| outcome.outcome_kind.counts_toward_satisfaction());
+            (satisfied, required_outcomes)
+        }
+        TransportPublishDeliveryPolicy::Any
+        | TransportPublishDeliveryPolicy::All
+        | TransportPublishDeliveryPolicy::Quorum { .. } => {
+            let required = delivery_policy.required_target_count(target_count);
+            let acknowledged = outcomes
+                .iter()
+                .filter(|outcome| outcome.outcome_kind.counts_toward_satisfaction())
+                .count();
+            (
+                acknowledged >= required,
+                outcomes.iter().collect::<Vec<_>>(),
+            )
+        }
+    };
+    if satisfied {
         return TransportPublishJobStatus::DeliverySatisfied;
     }
-    if outcomes
+    if status_outcomes
         .iter()
         .any(|outcome| outcome.outcome_kind.is_retryable())
     {
         TransportPublishJobStatus::DeliveryUnsatisfiedRetryable
-    } else if outcomes.iter().any(|outcome| {
+    } else if status_outcomes.iter().any(|outcome| {
         outcome.outcome_kind == TransportPublishOutcomeKind::DeferredUntilImplemented
-    }) && outcomes
+    }) && status_outcomes
         .iter()
         .all(|outcome| !outcome.outcome_kind.is_terminal_failure())
     {
         TransportPublishJobStatus::DeliveryDeferred
-    } else if outcomes
+    } else if status_outcomes
         .iter()
         .any(|outcome| outcome.outcome_kind == TransportPublishOutcomeKind::PreviewUnavailable)
-        && outcomes
+        && status_outcomes
             .iter()
             .all(|outcome| !outcome.outcome_kind.is_terminal_failure())
     {
@@ -2732,15 +2901,6 @@ fn delivery_status(
     } else {
         TransportPublishJobStatus::DeliveryUnsatisfiedTerminal
     }
-}
-
-fn no_publishable_target_status(
-    outcomes: &[TransportPublishTargetOutcome],
-) -> TransportPublishJobStatus {
-    if outcomes.is_empty() {
-        return TransportPublishJobStatus::Rejected;
-    }
-    delivery_status(&TransportPublishDeliveryPolicy::Any, 1, outcomes)
 }
 
 fn last_error_for_status(status: TransportPublishJobStatus) -> Option<&'static str> {
@@ -2964,7 +3124,9 @@ mod tests {
     use radroots_nostr::prelude::{
         RadrootsNostrEventVerification, RadrootsNostrTimestamp, radroots_nostr_build_event,
     };
-    use radroots_transport::RADROOTS_RETICULUM_UNAVAILABLE_MESSAGE;
+    use radroots_transport::{
+        RADROOTS_RETICULUM_UNAVAILABLE_MESSAGE, RadrootsTransportKind, RadrootsTransportTarget,
+    };
     use radroots_transport_nostr::{RadrootsMockRelayPublishAdapter, RadrootsRelayOutcome};
     use radroots_transport_publish_protocol::{
         NostrPublishTargetSourcePolicy, SignedNostrEventWire, TransportPublishDeliveryPolicy,
@@ -5136,6 +5298,145 @@ mod tests {
             .job
             .validate()
             .expect("valid scoped shared relay job");
+    }
+
+    #[tokio::test]
+    async fn publish_event_required_targets_do_not_count_optional_success() {
+        let identity = RadrootsIdentity::generate();
+        let adapter = RadrootsMockRelayPublishAdapter::new()
+            .with_outcome(
+                RELAY_PRIMARY,
+                RadrootsRelayOutcome::classify("restricted: required relay rejected"),
+            )
+            .with_outcome(RELAY_SECONDARY, RadrootsRelayOutcome::accepted());
+        let (proxy, _) = transport_publish(config_with_defaults(vec![RELAY_PRIMARY]));
+        let proxy = proxy.with_publisher(Arc::new(adapter.clone()));
+        let principal =
+            explicit_target_principal(&proxy, identity.public_key_hex(), PublishJobVisibility::Own);
+        let required_target =
+            RadrootsTransportTarget::new(RadrootsTransportKind::Nostr, RELAY_PRIMARY)
+                .expect("required target");
+        let request = TransportPublishEventRequest {
+            event: signed_event(&identity, "{}"),
+            target_policy: TransportPublishTargetPolicy::explicit_targets(vec![
+                TransportPublishTarget::nostr(RELAY_PRIMARY),
+                TransportPublishTarget::nostr(RELAY_SECONDARY),
+            ]),
+            delivery_policy: TransportPublishDeliveryPolicy::required_targets(vec![
+                required_target.fingerprint,
+            ])
+            .expect("required targets"),
+            idempotency_key: None,
+            timeout_ms: Some(5_000),
+        };
+
+        let response = proxy
+            .publish_event(&principal, request)
+            .await
+            .expect("publish");
+
+        assert_eq!(
+            response.job.status,
+            TransportPublishJobStatus::DeliveryUnsatisfiedTerminal
+        );
+        assert!(!response.job.delivery_satisfied);
+        assert_eq!(response.job.acknowledged_count, 1);
+        assert_eq!(adapter.captured_raw_events().len(), 1);
+        response
+            .job
+            .validate()
+            .expect("valid required target terminal job");
+    }
+
+    #[tokio::test]
+    async fn publish_event_required_targets_ignore_optional_retryable_failures() {
+        let identity = RadrootsIdentity::generate();
+        let adapter = RadrootsMockRelayPublishAdapter::new()
+            .with_outcome(RELAY_PRIMARY, RadrootsRelayOutcome::accepted())
+            .with_outcome(
+                RELAY_SECONDARY,
+                RadrootsRelayOutcome::timeout("optional timeout"),
+            );
+        let (proxy, _) = transport_publish(config_with_defaults(vec![RELAY_PRIMARY]));
+        let proxy = proxy.with_publisher(Arc::new(adapter.clone()));
+        let principal =
+            explicit_target_principal(&proxy, identity.public_key_hex(), PublishJobVisibility::Own);
+        let required_target =
+            RadrootsTransportTarget::new(RadrootsTransportKind::Nostr, RELAY_PRIMARY)
+                .expect("required target");
+        let request = TransportPublishEventRequest {
+            event: signed_event(&identity, "{}"),
+            target_policy: TransportPublishTargetPolicy::explicit_targets(vec![
+                TransportPublishTarget::nostr(RELAY_PRIMARY),
+                TransportPublishTarget::nostr(RELAY_SECONDARY),
+            ]),
+            delivery_policy: TransportPublishDeliveryPolicy::required_targets(vec![
+                required_target.fingerprint,
+            ])
+            .expect("required targets"),
+            idempotency_key: None,
+            timeout_ms: Some(5_000),
+        };
+
+        let response = proxy
+            .publish_event(&principal, request)
+            .await
+            .expect("publish");
+
+        assert_eq!(
+            response.job.status,
+            TransportPublishJobStatus::DeliverySatisfied
+        );
+        assert!(response.job.delivery_satisfied);
+        assert_eq!(response.job.acknowledged_count, 1);
+        assert_eq!(response.job.retryable_count, 1);
+        assert_eq!(adapter.captured_raw_events().len(), 1);
+        response
+            .job
+            .validate()
+            .expect("valid required target satisfied job");
+    }
+
+    #[tokio::test]
+    async fn publish_event_rejects_required_target_not_in_resolved_set() {
+        let identity = RadrootsIdentity::generate();
+        let (proxy, adapter) = transport_publish(config_with_defaults(vec![RELAY_PRIMARY]));
+        let principal =
+            explicit_target_principal(&proxy, identity.public_key_hex(), PublishJobVisibility::Own);
+        let stale_target =
+            RadrootsTransportTarget::new(RadrootsTransportKind::Nostr, RELAY_SECONDARY)
+                .expect("stale target");
+        let request = TransportPublishEventRequest {
+            event: signed_event(&identity, "{}"),
+            target_policy: TransportPublishTargetPolicy::explicit_targets(vec![
+                TransportPublishTarget::nostr(RELAY_PRIMARY),
+            ]),
+            delivery_policy: TransportPublishDeliveryPolicy::required_targets(vec![
+                stale_target.fingerprint,
+            ])
+            .expect("required targets"),
+            idempotency_key: None,
+            timeout_ms: Some(5_000),
+        };
+
+        let err = proxy
+            .publish_event(&principal, request)
+            .await
+            .expect_err("stale required target");
+
+        assert!(matches!(
+            err,
+            TransportPublishError::InvalidSignedEvent(ref message)
+                if message.contains("required target")
+        ));
+        assert!(adapter.captured_raw_events().is_empty());
+        assert!(
+            proxy
+                .store
+                .list_jobs_for_principal(&principal, 10)
+                .expect("jobs")
+                .is_empty()
+        );
     }
 
     #[tokio::test]
