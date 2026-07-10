@@ -209,6 +209,70 @@ fn transport_publish_store_egress_requires_protocol_validation() {
 }
 
 #[test]
+fn transport_publish_required_targets_stay_fingerprint_exact() {
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let daemon_source = read_source(manifest_dir.join("src/core/transport_publish.rs").as_path());
+    let protocol_source = read_source(
+        manifest_dir
+            .join("../lib/crates/transport_publish_protocol/src/lib.rs")
+            .as_path(),
+    );
+
+    for required in [
+        "validate_delivery_policy_for_resolution",
+        "delivery_policy\n        .validate_target_membership(target_fingerprints.as_slice())",
+        "fn required_outcomes_for_policy",
+        "target_outcome_fingerprint(outcome, index)",
+        "fingerprint == required",
+        "let required_outcomes = required_outcomes_for_policy(targets, outcomes);",
+        "required_outcomes.len() == targets.len()",
+    ] {
+        assert!(
+            daemon_source.contains(required),
+            "daemon transport publish must retain exact required-target witness `{required}`"
+        );
+    }
+
+    let satisfaction_arm = source_window(
+        daemon_source.as_str(),
+        "TransportPublishDeliveryPolicy::RequiredTargets { targets } => {",
+        "fn delivery_status(",
+    );
+    for required in [
+        "let nostr_required_targets = targets",
+        "target\n                            .fingerprint()",
+        "filter(|fingerprint| fingerprint == required)",
+        "RadrootsTransportSatisfactionPolicy::required_targets(",
+    ] {
+        assert!(
+            satisfaction_arm.contains(required),
+            "daemon RequiredTargets resolution arm must retain exact fingerprint witness `{required}`"
+        );
+    }
+    for forbidden in [
+        "RadrootsTransportSatisfactionPolicy::all_accepted()",
+        "RadrootsTransportSatisfactionPolicy::any_accepted()",
+        "RadrootsTransportSatisfactionPolicy::quorum_accepted(",
+    ] {
+        assert!(
+            !satisfaction_arm.contains(forbidden),
+            "daemon RequiredTargets resolution arm must not lower to count policy `{forbidden}`"
+        );
+    }
+
+    for required in [
+        "pub fn validate_target_membership",
+        "TransportPublishProtocolError::RequiredTargetNotInTargetSet { index }",
+        "Self::RequiredTargets { targets } => targets.len()",
+    ] {
+        assert!(
+            protocol_source.contains(required),
+            "transport publish protocol must retain exact required-target witness `{required}`"
+        );
+    }
+}
+
+#[test]
 fn transport_publish_capabilities_expose_per_transport_readiness() {
     let methods_source = read_source(
         Path::new(env!("CARGO_MANIFEST_DIR"))
