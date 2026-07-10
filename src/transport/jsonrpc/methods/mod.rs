@@ -143,7 +143,7 @@ mod tests {
         assert!(
             response
                 .get()
-                .contains("\"api_version\":\"radrootsd.transport_publish.v3\"")
+                .contains("\"api_version\":\"radrootsd.transport_publish.v4\"")
         );
         assert!(response.get().contains("\"transport\":\"reticulum\""));
         assert!(response.get().contains("\"configured\":true"));

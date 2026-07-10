@@ -192,6 +192,11 @@ fn transport_publish_store_egress_requires_protocol_validation() {
         "finalize_job_view(&mut job.view);",
         "job.view\n            .validate()",
         "TransportPublishError::InvalidPublishJobState",
+        "target_scope TEXT NOT NULL",
+        "target_label TEXT",
+        "PRIMARY KEY(job_id, transport_kind, endpoint_uri, target_scope)",
+        "storage_target_scope_to_protocol",
+        "publish_outcomes_from_receipt",
         "store_egress_rejects_malformed_target_counts_for_get_list_and_dedupe",
         "store_egress_rejects_explicit_target_outcome_drift",
         "store_egress_rejects_recovered_explicit_target_snapshot_drift",
@@ -212,7 +217,7 @@ fn transport_publish_capabilities_expose_per_transport_readiness() {
     );
     for required in [
         "transport.publish.capabilities",
-        r#"\"api_version\":\"radrootsd.transport_publish.v3\""#,
+        r#"\"api_version\":\"radrootsd.transport_publish.v4\""#,
         r#"\"transport\":\"reticulum\""#,
         r#"\"configured\":true"#,
         r#"\"implementation\":\"preview_unavailable\""#,

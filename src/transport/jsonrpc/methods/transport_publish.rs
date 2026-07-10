@@ -37,7 +37,7 @@ fn register_capabilities(
     registry.track(METHOD_CAPABILITIES);
     module.register_async_method(METHOD_CAPABILITIES, |_params, ctx, extensions| async move {
         require_publish_principal(&extensions)?;
-        Ok::<TransportPublishCapabilities, RpcError>(TransportPublishCapabilities::v3(
+        Ok::<TransportPublishCapabilities, RpcError>(TransportPublishCapabilities::v4(
             ctx.state.transport_publish.config.max_event_bytes,
             ctx.state.transport_publish.config.max_targets_per_request,
         ))

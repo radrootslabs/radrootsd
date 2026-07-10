@@ -44,7 +44,7 @@ use crate::app::config::TransportPublishConfig;
 
 const TOKEN_PREFIX: &str = "rrd_tp_";
 const TOKEN_HASH_PREFIX: &str = "sha256:";
-const SCHEMA_VERSION: i64 = 3;
+const SCHEMA_VERSION: i64 = 4;
 const TRANSPORT_KIND_NOSTR: &str = "nostr";
 const TRANSPORT_KIND_RETICULUM: &str = "reticulum";
 const TRANSPORT_PUBLISH_SCHEMA_SQL: &str = r#"
@@ -90,13 +90,15 @@ CREATE TABLE IF NOT EXISTS transport_publish_target_results (
     job_id TEXT NOT NULL,
     transport_kind TEXT NOT NULL,
     endpoint_uri TEXT NOT NULL,
+    target_scope TEXT NOT NULL,
+    target_label TEXT,
     source TEXT NOT NULL,
     attempted INTEGER NOT NULL,
     outcome_kind TEXT NOT NULL,
     message TEXT,
     latency_ms INTEGER,
     updated_at_ms INTEGER NOT NULL,
-    PRIMARY KEY(job_id, transport_kind, endpoint_uri),
+    PRIMARY KEY(job_id, transport_kind, endpoint_uri, target_scope),
     FOREIGN KEY(job_id) REFERENCES transport_publish_jobs(job_id)
 );
 CREATE TABLE IF NOT EXISTS transport_publish_target_snapshots (
@@ -104,6 +106,8 @@ CREATE TABLE IF NOT EXISTS transport_publish_target_snapshots (
     target_index INTEGER NOT NULL,
     transport_kind TEXT NOT NULL,
     endpoint_uri TEXT NOT NULL,
+    target_scope TEXT NOT NULL,
+    target_label TEXT,
     source TEXT NOT NULL,
     attempted INTEGER NOT NULL,
     outcome_kind TEXT NOT NULL,
@@ -355,12 +359,15 @@ impl TransportPublish {
                     outcomes,
                     url,
                     TransportPublishTargetSource::Request,
+                    PublishTargetMetadata::from_target(target),
                 )
                 .await;
             }
             Err(error) => outcomes.push(TransportPublishTargetOutcome {
                 transport_kind: TRANSPORT_KIND_NOSTR.to_owned(),
                 endpoint_uri: target.endpoint_uri.trim().to_owned(),
+                target_scope: target.target_scope.clone(),
+                target_label: target.target_label.clone(),
                 source: TransportPublishTargetSource::Request,
                 attempted: false,
                 outcome_kind: TransportPublishOutcomeKind::TargetRejected,
@@ -397,12 +404,15 @@ impl TransportPublish {
                         &mut outcomes,
                         url,
                         TransportPublishTargetSource::Request,
+                        PublishTargetMetadata::default(),
                     )
                     .await;
                 }
                 Err(error) => outcomes.push(TransportPublishTargetOutcome {
                     transport_kind: TRANSPORT_KIND_NOSTR.to_owned(),
                     endpoint_uri: relay.trim().to_owned(),
+                    target_scope: None,
+                    target_label: None,
                     source: TransportPublishTargetSource::Request,
                     attempted: false,
                     outcome_kind: TransportPublishOutcomeKind::TargetRejected,
@@ -471,12 +481,15 @@ impl TransportPublish {
                         &mut outcomes,
                         url,
                         TransportPublishTargetSource::NostrAuthorWrite,
+                        PublishTargetMetadata::default(),
                     )
                     .await;
                 }
                 Err(error) => outcomes.push(TransportPublishTargetOutcome {
                     transport_kind: TRANSPORT_KIND_NOSTR.to_owned(),
                     endpoint_uri: relay.trim().to_owned(),
+                    target_scope: None,
+                    target_label: None,
                     source: TransportPublishTargetSource::NostrAuthorWrite,
                     attempted: false,
                     outcome_kind: TransportPublishOutcomeKind::TargetRejected,
@@ -508,12 +521,20 @@ impl TransportPublish {
         for relay in relays {
             match RadrootsRelayUrl::parse(relay, relay_url_policy(&self.config)) {
                 Ok(url) => {
-                    self.push_checked_relay_target(&mut targets, &mut outcomes, url, source)
-                        .await;
+                    self.push_checked_relay_target(
+                        &mut targets,
+                        &mut outcomes,
+                        url,
+                        source,
+                        PublishTargetMetadata::default(),
+                    )
+                    .await;
                 }
                 Err(error) => outcomes.push(TransportPublishTargetOutcome {
                     transport_kind: TRANSPORT_KIND_NOSTR.to_owned(),
                     endpoint_uri: relay.trim().to_owned(),
+                    target_scope: None,
+                    target_label: None,
                     source,
                     attempted: false,
                     outcome_kind: TransportPublishOutcomeKind::TargetRejected,
@@ -531,9 +552,10 @@ impl TransportPublish {
         outcomes: &mut Vec<TransportPublishTargetOutcome>,
         url: RadrootsRelayUrl,
         source: TransportPublishTargetSource,
+        metadata: PublishTargetMetadata,
     ) {
         if relay_url_policy(&self.config) == RadrootsRelayUrlPolicy::Localhost {
-            push_resolved_relay(targets, url, source);
+            push_resolved_relay(targets, url, source, metadata);
             return;
         }
         match self.resolver.resolve(&url).await {
@@ -541,14 +563,17 @@ impl TransportPublish {
                 outcomes.push(relay_resolution_connection_failure(
                     url.as_str(),
                     source,
+                    &metadata,
                     "dns lookup returned no addresses",
                 ));
             }
             Ok(addresses) => match url.validate_public_resolved_ip_addrs(addresses) {
-                Ok(()) => push_resolved_relay(targets, url, source),
+                Ok(()) => push_resolved_relay(targets, url, source, metadata),
                 Err(error) => outcomes.push(TransportPublishTargetOutcome {
                     transport_kind: TRANSPORT_KIND_NOSTR.to_owned(),
                     endpoint_uri: url.as_str().to_owned(),
+                    target_scope: metadata.target_scope,
+                    target_label: metadata.target_label,
                     source,
                     attempted: false,
                     outcome_kind: TransportPublishOutcomeKind::TargetRejected,
@@ -559,6 +584,7 @@ impl TransportPublish {
             Err(error) => outcomes.push(relay_resolution_connection_failure(
                 url.as_str(),
                 source,
+                &metadata,
                 format!("dns lookup failed: {error}"),
             )),
         }
@@ -594,7 +620,6 @@ impl TransportPublish {
             )?;
             return self.store.job_by_id(job_id);
         }
-        let source_by_relay = resolution.source_by_relay();
         let target_set = RadrootsRelayTargetSet::from_urls(
             resolution
                 .targets
@@ -607,6 +632,7 @@ impl TransportPublish {
             target_count,
             resolution.targets.len(),
         );
+        let publish_relays = target_set.relays().to_vec();
         let publish_request =
             RadrootsRelayPublishRequest::new(signed_event, target_set, current_unix_millis())
                 .with_satisfaction_policy(satisfaction_policy);
@@ -617,13 +643,13 @@ impl TransportPublish {
                 .await
             {
                 Ok(Ok(receipts)) => receipts,
-                Ok(Err(error)) => transport_error_receipts(&resolution.targets, error),
-                Err(_) => timeout_receipts(&resolution.targets),
+                Ok(Err(error)) => transport_error_receipts(publish_relays.as_slice(), error),
+                Err(_) => timeout_receipts(publish_relays.as_slice()),
             };
         let latency_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
         let mut outcomes = resolution.outcomes;
-        outcomes.extend(receipts.into_iter().map(|receipt| {
-            publish_outcome_from_receipt(receipt, &source_by_relay, Some(latency_ms))
+        outcomes.extend(receipts.into_iter().flat_map(|receipt| {
+            publish_outcomes_from_receipt(receipt, &resolution.targets, Some(latency_ms))
         }));
         let status = delivery_status(&delivery_policy, target_count, &outcomes);
         let last_error = last_error_for_status(status).map(str::to_owned);
@@ -814,6 +840,8 @@ pub struct PublishJobInsert {
 pub struct ResolvedPublishRelay {
     pub url: RadrootsRelayUrl,
     pub source: TransportPublishTargetSource,
+    target_scope: Option<String>,
+    target_label: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -826,12 +854,20 @@ impl PublishRelayResolution {
     fn target_count(&self) -> usize {
         self.targets.len() + self.outcomes.len()
     }
+}
 
-    fn source_by_relay(&self) -> BTreeMap<String, TransportPublishTargetSource> {
-        self.targets
-            .iter()
-            .map(|target| (target.url.as_str().to_owned(), target.source))
-            .collect()
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct PublishTargetMetadata {
+    target_scope: Option<String>,
+    target_label: Option<String>,
+}
+
+impl PublishTargetMetadata {
+    fn from_target(target: &TransportPublishTarget) -> Self {
+        Self {
+            target_scope: target.target_scope.clone(),
+            target_label: target.target_label.clone(),
+        }
     }
 }
 
@@ -1350,10 +1386,10 @@ impl TransportPublishStore {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut stmt = connection.prepare(
             r#"
-            SELECT transport_kind, endpoint_uri, source, attempted, outcome_kind, message, latency_ms
+            SELECT transport_kind, endpoint_uri, target_scope, target_label, source, attempted, outcome_kind, message, latency_ms
             FROM transport_publish_target_results
             WHERE job_id = ?1
-            ORDER BY transport_kind, endpoint_uri
+            ORDER BY transport_kind, endpoint_uri, target_scope
             "#,
         )?;
         let outcomes = stmt
@@ -1506,6 +1542,8 @@ fn validate_transport_publish_schema(connection: &Connection) -> Result<(), Tran
             RequiredColumn::text_not_null("job_id"),
             RequiredColumn::text_not_null("transport_kind"),
             RequiredColumn::text_not_null("endpoint_uri"),
+            RequiredColumn::text_not_null("target_scope"),
+            RequiredColumn::text_nullable("target_label"),
             RequiredColumn::text_not_null("source"),
             RequiredColumn::integer_not_null("attempted"),
             RequiredColumn::text_not_null("outcome_kind"),
@@ -1517,7 +1555,7 @@ fn validate_transport_publish_schema(connection: &Connection) -> Result<(), Tran
     validate_primary_key(
         connection,
         "transport_publish_target_results",
-        &["job_id", "transport_kind", "endpoint_uri"],
+        &["job_id", "transport_kind", "endpoint_uri", "target_scope"],
     )?;
     validate_foreign_key(
         connection,
@@ -1534,6 +1572,8 @@ fn validate_transport_publish_schema(connection: &Connection) -> Result<(), Tran
             RequiredColumn::integer_not_null("target_index"),
             RequiredColumn::text_not_null("transport_kind"),
             RequiredColumn::text_not_null("endpoint_uri"),
+            RequiredColumn::text_not_null("target_scope"),
+            RequiredColumn::text_nullable("target_label"),
             RequiredColumn::text_not_null("source"),
             RequiredColumn::integer_not_null("attempted"),
             RequiredColumn::text_not_null("outcome_kind"),
@@ -2008,6 +2048,8 @@ fn insert_target_snapshots(
                 target_index,
                 transport_kind,
                 endpoint_uri,
+                target_scope,
+                target_label,
                 source,
                 attempted,
                 outcome_kind,
@@ -2015,13 +2057,15 @@ fn insert_target_snapshots(
                 latency_ms,
                 created_at_ms
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
             "#,
             params![
                 job_id,
                 i64::try_from(target_index).unwrap_or(i64::MAX),
                 outcome.transport_kind,
                 outcome.endpoint_uri,
+                storage_target_scope(outcome.target_scope.as_deref()),
+                outcome.target_label,
                 serde_json::to_string(&outcome.source)?,
                 outcome.attempted,
                 serde_json::to_string(&outcome.outcome_kind)?,
@@ -2053,6 +2097,8 @@ fn replace_target_outcomes(
                 job_id,
                 transport_kind,
                 endpoint_uri,
+                target_scope,
+                target_label,
                 source,
                 attempted,
                 outcome_kind,
@@ -2060,12 +2106,14 @@ fn replace_target_outcomes(
                 latency_ms,
                 updated_at_ms
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
             "#,
             params![
                 job_id,
                 outcome.transport_kind,
                 outcome.endpoint_uri,
+                storage_target_scope(outcome.target_scope.as_deref()),
+                outcome.target_label,
                 serde_json::to_string(&outcome.source)?,
                 outcome.attempted,
                 serde_json::to_string(&outcome.outcome_kind)?,
@@ -2086,7 +2134,7 @@ fn target_snapshot_outcomes(
 ) -> Result<Vec<TransportPublishTargetOutcome>, TransportPublishError> {
     let mut stmt = connection.prepare(
         r#"
-        SELECT transport_kind, endpoint_uri, source, attempted, outcome_kind, message, latency_ms
+        SELECT transport_kind, endpoint_uri, target_scope, target_label, source, attempted, outcome_kind, message, latency_ms
         FROM transport_publish_target_snapshots
         WHERE job_id = ?1
         ORDER BY target_index
@@ -2170,16 +2218,18 @@ fn job_from_row(row: &Row<'_>) -> Result<PublishJobRow, rusqlite::Error> {
 fn target_outcome_from_row(
     row: &Row<'_>,
 ) -> Result<TransportPublishTargetOutcome, rusqlite::Error> {
-    let source: TransportPublishTargetSource = json_text(row, 2)?;
-    let outcome_kind: TransportPublishOutcomeKind = json_text(row, 4)?;
+    let source: TransportPublishTargetSource = json_text(row, 4)?;
+    let outcome_kind: TransportPublishOutcomeKind = json_text(row, 6)?;
     Ok(TransportPublishTargetOutcome {
         transport_kind: row.get(0)?,
         endpoint_uri: row.get(1)?,
+        target_scope: storage_target_scope_to_protocol(row.get::<_, String>(2)?),
+        target_label: row.get(3)?,
         source,
-        attempted: row.get(3)?,
+        attempted: row.get(5)?,
         outcome_kind,
-        message: row.get(5)?,
-        latency_ms: checked_optional_u64_column(row, 6, "latency_ms")?,
+        message: row.get(7)?,
+        latency_ms: checked_optional_u64_column(row, 8, "latency_ms")?,
     })
 }
 
@@ -2436,9 +2486,18 @@ fn push_resolved_relay(
     targets: &mut Vec<ResolvedPublishRelay>,
     url: RadrootsRelayUrl,
     source: TransportPublishTargetSource,
+    metadata: PublishTargetMetadata,
 ) {
-    if !targets.iter().any(|target| target.url == url) {
-        targets.push(ResolvedPublishRelay { url, source });
+    if !targets
+        .iter()
+        .any(|target| target.url == url && target.target_scope == metadata.target_scope)
+    {
+        targets.push(ResolvedPublishRelay {
+            url,
+            source,
+            target_scope: metadata.target_scope,
+            target_label: metadata.target_label,
+        });
     }
 }
 
@@ -2454,6 +2513,8 @@ fn reticulum_preview_outcome(target: &TransportPublishTarget) -> TransportPublis
     TransportPublishTargetOutcome {
         transport_kind: TRANSPORT_KIND_RETICULUM.to_owned(),
         endpoint_uri: target.endpoint_uri.trim().to_owned(),
+        target_scope: target.target_scope.clone(),
+        target_label: target.target_label.clone(),
         source: TransportPublishTargetSource::ReticulumPreview,
         attempted: false,
         outcome_kind,
@@ -2466,6 +2527,8 @@ fn unsupported_transport_outcome(target: &TransportPublishTarget) -> TransportPu
     TransportPublishTargetOutcome {
         transport_kind: target.transport_kind.trim().to_owned(),
         endpoint_uri: target.endpoint_uri.trim().to_owned(),
+        target_scope: target.target_scope.clone(),
+        target_label: target.target_label.clone(),
         source: TransportPublishTargetSource::Request,
         attempted: false,
         outcome_kind: TransportPublishOutcomeKind::Unsupported,
@@ -2477,11 +2540,14 @@ fn unsupported_transport_outcome(target: &TransportPublishTarget) -> TransportPu
 fn relay_resolution_connection_failure(
     relay_url: impl Into<String>,
     source: TransportPublishTargetSource,
+    metadata: &PublishTargetMetadata,
     message: impl Into<String>,
 ) -> TransportPublishTargetOutcome {
     TransportPublishTargetOutcome {
         transport_kind: TRANSPORT_KIND_NOSTR.to_owned(),
         endpoint_uri: relay_url.into(),
+        target_scope: metadata.target_scope.clone(),
+        target_label: metadata.target_label.clone(),
         source,
         attempted: false,
         outcome_kind: TransportPublishOutcomeKind::ConnectionFailed,
@@ -2501,6 +2567,8 @@ fn target_snapshots_from_resolution(
             .map(|target| TransportPublishTargetOutcome {
                 transport_kind: TRANSPORT_KIND_NOSTR.to_owned(),
                 endpoint_uri: target.url.as_str().to_owned(),
+                target_scope: target.target_scope.clone(),
+                target_label: target.target_label.clone(),
                 source: target.source,
                 attempted: true,
                 outcome_kind: TransportPublishOutcomeKind::ConnectionFailed,
@@ -2563,24 +2631,26 @@ fn author_write_relays_from_nip65_event(
         .collect()
 }
 
-fn publish_outcome_from_receipt(
+fn publish_outcomes_from_receipt(
     receipt: RadrootsRelayPublishRelayReceipt,
-    source_by_relay: &BTreeMap<String, TransportPublishTargetSource>,
+    targets: &[ResolvedPublishRelay],
     latency_ms: Option<u64>,
-) -> TransportPublishTargetOutcome {
-    let source = source_by_relay
-        .get(receipt.relay_url.as_str())
-        .copied()
-        .unwrap_or(TransportPublishTargetSource::DaemonDefault);
-    TransportPublishTargetOutcome {
-        transport_kind: TRANSPORT_KIND_NOSTR.to_owned(),
-        endpoint_uri: receipt.relay_url,
-        source,
-        attempted: receipt.attempted,
-        outcome_kind: publish_outcome_kind(receipt.outcome.kind),
-        message: receipt.outcome.message,
-        latency_ms,
-    }
+) -> Vec<TransportPublishTargetOutcome> {
+    targets
+        .iter()
+        .filter(|target| target.url.as_str() == receipt.relay_url.as_str())
+        .map(|target| TransportPublishTargetOutcome {
+            transport_kind: TRANSPORT_KIND_NOSTR.to_owned(),
+            endpoint_uri: receipt.relay_url.clone(),
+            target_scope: target.target_scope.clone(),
+            target_label: target.target_label.clone(),
+            source: target.source,
+            attempted: receipt.attempted,
+            outcome_kind: publish_outcome_kind(receipt.outcome.kind),
+            message: receipt.outcome.message.clone(),
+            latency_ms,
+        })
+        .collect()
 }
 
 fn publish_outcome_kind(kind: RadrootsRelayOutcomeKind) -> TransportPublishOutcomeKind {
@@ -2688,12 +2758,12 @@ fn last_error_for_status(status: TransportPublishJobStatus) -> Option<&'static s
     }
 }
 
-fn timeout_receipts(targets: &[ResolvedPublishRelay]) -> Vec<RadrootsRelayPublishRelayReceipt> {
+fn timeout_receipts(targets: &[RadrootsRelayUrl]) -> Vec<RadrootsRelayPublishRelayReceipt> {
     targets
         .iter()
         .map(|target| {
             RadrootsRelayPublishRelayReceipt::attempted(
-                target.url.as_str(),
+                target.as_str(),
                 RadrootsRelayOutcome::timeout("timeout: publish attempt exceeded daemon bound"),
             )
         })
@@ -2701,7 +2771,7 @@ fn timeout_receipts(targets: &[ResolvedPublishRelay]) -> Vec<RadrootsRelayPublis
 }
 
 fn transport_error_receipts(
-    targets: &[ResolvedPublishRelay],
+    targets: &[RadrootsRelayUrl],
     error: TransportPublishError,
 ) -> Vec<RadrootsRelayPublishRelayReceipt> {
     let message = format!("error: {error}");
@@ -2709,7 +2779,7 @@ fn transport_error_receipts(
         .iter()
         .map(|target| {
             RadrootsRelayPublishRelayReceipt::attempted(
-                target.url.as_str(),
+                target.as_str(),
                 RadrootsRelayOutcome::connection_failed(message.clone()),
             )
         })
@@ -2840,6 +2910,14 @@ fn checked_optional_u64_column(
             })
         })
         .transpose()
+}
+
+fn storage_target_scope(target_scope: Option<&str>) -> &str {
+    target_scope.unwrap_or("")
+}
+
+fn storage_target_scope_to_protocol(target_scope: String) -> Option<String> {
+    (!target_scope.is_empty()).then_some(target_scope)
 }
 
 fn conversion_error<E>(index: usize, error: E) -> rusqlite::Error
@@ -3029,6 +3107,8 @@ mod tests {
         TransportPublishTargetOutcome {
             transport_kind: TRANSPORT_KIND_NOSTR.to_owned(),
             endpoint_uri: endpoint_uri.to_owned(),
+            target_scope: None,
+            target_label: None,
             source,
             attempted: true,
             outcome_kind: TransportPublishOutcomeKind::ConnectionFailed,
@@ -3044,12 +3124,24 @@ mod tests {
         TransportPublishTargetOutcome {
             transport_kind: TRANSPORT_KIND_NOSTR.to_owned(),
             endpoint_uri: endpoint_uri.to_owned(),
+            target_scope: None,
+            target_label: None,
             source,
             attempted: true,
             outcome_kind: TransportPublishOutcomeKind::Accepted,
             message: None,
             latency_ms: Some(12),
         }
+    }
+
+    fn scoped_target_outcome(
+        mut outcome: TransportPublishTargetOutcome,
+        target_scope: &str,
+        target_label: Option<&str>,
+    ) -> TransportPublishTargetOutcome {
+        outcome.target_scope = Some(target_scope.to_owned());
+        outcome.target_label = target_label.map(str::to_owned);
+        outcome
     }
 
     fn store_principal(store: &TransportPublishStore, pubkey: &str) -> PublishPrincipal {
@@ -3740,6 +3832,52 @@ mod tests {
     }
 
     #[test]
+    fn store_egress_rejects_explicit_target_scope_drift() {
+        let store = TransportPublishStore::memory().expect("store");
+        let pubkey = "a".repeat(64);
+        let principal = store_principal(&store, pubkey.as_str());
+        let mut request = request(pubkey.as_str(), 30_402);
+        request.target_policy = TransportPublishTargetPolicy::explicit_targets(vec![
+            TransportPublishTarget::nostr(RELAY_PRIMARY)
+                .with_scope("farm.local")
+                .with_label("Farm relay"),
+        ]);
+        let response = store
+            .record_publish_job(PublishJobInsert {
+                principal_id: principal.principal_id.clone(),
+                idempotency_key: Some("idem-explicit-scope-drift".to_owned()),
+                request,
+                request_fingerprint: "fingerprint-explicit-scope-drift".to_owned(),
+                effective_target_count: 1,
+                target_snapshots: vec![scoped_target_outcome(
+                    accepted_target_outcome(RELAY_PRIMARY, TransportPublishTargetSource::Request),
+                    "farm.local",
+                    Some("Farm relay"),
+                )],
+            })
+            .expect("record job");
+        store
+            .complete_publish_job(
+                response.job.job_id.as_str(),
+                TransportPublishJobStatus::DeliverySatisfied,
+                vec![scoped_target_outcome(
+                    accepted_target_outcome(RELAY_PRIMARY, TransportPublishTargetSource::Request),
+                    "farm.remote",
+                    Some("Farm relay"),
+                )],
+                None,
+            )
+            .expect("complete drifted job");
+
+        assert_invalid_job_state(
+            store
+                .job_by_id(response.job.job_id.as_str())
+                .expect_err("invalid explicit scope drift"),
+            "transport target outcome 0 does not match explicit target policy",
+        );
+    }
+
+    #[test]
     fn store_open_recovers_interrupted_publishing_jobs() {
         let directory = tempfile::tempdir().expect("tempdir");
         let database_path = directory.path().join("publish-proxy.sqlite");
@@ -3803,6 +3941,69 @@ mod tests {
             .expect("listed jobs");
         assert_eq!(listed.len(), 1);
         listed[0].validate().expect("valid listed recovered job");
+    }
+
+    #[test]
+    fn store_open_recovers_interrupted_scoped_explicit_target_metadata() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let database_path = directory.path().join("publish-proxy-scoped.sqlite");
+        let pubkey = "a".repeat(64);
+        let (job_id, principal) = {
+            let store = TransportPublishStore::open(database_path.clone()).expect("store");
+            let principal = store_principal(&store, pubkey.as_str());
+            let mut request = request(pubkey.as_str(), 30_402);
+            request.target_policy = TransportPublishTargetPolicy::explicit_targets(vec![
+                TransportPublishTarget::nostr(RELAY_PRIMARY)
+                    .with_scope("farm.local")
+                    .with_label("Farm relay"),
+            ]);
+            let response = store
+                .record_publish_job(PublishJobInsert {
+                    principal_id: principal.principal_id.clone(),
+                    idempotency_key: Some("idem-interrupted-scoped".to_owned()),
+                    request,
+                    request_fingerprint: "fingerprint-interrupted-scoped".to_owned(),
+                    effective_target_count: 1,
+                    target_snapshots: vec![scoped_target_outcome(
+                        interrupted_target_snapshot(
+                            RELAY_PRIMARY,
+                            TransportPublishTargetSource::Request,
+                        ),
+                        "farm.local",
+                        Some("Farm relay"),
+                    )],
+                })
+                .expect("record job");
+            (response.job.job_id, principal)
+        };
+
+        let reopened = TransportPublishStore::open(database_path).expect("reopen store");
+        let recovered = reopened.job_by_id(job_id.as_str()).expect("recovered job");
+        assert_eq!(
+            recovered.status,
+            TransportPublishJobStatus::DeliveryUnsatisfiedRetryable
+        );
+        assert_eq!(recovered.targets.len(), 1);
+        assert_eq!(
+            recovered.targets[0].target_scope.as_deref(),
+            Some("farm.local")
+        );
+        assert_eq!(
+            recovered.targets[0].target_label.as_deref(),
+            Some("Farm relay")
+        );
+        recovered.validate().expect("valid recovered job");
+        let listed = reopened
+            .list_jobs_for_principal(&principal, 50)
+            .expect("listed jobs");
+        assert_eq!(
+            listed[0].targets[0].target_scope.as_deref(),
+            Some("farm.local")
+        );
+        assert_eq!(
+            listed[0].targets[0].target_label.as_deref(),
+            Some("Farm relay")
+        );
     }
 
     #[test]
@@ -3975,7 +4176,6 @@ mod tests {
             connection
                 .execute_batch(
                     r#"
-                    PRAGMA user_version = 3;
                     CREATE TABLE transport_publish_principals (
                         principal_id TEXT PRIMARY KEY NOT NULL,
                         label TEXT NOT NULL,
@@ -3993,6 +4193,9 @@ mod tests {
                     "#,
                 )
                 .expect("schema");
+            connection
+                .pragma_update(None, "user_version", SCHEMA_VERSION)
+                .expect("set schema version");
             connection
                 .execute(
                     r#"
@@ -4064,6 +4267,24 @@ mod tests {
     }
 
     #[test]
+    fn transport_store_open_rejects_legacy_schema_version() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let database_path = directory.path().join("publish-proxy-v3.sqlite");
+        create_existing_schema(
+            database_path.as_path(),
+            TRANSPORT_PUBLISH_SCHEMA_SQL,
+            Some(3),
+        );
+
+        assert_schema_error(
+            open_schema_error(database_path.as_path()),
+            "transport_publish_schema",
+            "user_version",
+        );
+        assert_eq!(database_user_version(database_path.as_path()), 3);
+    }
+
+    #[test]
     fn transport_store_open_rejects_current_schema_missing_user_version() {
         let directory = tempfile::tempdir().expect("tempdir");
         let database_path = directory
@@ -4128,6 +4349,57 @@ mod tests {
             open_schema_error(database_path.as_path()),
             "transport_publish_jobs",
             "principal_id, idempotency_key",
+        );
+        assert_eq!(
+            database_user_version(database_path.as_path()),
+            SCHEMA_VERSION
+        );
+    }
+
+    #[test]
+    fn transport_store_open_rejects_current_target_results_schema_without_scope_not_null() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let database_path = directory
+            .path()
+            .join("publish-proxy-target-scope-nullable.sqlite");
+        let schema = schema_with_replacement("target_scope TEXT NOT NULL", "target_scope TEXT");
+        create_existing_schema(
+            database_path.as_path(),
+            schema.as_str(),
+            Some(SCHEMA_VERSION),
+        );
+
+        assert_schema_error(
+            open_schema_error(database_path.as_path()),
+            "transport_publish_target_results",
+            "target_scope",
+        );
+        assert_eq!(
+            database_user_version(database_path.as_path()),
+            SCHEMA_VERSION
+        );
+    }
+
+    #[test]
+    fn transport_store_open_rejects_current_target_results_schema_without_scoped_primary_key() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let database_path = directory
+            .path()
+            .join("publish-proxy-target-results-unscoped-pk.sqlite");
+        let schema = schema_with_replacement(
+            "PRIMARY KEY(job_id, transport_kind, endpoint_uri, target_scope)",
+            "PRIMARY KEY(job_id, transport_kind, endpoint_uri)",
+        );
+        create_existing_schema(
+            database_path.as_path(),
+            schema.as_str(),
+            Some(SCHEMA_VERSION),
+        );
+
+        assert_schema_error(
+            open_schema_error(database_path.as_path()),
+            "transport_publish_target_results",
+            "primary key",
         );
         assert_eq!(
             database_user_version(database_path.as_path()),
@@ -4752,7 +5024,118 @@ mod tests {
             TransportPublishTargetSource::Request
         );
         assert_eq!(response.job.targets[0].endpoint_uri, RELAY_PRIMARY);
+        assert_eq!(response.job.targets[0].target_scope, None);
+        assert_eq!(response.job.targets[0].target_label, None);
         assert_eq!(adapter.captured_raw_events(), vec![raw_event]);
+    }
+
+    #[tokio::test]
+    async fn publish_event_preserves_explicit_nostr_target_metadata_when_kind_allowed() {
+        let identity = RadrootsIdentity::generate();
+        let (proxy, adapter) = transport_publish(config_with_defaults(vec![RELAY_PRIMARY]));
+        let principal =
+            explicit_target_principal(&proxy, identity.public_key_hex(), PublishJobVisibility::Own);
+        let event = signed_event(&identity, "{}");
+        let raw_event = serde_json::to_string(&event).expect("raw event");
+        let request = TransportPublishEventRequest {
+            event,
+            target_policy: TransportPublishTargetPolicy::explicit_targets(vec![
+                TransportPublishTarget::nostr(RELAY_PRIMARY)
+                    .with_scope("farm.local")
+                    .with_label("Farm relay"),
+            ]),
+            delivery_policy: TransportPublishDeliveryPolicy::Any,
+            idempotency_key: None,
+            timeout_ms: Some(5_000),
+        };
+
+        let response = proxy
+            .publish_event(&principal, request)
+            .await
+            .expect("publish");
+
+        assert_eq!(
+            response.job.status,
+            TransportPublishJobStatus::DeliverySatisfied
+        );
+        assert_eq!(response.job.targets.len(), 1);
+        assert_eq!(response.job.targets[0].endpoint_uri, RELAY_PRIMARY);
+        assert_eq!(
+            response.job.targets[0].target_scope.as_deref(),
+            Some("farm.local")
+        );
+        assert_eq!(
+            response.job.targets[0].target_label.as_deref(),
+            Some("Farm relay")
+        );
+        assert_eq!(
+            response.job.targets[0].source,
+            TransportPublishTargetSource::Request
+        );
+        assert_eq!(adapter.captured_raw_events(), vec![raw_event]);
+        response.job.validate().expect("valid scoped job");
+    }
+
+    #[tokio::test]
+    async fn publish_event_records_scoped_targets_with_shared_relay_url() {
+        let identity = RadrootsIdentity::generate();
+        let (proxy, adapter) = transport_publish(config_with_defaults(vec![RELAY_PRIMARY]));
+        let principal =
+            explicit_target_principal(&proxy, identity.public_key_hex(), PublishJobVisibility::Own);
+        let event = signed_event(&identity, "{}");
+        let raw_event = serde_json::to_string(&event).expect("raw event");
+        let request = TransportPublishEventRequest {
+            event,
+            target_policy: TransportPublishTargetPolicy::explicit_targets(vec![
+                TransportPublishTarget::nostr(RELAY_PRIMARY)
+                    .with_scope("farm.a")
+                    .with_label("Farm A"),
+                TransportPublishTarget::nostr(RELAY_PRIMARY)
+                    .with_scope("farm.b")
+                    .with_label("Farm B"),
+            ]),
+            delivery_policy: TransportPublishDeliveryPolicy::All,
+            idempotency_key: None,
+            timeout_ms: Some(5_000),
+        };
+
+        let response = proxy
+            .publish_event(&principal, request)
+            .await
+            .expect("publish");
+
+        assert_eq!(
+            response.job.status,
+            TransportPublishJobStatus::DeliverySatisfied
+        );
+        assert_eq!(response.job.targets.len(), 2);
+        assert!(
+            response
+                .job
+                .targets
+                .iter()
+                .all(|target| target.endpoint_uri == RELAY_PRIMARY)
+        );
+        assert_eq!(
+            response
+                .job
+                .targets
+                .iter()
+                .map(|target| (
+                    target.target_scope.as_deref(),
+                    target.target_label.as_deref()
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                (Some("farm.a"), Some("Farm A")),
+                (Some("farm.b"), Some("Farm B")),
+            ]
+        );
+        assert_eq!(adapter.captured_raw_events(), vec![raw_event]);
+        response
+            .job
+            .validate()
+            .expect("valid scoped shared relay job");
     }
 
     #[tokio::test]
@@ -4877,6 +5260,8 @@ mod tests {
             TransportPublishTargetPolicy::explicit_targets(vec![TransportPublishTarget {
                 transport_kind: "reticulum".to_owned(),
                 endpoint_uri: "reticulum:preview-unavailable-alt".to_owned(),
+                target_scope: None,
+                target_label: None,
                 preview_behavior: Some(TransportPublishPreviewBehavior::RejectDeliveryAttempts),
             }]);
 
@@ -4913,6 +5298,8 @@ mod tests {
             TransportPublishTargetPolicy::explicit_targets(vec![TransportPublishTarget {
                 transport_kind: "nostr".to_owned(),
                 endpoint_uri: RELAY_PRIMARY.to_owned(),
+                target_scope: None,
+                target_label: None,
                 preview_behavior: Some(TransportPublishPreviewBehavior::RejectDeliveryAttempts),
             }]);
 
@@ -4946,6 +5333,8 @@ mod tests {
             TransportPublishTargetPolicy::explicit_targets(vec![TransportPublishTarget {
                 transport_kind: "Reticulum".to_owned(),
                 endpoint_uri: "reticulum:preview-unavailable".to_owned(),
+                target_scope: None,
+                target_label: None,
                 preview_behavior: Some(TransportPublishPreviewBehavior::RejectDeliveryAttempts),
             }]);
 
@@ -4979,6 +5368,8 @@ mod tests {
             TransportPublishTargetPolicy::explicit_targets(vec![TransportPublishTarget {
                 transport_kind: removed_proxy_kind_string(),
                 endpoint_uri: "radrootsd-proxy:publish".to_owned(),
+                target_scope: None,
+                target_label: None,
                 preview_behavior: None,
             }]);
 
@@ -5012,6 +5403,8 @@ mod tests {
             TransportPublishTargetPolicy::explicit_targets(vec![TransportPublishTarget {
                 transport_kind: "proxy".to_owned(),
                 endpoint_uri: "radrootsd-proxy:publish".to_owned(),
+                target_scope: None,
+                target_label: None,
                 preview_behavior: None,
             }]);
 
