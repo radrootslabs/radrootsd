@@ -8,10 +8,8 @@ use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use radroots_events::RadrootsNostrEvent;
-use radroots_events::draft::{
-    RadrootsDraftError, RadrootsSignedNostrEvent, RadrootsSignedNostrEventParts,
-};
+use radroots_events::RadrootsEventEnvelope;
+use radroots_events::draft::{RadrootsDraftError, RadrootsSignedEvent, RadrootsSignedEventParts};
 use radroots_nostr::prelude::{
     RadrootsNostrClient, RadrootsNostrEventVerification, RadrootsNostrFilter, RadrootsNostrKind,
     RadrootsNostrPublicKey, radroots_nostr_verify_event,
@@ -595,7 +593,7 @@ impl TransportPublish {
     async fn complete_job_execution(
         &self,
         job_id: &str,
-        signed_event: RadrootsSignedNostrEvent,
+        signed_event: RadrootsSignedEvent,
         delivery_policy: TransportPublishDeliveryPolicy,
         timeout_ms: u64,
         resolution: PublishRelayResolution,
@@ -2443,7 +2441,7 @@ pub fn parse_explicit_transport_kind(value: &str) -> Result<String, TransportPub
 
 fn signed_event_from_wire(
     event: &SignedNostrEventWire,
-) -> Result<RadrootsSignedNostrEvent, TransportPublishError> {
+) -> Result<RadrootsSignedEvent, TransportPublishError> {
     event
         .validate()
         .map_err(|error| TransportPublishError::InvalidSignedEvent(error.to_string()))?;
@@ -2453,7 +2451,7 @@ fn signed_event_from_wire(
         )
     })?;
     let raw_json = serde_json::to_string(event)?;
-    let radroots_event = RadrootsNostrEvent {
+    let radroots_event = RadrootsEventEnvelope {
         id: event.id.clone(),
         author: event.pubkey.clone(),
         created_at,
@@ -2466,7 +2464,7 @@ fn signed_event_from_wire(
         RadrootsNostrEventVerification::Verified => {}
         verification => return Err(TransportPublishError::SignedEventVerification(verification)),
     }
-    RadrootsSignedNostrEvent::new(RadrootsSignedNostrEventParts {
+    RadrootsSignedEvent::new(RadrootsSignedEventParts {
         id: event.id.clone(),
         pubkey: event.pubkey.clone(),
         created_at,
