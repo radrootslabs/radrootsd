@@ -19,7 +19,7 @@ use crate::transport::nostr::listener::spawn_nip46_listener;
 use anyhow::Context;
 #[cfg(not(test))]
 use clap::Parser;
-use radroots_events::profile::RadrootsProfileType;
+use radroots_event::profile::RadrootsProfileType;
 use radroots_nostr::prelude::{
     RadrootsNostrApplicationHandlerSpec, RadrootsNostrKind,
     radroots_nostr_bootstrap_service_presence,

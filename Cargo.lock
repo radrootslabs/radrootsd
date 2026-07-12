@@ -1784,7 +1784,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "radroots_events"
+name = "radroots_event"
 version = "0.1.0-alpha.2"
 dependencies = [
  "hex",
@@ -1795,12 +1795,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "radroots_events_codec"
+name = "radroots_event_codec"
 version = "0.1.0-alpha.2"
 dependencies = [
  "nostr",
  "radroots_core",
- "radroots_events",
+ "radroots_event",
 ]
 
 [[package]]
@@ -1808,7 +1808,7 @@ name = "radroots_identity"
 version = "0.1.0-alpha.2"
 dependencies = [
  "nostr",
- "radroots_events",
+ "radroots_event",
  "radroots_protected_store",
  "radroots_runtime",
  "radroots_runtime_paths",
@@ -1836,8 +1836,8 @@ version = "0.1.0-alpha.2"
 dependencies = [
  "nostr",
  "nostr-sdk",
- "radroots_events",
- "radroots_events_codec",
+ "radroots_event",
+ "radroots_event_codec",
  "radroots_identity",
  "reqwest",
  "serde",
@@ -1906,7 +1906,7 @@ version = "0.1.0-alpha.2"
 dependencies = [
  "futures",
  "nostr",
- "radroots_events",
+ "radroots_event",
  "radroots_nostr",
  "radroots_transport",
  "serde",
@@ -1931,7 +1931,7 @@ dependencies = [
  "clap",
  "jsonrpsee",
  "nostr",
- "radroots_events",
+ "radroots_event",
  "radroots_identity",
  "radroots_nostr",
  "radroots_runtime",

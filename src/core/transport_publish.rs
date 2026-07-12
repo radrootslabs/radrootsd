@@ -8,8 +8,8 @@ use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use radroots_events::RadrootsEventEnvelope;
-use radroots_events::draft::{RadrootsDraftError, RadrootsSignedEvent, RadrootsSignedEventParts};
+use radroots_event::RadrootsEventEnvelope;
+use radroots_event::draft::{RadrootsDraftError, RadrootsSignedEvent, RadrootsSignedEventParts};
 use radroots_nostr::prelude::{
     RadrootsNostrClient, RadrootsNostrEventVerification, RadrootsNostrFilter, RadrootsNostrKind,
     RadrootsNostrPublicKey, radroots_nostr_verify_event,

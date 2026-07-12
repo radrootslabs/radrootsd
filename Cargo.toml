@@ -11,7 +11,7 @@ description = "Radroots local runtime daemon for storage, sync, and relay publis
 resolver = "2"
 
 [workspace.dependencies]
-radroots_events = { path = "../lib/crates/events" }
+radroots_event = { path = "../lib/crates/event" }
 radroots_identity = { path = "../lib/crates/identity" }
 radroots_nostr = { path = "../lib/crates/nostr" }
 radroots_transport_publish_protocol = { path = "../lib/crates/transport_publish_protocol" }
@@ -23,7 +23,7 @@ radroots_runtime = { path = "../lib/crates/runtime" }
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage_nightly)'] }
 
 [dependencies]
-radroots_events = { workspace = true, features = ["serde"] }
+radroots_event = { workspace = true, features = ["serde"] }
 radroots_identity = { workspace = true }
 radroots_nostr = { workspace = true, features = ["client", "codec", "events", "http"] }
 radroots_transport_publish_protocol = { workspace = true, features = ["std", "serde"] }
