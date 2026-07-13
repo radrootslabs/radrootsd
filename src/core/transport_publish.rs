@@ -2279,7 +2279,7 @@ fn finalize_job_view(view: &mut TransportPublishJobView) {
     view.acknowledged_count = view
         .targets
         .iter()
-        .filter(|relay| relay.outcome_kind.counts_toward_satisfaction())
+        .filter(|relay| relay.outcome_kind.counts_toward_accepted_delivery())
         .count();
     view.retryable_count = view
         .targets
@@ -2856,7 +2856,7 @@ fn delivery_status(
             let satisfied = required_outcomes.len() == targets.len()
                 && required_outcomes
                     .iter()
-                    .all(|outcome| outcome.outcome_kind.counts_toward_satisfaction());
+                    .all(|outcome| outcome.outcome_kind.counts_toward_accepted_delivery());
             (satisfied, required_outcomes)
         }
         TransportPublishDeliveryPolicy::Any
@@ -2865,7 +2865,7 @@ fn delivery_status(
             let required = delivery_policy.required_target_count(target_count);
             let acknowledged = outcomes
                 .iter()
-                .filter(|outcome| outcome.outcome_kind.counts_toward_satisfaction())
+                .filter(|outcome| outcome.outcome_kind.counts_toward_accepted_delivery())
                 .count();
             (
                 acknowledged >= required,
