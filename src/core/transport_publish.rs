@@ -25,7 +25,7 @@ use radroots_transport_nostr::{
     RadrootsRelayTargetSet, RadrootsRelayTransportError, RadrootsRelayUrl, RadrootsRelayUrlPolicy,
 };
 use radroots_transport_publish_protocol::{
-    NostrPublishTargetSourcePolicy, SignedNostrEventWire, TransportPublishDeliveryPolicy,
+    NostrPublishTargetSourcePolicy, SignedEventWire, TransportPublishDeliveryPolicy,
     TransportPublishEventRequest, TransportPublishEventResponse, TransportPublishJobStatus,
     TransportPublishJobView, TransportPublishOutcomeKind, TransportPublishPreviewBehavior,
     TransportPublishTarget, TransportPublishTargetOutcome, TransportPublishTargetPolicy,
@@ -2440,7 +2440,7 @@ pub fn parse_explicit_transport_kind(value: &str) -> Result<String, TransportPub
 }
 
 fn signed_event_from_wire(
-    event: &SignedNostrEventWire,
+    event: &SignedEventWire,
 ) -> Result<RadrootsSignedEvent, TransportPublishError> {
     event
         .validate()
@@ -3127,7 +3127,7 @@ mod tests {
     };
     use radroots_transport_nostr::{RadrootsMockRelayPublishAdapter, RadrootsRelayOutcome};
     use radroots_transport_publish_protocol::{
-        NostrPublishTargetSourcePolicy, SignedNostrEventWire, TransportPublishDeliveryPolicy,
+        NostrPublishTargetSourcePolicy, SignedEventWire, TransportPublishDeliveryPolicy,
         TransportPublishEventRequest, TransportPublishJobStatus, TransportPublishOutcomeKind,
         TransportPublishPreviewBehavior, TransportPublishTarget, TransportPublishTargetOutcome,
         TransportPublishTargetPolicy, TransportPublishTargetPolicyName,
@@ -3141,8 +3141,8 @@ mod tests {
     const RELAY_SECONDARY: &str = "wss://relay-2.example.com";
     const RELAY_FORBIDDEN: &str = "wss://forbidden-relay.example.com";
 
-    fn event(pubkey: &str, kind: u32) -> SignedNostrEventWire {
-        SignedNostrEventWire {
+    fn event(pubkey: &str, kind: u32) -> SignedEventWire {
+        SignedEventWire {
             id: "0".repeat(64),
             pubkey: pubkey.to_owned(),
             created_at: 1_700_000_000,
@@ -3216,7 +3216,7 @@ mod tests {
             .expect("user version")
     }
 
-    fn signed_event(identity: &RadrootsIdentity, content: &str) -> SignedNostrEventWire {
+    fn signed_event(identity: &RadrootsIdentity, content: &str) -> SignedEventWire {
         let event = radroots_nostr_build_event(
             30_402,
             content,
@@ -3230,7 +3230,7 @@ mod tests {
     }
 
     fn publish_request(
-        event: SignedNostrEventWire,
+        event: SignedEventWire,
         relays: Vec<String>,
         source_policy: NostrPublishTargetSourcePolicy,
         delivery_policy: TransportPublishDeliveryPolicy,
@@ -3246,7 +3246,7 @@ mod tests {
     }
 
     fn reticulum_publish_request(
-        event: SignedNostrEventWire,
+        event: SignedEventWire,
         behavior: TransportPublishPreviewBehavior,
     ) -> TransportPublishEventRequest {
         TransportPublishEventRequest {

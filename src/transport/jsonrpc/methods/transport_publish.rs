@@ -146,10 +146,10 @@ mod tests {
     };
     use radroots_transport_nostr::RadrootsMockRelayPublishAdapter;
     use radroots_transport_publish_protocol::{
-        NostrPublishTargetSourcePolicy, SignedNostrEventWire, TransportPublishTargetPolicyName,
+        NostrPublishTargetSourcePolicy, SignedEventWire, TransportPublishTargetPolicyName,
     };
 
-    fn signed_event(identity: &RadrootsIdentity) -> SignedNostrEventWire {
+    fn signed_event(identity: &RadrootsIdentity) -> SignedEventWire {
         let event = radroots_nostr_build_event(
             30_402,
             "{}",
@@ -165,12 +165,7 @@ mod tests {
     fn module_with_principal_and_config(
         admin: bool,
         transport_publish_config: TransportPublishConfig,
-    ) -> (
-        RpcModule<RpcContext>,
-        RpcContext,
-        String,
-        SignedNostrEventWire,
-    ) {
+    ) -> (RpcModule<RpcContext>, RpcContext, String, SignedEventWire) {
         let identity = RadrootsIdentity::generate();
         let signed_event = signed_event(&identity);
         let metadata: RadrootsNostrMetadata =
@@ -221,12 +216,7 @@ mod tests {
 
     fn module_with_principal(
         admin: bool,
-    ) -> (
-        RpcModule<RpcContext>,
-        RpcContext,
-        String,
-        SignedNostrEventWire,
-    ) {
+    ) -> (RpcModule<RpcContext>, RpcContext, String, SignedEventWire) {
         module_with_principal_and_config(
             admin,
             TransportPublishConfig {
