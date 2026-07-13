@@ -55,6 +55,92 @@ const FORBIDDEN_DAEMON_TRANSPORT_CONCEPTS: &[ForbiddenConcept] = &[
     },
 ];
 
+const FORBIDDEN_FOUNDATION_HARDENING_RETIRED_CONCEPTS: &[ForbiddenConcept] = &[
+    ForbiddenConcept {
+        pattern: "SignedNostrEvent",
+        reason: "generic signed-event surfaces must use product-neutral signed-event names",
+    },
+    ForbiddenConcept {
+        pattern: "RadrootsEventIndexIndexCheckpoint",
+        reason: "event-index checkpoint names must not duplicate the index noun",
+    },
+    ForbiddenConcept {
+        pattern: "RadrootsEventsIndexed",
+        reason: "event-indexed APIs must use the singular event-index crate family",
+    },
+    ForbiddenConcept {
+        pattern: "RADROOTS_EVENTS_VERSION",
+        reason: "event contract version constants must use the current singular event namespace",
+    },
+    ForbiddenConcept {
+        pattern: "radroots_events",
+        reason: "daemon surfaces must use the current singular event crate names",
+    },
+    ForbiddenConcept {
+        pattern: "radroots_events_codec",
+        reason: "daemon event codec surfaces must use the current singular event-codec name",
+    },
+    ForbiddenConcept {
+        pattern: "radroots_events_indexed",
+        reason: "daemon event index surfaces must use the current singular event-index name",
+    },
+    ForbiddenConcept {
+        pattern: "radroots_local_events",
+        reason: "daemon storage surfaces must not reintroduce retired local-events names",
+    },
+    ForbiddenConcept {
+        pattern: "radroots_local_store",
+        reason: "daemon storage surfaces must not reintroduce retired local-store names",
+    },
+    ForbiddenConcept {
+        pattern: "radroots_types",
+        reason: "daemon type surfaces must use current crate ownership instead of retired types crates",
+    },
+    ForbiddenConcept {
+        pattern: "radroots_types_bindings",
+        reason: "daemon generated surfaces must not reintroduce retired types-binding names",
+    },
+    ForbiddenConcept {
+        pattern: "radroots_nostr_ndb",
+        reason: "daemon Nostr database surfaces must not reintroduce retired ndb names",
+    },
+    ForbiddenConcept {
+        pattern: "radroots_replica_db",
+        reason: "daemon replica surfaces must use current replica-store ownership",
+    },
+    ForbiddenConcept {
+        pattern: "radroots_replica_db_schema",
+        reason: "daemon replica schema surfaces must use current replica-schema ownership",
+    },
+    ForbiddenConcept {
+        pattern: "radroots_sp1_guest_trade",
+        reason: "daemon trade SP1 surfaces must use the current trade_sp1 crate names",
+    },
+    ForbiddenConcept {
+        pattern: "radroots_sp1_host_trade",
+        reason: "daemon trade SP1 surfaces must use the current trade_sp1 crate names",
+    },
+];
+
+const FORBIDDEN_FOUNDATION_HARDENING_DOC_CONCEPTS: &[ForbiddenConcept] = &[
+    ForbiddenConcept {
+        pattern: "Nostr event timestamp",
+        reason: "daemon docs must describe event-envelope timestamps without generic Nostr wording",
+    },
+    ForbiddenConcept {
+        pattern: "Forwarded satisfies Delivered",
+        reason: "daemon docs must not imply forwarded evidence is strict delivery",
+    },
+    ForbiddenConcept {
+        pattern: "StoredByGateway satisfies Delivered",
+        reason: "daemon docs must not imply gateway storage evidence is strict delivery",
+    },
+    ForbiddenConcept {
+        pattern: "Seen satisfies Delivered",
+        reason: "daemon docs must not imply seen evidence is strict delivery",
+    },
+];
+
 #[test]
 fn transport_publish_sources_reject_removed_protocol_identifiers() {
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -102,6 +188,48 @@ fn transport_publish_sources_reject_removed_protocol_identifiers() {
     assert!(
         findings.is_empty(),
         "daemon transport source-boundary violations:\n{}",
+        findings.join("\n")
+    );
+}
+
+#[test]
+fn foundation_hardening_sources_reject_retired_names_and_ambiguous_docs() {
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut findings = Vec::new();
+
+    for path in foundation_hardening_guard_files(manifest_dir) {
+        let source_raw = read_source(path.as_path());
+        let source = if path.extension().and_then(|extension| extension.to_str()) == Some("rs") {
+            production_source(source_raw.as_str())
+        } else {
+            source_raw.as_str()
+        };
+        let relative_path = relative_path(manifest_dir, path.as_path());
+
+        for concept in FORBIDDEN_FOUNDATION_HARDENING_RETIRED_CONCEPTS {
+            if contains_forbidden_concept(source, concept.pattern) {
+                findings.push(format!(
+                    "{} contains retired Foundation Hardening concept `{}`: {}",
+                    relative_path, concept.pattern, concept.reason
+                ));
+            }
+        }
+
+        if is_doc_surface(path.as_path()) {
+            for concept in FORBIDDEN_FOUNDATION_HARDENING_DOC_CONCEPTS {
+                if source.contains(concept.pattern) {
+                    findings.push(format!(
+                        "{} contains ambiguous Foundation Hardening wording `{}`: {}",
+                        relative_path, concept.pattern, concept.reason
+                    ));
+                }
+            }
+        }
+    }
+
+    assert!(
+        findings.is_empty(),
+        "daemon Foundation Hardening V1 source-boundary violations:\n{}",
         findings.join("\n")
     );
 }
@@ -371,6 +499,55 @@ fn rust_source_files(root: &Path) -> Vec<PathBuf> {
     paths
 }
 
+fn foundation_hardening_guard_files(manifest_dir: &Path) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+
+    for path in [
+        manifest_dir.join("Cargo.toml"),
+        manifest_dir.join("README"),
+        manifest_dir.join("README.md"),
+    ] {
+        if path.exists() {
+            paths.push(path);
+        }
+    }
+
+    for relative_root in ["src", "docs"] {
+        let root = manifest_dir.join(relative_root);
+        if root.exists() {
+            collect_foundation_hardening_guard_files(root.as_path(), &mut paths);
+        }
+    }
+
+    paths.sort();
+    paths
+}
+
+fn collect_foundation_hardening_guard_files(root: &Path, paths: &mut Vec<PathBuf>) {
+    for entry in fs::read_dir(root)
+        .unwrap_or_else(|error| panic!("failed to read {}: {error}", root.display()))
+    {
+        let path = entry.expect("guard entry").path();
+        if path.is_dir() {
+            collect_foundation_hardening_guard_files(path.as_path(), paths);
+            continue;
+        }
+
+        let guarded_extension = matches!(
+            path.extension().and_then(|extension| extension.to_str()),
+            Some("rs") | Some("toml") | Some("md")
+        );
+        if guarded_extension
+            || matches!(
+                path.file_name().and_then(|file_name| file_name.to_str()),
+                Some("README") | Some("README.md")
+            )
+        {
+            paths.push(path);
+        }
+    }
+}
+
 fn collect_rust_source_files(root: &Path, paths: &mut Vec<PathBuf>) {
     for entry in fs::read_dir(root)
         .unwrap_or_else(|error| panic!("failed to read {}: {error}", root.display()))
@@ -397,6 +574,22 @@ fn relative_path(root: &Path, path: &Path) -> String {
         .replace('\\', "/")
 }
 
+fn production_source(source: &str) -> &str {
+    source
+        .find("\n#[cfg(test)]")
+        .map_or(source, |index| &source[..index])
+}
+
+fn is_doc_surface(path: &Path) -> bool {
+    matches!(
+        path.file_name().and_then(|file_name| file_name.to_str()),
+        Some("README") | Some("README.md")
+    ) || matches!(
+        path.extension().and_then(|extension| extension.to_str()),
+        Some("md")
+    )
+}
+
 fn source_window<'source>(
     source: &'source str,
     start_marker: &str,
@@ -413,6 +606,10 @@ fn source_window<'source>(
 }
 
 fn contains_forbidden_concept(source: &str, pattern: &str) -> bool {
+    if !pattern.chars().all(is_rust_identifier_character) {
+        return source.contains(pattern);
+    }
+
     source.match_indices(pattern).any(|(index, _)| {
         let before = source[..index].chars().next_back();
         let after = source[index + pattern.len()..].chars().next();
