@@ -15,9 +15,10 @@ use radroots_nostr::prelude::{
     RadrootsNostrPublicKey, radroots_nostr_verify_event,
 };
 use radroots_transport::{
-    RADROOTS_RETICULUM_UNAVAILABLE_MESSAGE, RadrootsTransportKind, RadrootsTransportMeshScopeId,
-    RadrootsTransportSatisfactionClass, RadrootsTransportSatisfactionPolicy,
-    RadrootsTransportTarget, RadrootsTransportTargetFingerprint, RadrootsTransportTargetLabel,
+    RADROOTS_RETICULUM_PREVIEW_ENDPOINT_URI, RADROOTS_RETICULUM_UNAVAILABLE_MESSAGE,
+    RadrootsTransportKind, RadrootsTransportMeshScopeId, RadrootsTransportSatisfactionClass,
+    RadrootsTransportSatisfactionPolicy, RadrootsTransportTarget,
+    RadrootsTransportTargetFingerprint, RadrootsTransportTargetLabel,
 };
 use radroots_transport_nostr::{
     RadrootsNostrClientPublishAdapter, RadrootsRelayOutcome, RadrootsRelayOutcomeKind,
@@ -887,13 +888,9 @@ impl ResolvedPublishRelay {
             .map(RadrootsTransportTargetLabel::parse)
             .transpose()
             .map_err(|error| TransportPublishError::Transport(error.to_string()))?;
-        let target = RadrootsTransportTarget::new_with_metadata(
-            RadrootsTransportKind::Nostr,
-            self.url.as_str(),
-            scope,
-            label,
-        )
-        .map_err(|error| TransportPublishError::Transport(error.to_string()))?;
+        let target =
+            RadrootsTransportTarget::nostr_relay_with_metadata(self.url.as_str(), scope, label)
+                .map_err(|error| TransportPublishError::Transport(error.to_string()))?;
         Ok(target.fingerprint)
     }
 }
@@ -2751,7 +2748,7 @@ fn target_outcome_fingerprint(
                 "target outcome {index} has invalid target label: {error}"
             ))
         })?;
-    let target = RadrootsTransportTarget::new_with_metadata(
+    let target = transport_target_from_outcome_parts(
         transport_kind,
         target.endpoint_uri.as_str(),
         scope,
@@ -2763,6 +2760,34 @@ fn target_outcome_fingerprint(
         ))
     })?;
     Ok(target.fingerprint)
+}
+
+fn transport_target_from_outcome_parts(
+    transport_kind: RadrootsTransportKind,
+    endpoint_uri: &str,
+    scope: Option<RadrootsTransportMeshScopeId>,
+    label: Option<RadrootsTransportTargetLabel>,
+) -> Result<RadrootsTransportTarget, radroots_transport::RadrootsTransportError> {
+    match transport_kind {
+        RadrootsTransportKind::Nostr => {
+            RadrootsTransportTarget::nostr_relay_with_metadata(endpoint_uri, scope, label)
+        }
+        RadrootsTransportKind::Reticulum => {
+            if endpoint_uri != RADROOTS_RETICULUM_PREVIEW_ENDPOINT_URI {
+                return Err(radroots_transport::RadrootsTransportError::InvalidTargetUri);
+            }
+            RadrootsTransportTarget::reticulum_preview_with_metadata(scope, label)
+        }
+        RadrootsTransportKind::Local => {
+            RadrootsTransportTarget::local_with_metadata(endpoint_uri, scope, label)
+        }
+        RadrootsTransportKind::Proxy => {
+            RadrootsTransportTarget::proxy_with_metadata(endpoint_uri, scope, label)
+        }
+        RadrootsTransportKind::Mesh | RadrootsTransportKind::Custom(_) => {
+            RadrootsTransportTarget::new_with_metadata(transport_kind, endpoint_uri, scope, label)
+        }
+    }
 }
 
 fn validate_delivery_policy_for_resolution(
@@ -3122,9 +3147,7 @@ mod tests {
     use radroots_nostr::prelude::{
         RadrootsNostrEventVerification, RadrootsNostrTimestamp, radroots_nostr_build_event,
     };
-    use radroots_transport::{
-        RADROOTS_RETICULUM_UNAVAILABLE_MESSAGE, RadrootsTransportKind, RadrootsTransportTarget,
-    };
+    use radroots_transport::{RADROOTS_RETICULUM_UNAVAILABLE_MESSAGE, RadrootsTransportTarget};
     use radroots_transport_nostr::{RadrootsMockRelayPublishAdapter, RadrootsRelayOutcome};
     use radroots_transport_publish_protocol::{
         NostrPublishTargetSourcePolicy, SignedEventWire, TransportPublishDeliveryPolicy,
@@ -5312,8 +5335,7 @@ mod tests {
         let principal =
             explicit_target_principal(&proxy, identity.public_key_hex(), PublishJobVisibility::Own);
         let required_target =
-            RadrootsTransportTarget::new(RadrootsTransportKind::Nostr, RELAY_PRIMARY)
-                .expect("required target");
+            RadrootsTransportTarget::nostr_relay(RELAY_PRIMARY).expect("required target");
         let request = TransportPublishEventRequest {
             event: signed_event(&identity, "{}"),
             target_policy: TransportPublishTargetPolicy::explicit_targets(vec![
@@ -5360,8 +5382,7 @@ mod tests {
         let principal =
             explicit_target_principal(&proxy, identity.public_key_hex(), PublishJobVisibility::Own);
         let required_target =
-            RadrootsTransportTarget::new(RadrootsTransportKind::Nostr, RELAY_PRIMARY)
-                .expect("required target");
+            RadrootsTransportTarget::nostr_relay(RELAY_PRIMARY).expect("required target");
         let request = TransportPublishEventRequest {
             event: signed_event(&identity, "{}"),
             target_policy: TransportPublishTargetPolicy::explicit_targets(vec![
@@ -5402,8 +5423,7 @@ mod tests {
         let principal =
             explicit_target_principal(&proxy, identity.public_key_hex(), PublishJobVisibility::Own);
         let stale_target =
-            RadrootsTransportTarget::new(RadrootsTransportKind::Nostr, RELAY_SECONDARY)
-                .expect("stale target");
+            RadrootsTransportTarget::nostr_relay(RELAY_SECONDARY).expect("stale target");
         let request = TransportPublishEventRequest {
             event: signed_event(&identity, "{}"),
             target_policy: TransportPublishTargetPolicy::explicit_targets(vec![
