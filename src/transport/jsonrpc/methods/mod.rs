@@ -156,6 +156,11 @@ mod tests {
         assert!(
             response
                 .get()
+                .contains("\"capabilities\":{\"deliver\":false,\"fetch\":false}")
+        );
+        assert!(
+            response
+                .get()
                 .contains(RADROOTS_RETICULUM_UNAVAILABLE_MESSAGE)
         );
     }

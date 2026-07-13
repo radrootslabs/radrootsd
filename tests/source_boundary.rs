@@ -286,6 +286,7 @@ fn transport_publish_capabilities_expose_per_transport_readiness() {
         r#"\"configured\":true"#,
         r#"\"implementation\":\"preview_unavailable\""#,
         r#"\"usable_for_delivery\":false"#,
+        r#"\"capabilities\":{\"deliver\":false,\"fetch\":false}"#,
         "RADROOTS_RETICULUM_UNAVAILABLE_MESSAGE",
     ] {
         assert!(
@@ -304,6 +305,10 @@ fn transport_publish_capabilities_expose_per_transport_readiness() {
         "pub configured: bool,",
         "pub implementation: TransportPublishImplementation,",
         "pub usable_for_delivery: bool,",
+        "pub capabilities: TransportPublishOperationCapabilities,",
+        "pub struct TransportPublishOperationCapabilities",
+        "pub deliver: bool,",
+        "pub fetch: bool,",
         "RADROOTS_RETICULUM_UNAVAILABLE_MESSAGE",
     ] {
         assert!(
