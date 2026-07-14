@@ -57,6 +57,26 @@ const FORBIDDEN_DAEMON_TRANSPORT_CONCEPTS: &[ForbiddenConcept] = &[
 
 const FORBIDDEN_FOUNDATION_HARDENING_RETIRED_CONCEPTS: &[ForbiddenConcept] = &[
     ForbiddenConcept {
+        pattern: "WireEventParts",
+        reason: "event construction must use current Radroots NIP-01 wire part names",
+    },
+    ForbiddenConcept {
+        pattern: "RadrootsFrozenEventDraft",
+        reason: "event draft surfaces must use the current RadrootsEventDraft name",
+    },
+    ForbiddenConcept {
+        pattern: "RadrootsNostrEvent",
+        reason: "product-level event surfaces must use protocol-neutral event names",
+    },
+    ForbiddenConcept {
+        pattern: "RadrootsNostrEventRef",
+        reason: "product-level event references must use RadrootsEventRef",
+    },
+    ForbiddenConcept {
+        pattern: "RadrootsNostrEventPtr",
+        reason: "product-level event pointers must use RadrootsEventPtr",
+    },
+    ForbiddenConcept {
         pattern: "SignedNostrEvent",
         reason: "generic signed-event surfaces must use product-neutral signed-event names",
     },
@@ -207,6 +227,10 @@ fn foundation_hardening_sources_reject_retired_names_and_ambiguous_docs() {
         let relative_path = relative_path(manifest_dir, path.as_path());
 
         for concept in FORBIDDEN_FOUNDATION_HARDENING_RETIRED_CONCEPTS {
+            if foundation_hardening_retired_concept_allowed(relative_path.as_str(), concept.pattern)
+            {
+                continue;
+            }
             if contains_forbidden_concept(source, concept.pattern) {
                 findings.push(format!(
                     "{} contains retired Foundation Hardening concept `{}`: {}",
@@ -522,6 +546,16 @@ fn foundation_hardening_guard_files(manifest_dir: &Path) -> Vec<PathBuf> {
 
     paths.sort();
     paths
+}
+
+fn foundation_hardening_retired_concept_allowed(relative_path: &str, pattern: &str) -> bool {
+    pattern == "RadrootsNostrEvent" && daemon_nostr_protocol_context(relative_path)
+}
+
+fn daemon_nostr_protocol_context(relative_path: &str) -> bool {
+    relative_path == "src/core/transport_publish.rs"
+        || relative_path.starts_with("src/transport/nostr/")
+        || relative_path.contains("/nip46/")
 }
 
 fn collect_foundation_hardening_guard_files(root: &Path, paths: &mut Vec<PathBuf>) {
