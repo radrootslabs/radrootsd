@@ -138,12 +138,12 @@ mod tests {
             .await
             .expect("request");
         assert!(response.get().contains("\"scoped_bearer_token\""));
-        assert!(response.get().contains("\"signed_event_ingress\":true"));
+        assert!(response.get().contains("\"raw_event_json_ingress\":true"));
         assert!(response.get().contains("\"transports\":["));
         assert!(
             response
                 .get()
-                .contains("\"api_version\":\"radrootsd.transport_publish.v4\"")
+                .contains("\"api_version\":\"radrootsd.transport_publish.v5\"")
         );
         assert!(response.get().contains("\"transport\":\"reticulum\""));
         assert!(response.get().contains("\"configured\":true"));

@@ -409,7 +409,8 @@ fn transport_publish_capabilities_expose_per_transport_readiness() {
     );
     for required in [
         "transport.publish.capabilities",
-        r#"\"api_version\":\"radrootsd.transport_publish.v4\""#,
+        r#"\"api_version\":\"radrootsd.transport_publish.v5\""#,
+        r#"\"raw_event_json_ingress\":true"#,
         r#"\"transport\":\"reticulum\""#,
         r#"\"configured\":true"#,
         r#"\"implementation\":\"preview_unavailable\""#,

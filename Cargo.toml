@@ -23,7 +23,7 @@ radroots_runtime = { path = "../lib/crates/runtime" }
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage_nightly)'] }
 
 [dependencies]
-radroots_event = { workspace = true, features = ["serde"] }
+radroots_event = { workspace = true, features = ["serde", "signature"] }
 radroots_identity = { workspace = true }
 radroots_nostr = { workspace = true, features = ["client", "codec", "events", "http"] }
 radroots_transport_publish_protocol = { workspace = true, features = ["std", "serde"] }

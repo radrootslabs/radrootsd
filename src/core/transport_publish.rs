@@ -8,11 +8,12 @@ use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use radroots_event::RadrootsEventEnvelope;
-use radroots_event::draft::{RadrootsDraftError, RadrootsSignedEvent, RadrootsSignedEventParts};
+use radroots_event::draft::{
+    RadrootsSignatureVerificationError, RadrootsSignedEvent, RadrootsSignedEventError,
+};
+use radroots_event::wire::{RadrootsEventWireError, RadrootsNip01EventWire};
 use radroots_nostr::prelude::{
-    RadrootsNostrClient, RadrootsNostrEventVerification, RadrootsNostrFilter, RadrootsNostrKind,
-    RadrootsNostrPublicKey, radroots_nostr_verify_event,
+    RadrootsNostrClient, RadrootsNostrFilter, RadrootsNostrKind, RadrootsNostrPublicKey,
 };
 use radroots_transport::{
     RADROOTS_RETICULUM_PREVIEW_ENDPOINT_URI, RADROOTS_RETICULUM_UNAVAILABLE_MESSAGE,
@@ -26,11 +27,11 @@ use radroots_transport_nostr::{
     RadrootsRelayTargetSet, RadrootsRelayTransportError, RadrootsRelayUrl, RadrootsRelayUrlPolicy,
 };
 use radroots_transport_publish_protocol::{
-    NostrPublishTargetSourcePolicy, SignedEventWire, TransportPublishDeliveryPolicy,
-    TransportPublishEventRequest, TransportPublishEventResponse, TransportPublishJobStatus,
-    TransportPublishJobView, TransportPublishOutcomeKind, TransportPublishPreviewBehavior,
-    TransportPublishTarget, TransportPublishTargetOutcome, TransportPublishTargetPolicy,
-    TransportPublishTargetPolicyName, TransportPublishTargetSource,
+    NostrPublishTargetSourcePolicy, TransportPublishDeliveryPolicy, TransportPublishEventRequest,
+    TransportPublishEventResponse, TransportPublishJobStatus, TransportPublishJobView,
+    TransportPublishOutcomeKind, TransportPublishPreviewBehavior, TransportPublishTarget,
+    TransportPublishTargetOutcome, TransportPublishTargetPolicy, TransportPublishTargetPolicyName,
+    TransportPublishTargetSource,
 };
 use rusqlite::types::Type;
 use rusqlite::{Connection, OptionalExtension, Row, params};
@@ -143,10 +144,12 @@ pub enum TransportPublishError {
     InvalidScope(String),
     #[error("invalid signed Nostr event: {0}")]
     InvalidSignedEvent(String),
-    #[error("signed Nostr event verification failed: {0:?}")]
-    SignedEventVerification(RadrootsNostrEventVerification),
-    #[error("signed Nostr event conversion error: {0}")]
-    Draft(#[from] RadrootsDraftError),
+    #[error("signed event wire error: {0}")]
+    EventWire(#[from] RadrootsEventWireError),
+    #[error("signed event conversion error: {0}")]
+    SignedEvent(#[from] RadrootsSignedEventError),
+    #[error("signed event signature verification failed: {0}")]
+    SignedEventSignature(#[from] RadrootsSignatureVerificationError),
     #[error("transport publish relay error: {0}")]
     Relay(#[from] RadrootsRelayTransportError),
     #[error("transport publish transport error: {0}")]
@@ -237,29 +240,30 @@ impl TransportPublish {
                     "publish request validation failed: {error}"
                 ))
             })?;
-        principal.allows_event(&request)?;
-        let signed_event = signed_event_from_wire(&request.event)?;
-        if signed_event.raw_json.len() > self.config.max_event_bytes {
+        if request.raw_event_json.len() > self.config.max_event_bytes {
             return Err(TransportPublishError::InvalidSignedEvent(
                 "signed event exceeds transport_publish max_event_bytes".to_owned(),
             ));
         }
+        let signed_event = signed_event_from_raw_json(request.raw_event_json.as_str())?;
+        principal.allows_event(&signed_event, &request)?;
         let effective_timeout_ms = effective_publish_timeout_ms(&self.config, request.timeout_ms)?;
         let _permit = self.acquire_publish_permit()?;
         let request_fingerprint = request_intent_fingerprint(
             principal.principal_id.as_str(),
-            signed_event.raw_json.as_str(),
+            signed_event.raw_json(),
             &request,
             effective_timeout_ms,
         )?;
         let resolution = self
-            .resolve_targets_for_request(signed_event.pubkey.as_str(), &request)
+            .resolve_targets_for_request(signed_event.pubkey_str(), &request)
             .await?;
         validate_delivery_policy_for_resolution(&request.delivery_policy, &resolution)?;
         let target_snapshots = target_snapshots_from_resolution(&resolution);
         let response = self.store.record_publish_job(PublishJobInsert {
             principal_id: principal.principal_id.clone(),
             idempotency_key: request.idempotency_key.clone(),
+            event: PublishEventMetadata::from_signed_event(&signed_event),
             request: request.clone(),
             request_fingerprint,
             effective_target_count: resolution.target_count(),
@@ -747,19 +751,21 @@ pub struct PublishPrincipal {
 impl PublishPrincipal {
     pub fn allows_event(
         &self,
+        signed_event: &RadrootsSignedEvent,
         request: &TransportPublishEventRequest,
     ) -> Result<(), TransportPublishError> {
-        ensure_lower_hex("pubkey", request.event.pubkey.as_str(), 64)?;
+        let pubkey = signed_event.pubkey_str();
+        ensure_lower_hex("pubkey", pubkey, 64)?;
         if !self
             .allowed_pubkeys
             .iter()
-            .any(|pubkey| pubkey == &request.event.pubkey)
+            .any(|allowed_pubkey| allowed_pubkey == pubkey)
         {
             return Err(TransportPublishError::InvalidScope(
                 "principal is not allowed to publish for event pubkey".to_owned(),
             ));
         }
-        if !self.allowed_kinds.contains(&request.event.kind) {
+        if !self.allowed_kinds.contains(&signed_event.kind()) {
             return Err(TransportPublishError::InvalidScope(
                 "principal is not allowed to publish event kind".to_owned(),
             ));
@@ -835,10 +841,28 @@ impl PublishPrincipal {
 pub struct PublishJobInsert {
     pub principal_id: String,
     pub idempotency_key: Option<String>,
+    pub event: PublishEventMetadata,
     pub request: TransportPublishEventRequest,
     pub request_fingerprint: String,
     pub effective_target_count: usize,
     pub target_snapshots: Vec<TransportPublishTargetOutcome>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PublishEventMetadata {
+    pub event_id: String,
+    pub pubkey: String,
+    pub kind: u32,
+}
+
+impl PublishEventMetadata {
+    fn from_signed_event(signed_event: &RadrootsSignedEvent) -> Self {
+        Self {
+            event_id: signed_event.id_str().to_owned(),
+            pubkey: signed_event.pubkey_str().to_owned(),
+            kind: signed_event.kind(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1196,9 +1220,9 @@ impl TransportPublishStore {
                 insert.idempotency_key,
                 insert.request_fingerprint,
                 serde_json::to_string(&TransportPublishJobStatus::Publishing)?,
-                insert.request.event.id,
-                insert.request.event.pubkey,
-                insert.request.event.kind,
+                insert.event.event_id,
+                insert.event.pubkey,
+                insert.event.kind,
                 serde_json::to_string(&insert.request.target_policy)?,
                 serde_json::to_string(&insert.request.delivery_policy)?,
                 insert.request.target_policy.request_target_count(),
@@ -2323,15 +2347,6 @@ fn validate_principal_init(input: &PublishPrincipalInit) -> Result<(), Transport
             "principal must include at least one allowed kind".to_owned(),
         ));
     }
-    if input
-        .allowed_kinds
-        .iter()
-        .any(|kind| *kind > u16::MAX as u32)
-    {
-        return Err(TransportPublishError::InvalidScope(
-            "allowed kind exceeds transport publish range".to_owned(),
-        ));
-    }
     if input.allowed_target_policies.is_empty() {
         return Err(TransportPublishError::InvalidScope(
             "principal must include at least one allowed target policy".to_owned(),
@@ -2436,42 +2451,12 @@ pub fn parse_explicit_transport_kind(value: &str) -> Result<String, TransportPub
     Ok(kind.canonical_label())
 }
 
-fn signed_event_from_wire(
-    event: &SignedEventWire,
+fn signed_event_from_raw_json(
+    raw_json: &str,
 ) -> Result<RadrootsSignedEvent, TransportPublishError> {
-    event
-        .validate()
-        .map_err(|error| TransportPublishError::InvalidSignedEvent(error.to_string()))?;
-    let created_at = u32::try_from(event.created_at).map_err(|_| {
-        TransportPublishError::InvalidSignedEvent(
-            "signed event created_at exceeds daemon-supported range".to_owned(),
-        )
-    })?;
-    let raw_json = serde_json::to_string(event)?;
-    let radroots_event = RadrootsEventEnvelope {
-        id: event.id.clone(),
-        author: event.pubkey.clone(),
-        created_at,
-        kind: event.kind,
-        tags: event.tags.clone(),
-        content: event.content.clone(),
-        sig: event.sig.clone(),
-    };
-    match radroots_nostr_verify_event(&radroots_event) {
-        RadrootsNostrEventVerification::Verified => {}
-        verification => return Err(TransportPublishError::SignedEventVerification(verification)),
-    }
-    RadrootsSignedEvent::new(RadrootsSignedEventParts {
-        id: event.id.clone(),
-        pubkey: event.pubkey.clone(),
-        created_at,
-        kind: event.kind,
-        tags: event.tags.clone(),
-        content: event.content.clone(),
-        sig: event.sig.clone(),
-        raw_json,
-    })
-    .map_err(TransportPublishError::from)
+    let wire = RadrootsNip01EventWire::parse_json(raw_json)?;
+    let signed_event = RadrootsSignedEvent::from_wire_verified_id(wire, raw_json.to_owned())?;
+    Ok(signed_event.verify_signature()?.into_signed_event())
 }
 
 fn request_intent_fingerprint(
@@ -3034,13 +3019,13 @@ struct TransportPublishStorageIntegerRangeError {
 
 fn checked_event_kind_column(row: &Row<'_>, index: usize) -> Result<u32, rusqlite::Error> {
     let value = row.get::<_, i64>(index)?;
-    if !(0..=i64::from(u16::MAX)).contains(&value) {
+    if !(0..=i64::from(u32::MAX)).contains(&value) {
         return Err(integer_conversion_error(
             index,
             TransportPublishStorageIntegerRangeError {
                 field: "event_kind",
                 value,
-                target: "u16",
+                target: "u32",
             },
         ));
     }
@@ -3134,8 +3119,8 @@ fn current_unix_millis() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        PublishJobInsert, PublishJobVisibility, PublishPrincipal, PublishPrincipalInit,
-        SCHEMA_VERSION, TRANSPORT_KIND_NOSTR, TRANSPORT_KIND_RETICULUM,
+        PublishEventMetadata, PublishJobInsert, PublishJobVisibility, PublishPrincipal,
+        PublishPrincipalInit, SCHEMA_VERSION, TRANSPORT_KIND_NOSTR, TRANSPORT_KIND_RETICULUM,
         TRANSPORT_PUBLISH_SCHEMA_SQL, TransportPublish, TransportPublishError,
         TransportPublishStore, generate_bearer_token, hash_bearer_token, parse_nostr_source_policy,
     };
@@ -3144,13 +3129,11 @@ mod tests {
     };
     use nostr::JsonUtil;
     use radroots_identity::RadrootsIdentity;
-    use radroots_nostr::prelude::{
-        RadrootsNostrEventVerification, RadrootsNostrTimestamp, radroots_nostr_build_event,
-    };
+    use radroots_nostr::prelude::{RadrootsNostrTimestamp, radroots_nostr_build_event};
     use radroots_transport::{RADROOTS_RETICULUM_UNAVAILABLE_MESSAGE, RadrootsTransportTarget};
     use radroots_transport_nostr::{RadrootsMockRelayPublishAdapter, RadrootsRelayOutcome};
     use radroots_transport_publish_protocol::{
-        NostrPublishTargetSourcePolicy, SignedEventWire, TransportPublishDeliveryPolicy,
+        NostrPublishTargetSourcePolicy, TransportPublishDeliveryPolicy,
         TransportPublishEventRequest, TransportPublishJobStatus, TransportPublishOutcomeKind,
         TransportPublishPreviewBehavior, TransportPublishTarget, TransportPublishTargetOutcome,
         TransportPublishTargetPolicy, TransportPublishTargetPolicyName,
@@ -3164,21 +3147,27 @@ mod tests {
     const RELAY_SECONDARY: &str = "wss://relay-2.example.com";
     const RELAY_FORBIDDEN: &str = "wss://forbidden-relay.example.com";
 
-    fn event(pubkey: &str, kind: u32) -> SignedEventWire {
-        SignedEventWire {
-            id: "0".repeat(64),
+    fn event_metadata(pubkey: &str, kind: u32) -> PublishEventMetadata {
+        PublishEventMetadata {
+            event_id: "0".repeat(64),
             pubkey: pubkey.to_owned(),
-            created_at: 1_700_000_000,
             kind,
-            tags: vec![vec!["d".to_owned(), "listing-1".to_owned()]],
-            content: "{}".to_owned(),
-            sig: "1".repeat(128),
         }
+    }
+
+    fn raw_event_json(pubkey: &str, kind: u32) -> String {
+        format!(
+            r#"{{"id":"{}","pubkey":"{}","created_at":1700000000,"kind":{},"tags":[["d","listing-1"]],"content":"{{}}","sig":"{}"}}"#,
+            "0".repeat(64),
+            pubkey,
+            kind,
+            "1".repeat(128)
+        )
     }
 
     fn request(pubkey: &str, kind: u32) -> TransportPublishEventRequest {
         TransportPublishEventRequest {
-            event: event(pubkey, kind),
+            raw_event_json: raw_event_json(pubkey, kind),
             target_policy: TransportPublishTargetPolicy::nostr(
                 NostrPublishTargetSourcePolicy::DaemonDefaultOnly,
                 Vec::new(),
@@ -3239,7 +3228,7 @@ mod tests {
             .expect("user version")
     }
 
-    fn signed_event(identity: &RadrootsIdentity, content: &str) -> SignedEventWire {
+    fn signed_event(identity: &RadrootsIdentity, content: &str) -> String {
         let event = radroots_nostr_build_event(
             30_402,
             content,
@@ -3249,18 +3238,29 @@ mod tests {
         .custom_created_at(RadrootsNostrTimestamp::from_secs(1_700_000_000))
         .sign_with_keys(identity.keys())
         .expect("signed event");
-        serde_json::from_str(event.as_json().as_str()).expect("event wire")
+        event.as_json()
+    }
+
+    fn raw_event_with_field(
+        raw_event_json: String,
+        field: &str,
+        value: serde_json::Value,
+    ) -> String {
+        let mut event: serde_json::Value =
+            serde_json::from_str(raw_event_json.as_str()).expect("raw event json");
+        event[field] = value;
+        serde_json::to_string(&event).expect("mutated raw event")
     }
 
     fn publish_request(
-        event: SignedEventWire,
+        raw_event_json: String,
         relays: Vec<String>,
         source_policy: NostrPublishTargetSourcePolicy,
         delivery_policy: TransportPublishDeliveryPolicy,
         idempotency_key: Option<&str>,
     ) -> TransportPublishEventRequest {
         TransportPublishEventRequest {
-            event,
+            raw_event_json,
             target_policy: TransportPublishTargetPolicy::nostr(source_policy, relays),
             delivery_policy,
             idempotency_key: idempotency_key.map(str::to_owned),
@@ -3269,11 +3269,11 @@ mod tests {
     }
 
     fn reticulum_publish_request(
-        event: SignedEventWire,
+        raw_event_json: String,
         behavior: TransportPublishPreviewBehavior,
     ) -> TransportPublishEventRequest {
         TransportPublishEventRequest {
-            event,
+            raw_event_json,
             target_policy: TransportPublishTargetPolicy::explicit_targets(vec![
                 TransportPublishTarget::reticulum_preview(behavior),
             ]),
@@ -3610,11 +3610,13 @@ mod tests {
         let store = TransportPublishStore::memory().expect("store");
         let token = generate_bearer_token();
         let token_hash = hash_bearer_token(token.as_str());
+        let accepted_identity = RadrootsIdentity::generate();
+        let denied_identity = RadrootsIdentity::generate();
         let principal = store
             .create_principal(PublishPrincipalInit {
                 label: "tester".to_owned(),
                 token_hash: token_hash.clone(),
-                allowed_pubkeys: vec!["a".repeat(64)],
+                allowed_pubkeys: vec![accepted_identity.public_key_hex()],
                 allowed_kinds: vec![30_402],
                 allowed_target_policies: vec![TransportPublishTargetPolicyName::Nostr],
                 allowed_explicit_transport_kinds: Vec::new(),
@@ -3634,15 +3636,34 @@ mod tests {
                 .principal_id,
             principal.principal_id
         );
-        let denied = request("b".repeat(64).as_str(), 30_402);
-        assert!(principal.allows_event(&denied).is_err());
+        let denied = publish_request(
+            signed_event(&denied_identity, "{}"),
+            Vec::new(),
+            NostrPublishTargetSourcePolicy::DaemonDefaultOnly,
+            TransportPublishDeliveryPolicy::Any,
+            None,
+        );
+        let denied_signed =
+            super::signed_event_from_raw_json(denied.raw_event_json.as_str()).expect("denied raw");
+        assert!(principal.allows_event(&denied_signed, &denied).is_err());
 
-        let accepted = request("a".repeat(64).as_str(), 30_402);
-        principal.allows_event(&accepted).expect("scope");
+        let accepted = publish_request(
+            signed_event(&accepted_identity, "{}"),
+            Vec::new(),
+            NostrPublishTargetSourcePolicy::DaemonDefaultOnly,
+            TransportPublishDeliveryPolicy::Any,
+            None,
+        );
+        let accepted_signed = super::signed_event_from_raw_json(accepted.raw_event_json.as_str())
+            .expect("accepted raw");
+        principal
+            .allows_event(&accepted_signed, &accepted)
+            .expect("scope");
         let response = store
             .record_publish_job(PublishJobInsert {
                 principal_id: principal.principal_id.clone(),
                 idempotency_key: Some("idem-1".to_owned()),
+                event: PublishEventMetadata::from_signed_event(&accepted_signed),
                 request: accepted.clone(),
                 request_fingerprint: "fingerprint-1".to_owned(),
                 effective_target_count: 1,
@@ -3657,6 +3678,7 @@ mod tests {
             .record_publish_job(PublishJobInsert {
                 principal_id: principal.principal_id.clone(),
                 idempotency_key: Some("idem-1".to_owned()),
+                event: PublishEventMetadata::from_signed_event(&accepted_signed),
                 request: accepted,
                 request_fingerprint: "fingerprint-1".to_owned(),
                 effective_target_count: 1,
@@ -3687,6 +3709,7 @@ mod tests {
             .record_publish_job(PublishJobInsert {
                 principal_id: principal.principal_id.clone(),
                 idempotency_key: Some("idem-invalid-target-count".to_owned()),
+                event: event_metadata(pubkey.as_str(), 30_402),
                 request: request.clone(),
                 request_fingerprint: "fingerprint-invalid-target-count".to_owned(),
                 effective_target_count: 1,
@@ -3737,6 +3760,7 @@ mod tests {
                 .record_publish_job(PublishJobInsert {
                     principal_id: principal.principal_id.clone(),
                     idempotency_key: Some("idem-invalid-target-count".to_owned()),
+                    event: event_metadata(pubkey.as_str(), 30_402),
                     request,
                     request_fingerprint: "fingerprint-invalid-target-count".to_owned(),
                     effective_target_count: 1,
@@ -3752,7 +3776,7 @@ mod tests {
 
     #[test]
     fn store_egress_rejects_impossible_persisted_event_kind_values() {
-        for invalid_kind in [-1_i64, i64::from(u16::MAX) + 1] {
+        for invalid_kind in [-1_i64, i64::from(u32::MAX) + 1] {
             let store = TransportPublishStore::memory().expect("store");
             let pubkey = "a".repeat(64);
             let principal = store_principal(&store, pubkey.as_str());
@@ -3761,6 +3785,7 @@ mod tests {
                 .record_publish_job(PublishJobInsert {
                     principal_id: principal.principal_id.clone(),
                     idempotency_key: Some(format!("idem-invalid-kind-{invalid_kind}")),
+                    event: event_metadata(pubkey.as_str(), 30_402),
                     request: request.clone(),
                     request_fingerprint: format!("fingerprint-invalid-kind-{invalid_kind}"),
                     effective_target_count: 1,
@@ -3811,6 +3836,7 @@ mod tests {
                     .record_publish_job(PublishJobInsert {
                         principal_id: principal.principal_id.clone(),
                         idempotency_key: Some(format!("idem-invalid-kind-{invalid_kind}")),
+                        event: event_metadata(pubkey.as_str(), 30_402),
                         request,
                         request_fingerprint: format!("fingerprint-invalid-kind-{invalid_kind}"),
                         effective_target_count: 1,
@@ -3835,6 +3861,7 @@ mod tests {
             .record_publish_job(PublishJobInsert {
                 principal_id: principal.principal_id.clone(),
                 idempotency_key: Some("idem-negative-target-count".to_owned()),
+                event: event_metadata(pubkey.as_str(), 30_402),
                 request: request.clone(),
                 request_fingerprint: "fingerprint-negative-target-count".to_owned(),
                 effective_target_count: 1,
@@ -3885,6 +3912,7 @@ mod tests {
                 .record_publish_job(PublishJobInsert {
                     principal_id: principal.principal_id.clone(),
                     idempotency_key: Some("idem-negative-target-count".to_owned()),
+                    event: event_metadata(pubkey.as_str(), 30_402),
                     request,
                     request_fingerprint: "fingerprint-negative-target-count".to_owned(),
                     effective_target_count: 1,
@@ -3908,6 +3936,7 @@ mod tests {
             .record_publish_job(PublishJobInsert {
                 principal_id: principal.principal_id.clone(),
                 idempotency_key: Some("idem-negative-latency".to_owned()),
+                event: event_metadata(pubkey.as_str(), 30_402),
                 request: request.clone(),
                 request_fingerprint: "fingerprint-negative-latency".to_owned(),
                 effective_target_count: 1,
@@ -3958,6 +3987,7 @@ mod tests {
                 .record_publish_job(PublishJobInsert {
                     principal_id: principal.principal_id.clone(),
                     idempotency_key: Some("idem-negative-latency".to_owned()),
+                    event: event_metadata(pubkey.as_str(), 30_402),
                     request,
                     request_fingerprint: "fingerprint-negative-latency".to_owned(),
                     effective_target_count: 1,
@@ -3985,6 +4015,7 @@ mod tests {
             .record_publish_job(PublishJobInsert {
                 principal_id: principal.principal_id.clone(),
                 idempotency_key: Some("idem-explicit-drift".to_owned()),
+                event: event_metadata(pubkey.as_str(), 30_402),
                 request,
                 request_fingerprint: "fingerprint-explicit-drift".to_owned(),
                 effective_target_count: 1,
@@ -4029,6 +4060,7 @@ mod tests {
             .record_publish_job(PublishJobInsert {
                 principal_id: principal.principal_id.clone(),
                 idempotency_key: Some("idem-explicit-scope-drift".to_owned()),
+                event: event_metadata(pubkey.as_str(), 30_402),
                 request,
                 request_fingerprint: "fingerprint-explicit-scope-drift".to_owned(),
                 effective_target_count: 1,
@@ -4073,7 +4105,7 @@ mod tests {
                 .create_principal(PublishPrincipalInit {
                     label: "tester".to_owned(),
                     token_hash,
-                    allowed_pubkeys: vec![pubkey],
+                    allowed_pubkeys: vec![pubkey.clone()],
                     allowed_kinds: vec![30_402],
                     allowed_target_policies: vec![TransportPublishTargetPolicyName::Nostr],
                     allowed_explicit_transport_kinds: Vec::new(),
@@ -4089,6 +4121,7 @@ mod tests {
                 .record_publish_job(PublishJobInsert {
                     principal_id: principal.principal_id.clone(),
                     idempotency_key: Some("idem-interrupted".to_owned()),
+                    event: event_metadata(pubkey.as_str(), 30_402),
                     request,
                     request_fingerprint: "fingerprint-interrupted".to_owned(),
                     effective_target_count: 1,
@@ -4144,6 +4177,7 @@ mod tests {
                 .record_publish_job(PublishJobInsert {
                     principal_id: principal.principal_id.clone(),
                     idempotency_key: Some("idem-interrupted-scoped".to_owned()),
+                    event: event_metadata(pubkey.as_str(), 30_402),
                     request,
                     request_fingerprint: "fingerprint-interrupted-scoped".to_owned(),
                     effective_target_count: 1,
@@ -4205,6 +4239,7 @@ mod tests {
                 .record_publish_job(PublishJobInsert {
                     principal_id: principal.principal_id.clone(),
                     idempotency_key: Some("idem-recovered-drift".to_owned()),
+                    event: event_metadata(pubkey.as_str(), 30_402),
                     request,
                     request_fingerprint: "fingerprint-recovered-drift".to_owned(),
                     effective_target_count: 1,
@@ -4247,7 +4282,7 @@ mod tests {
                 .create_principal(PublishPrincipalInit {
                     label: "tester".to_owned(),
                     token_hash,
-                    allowed_pubkeys: vec![pubkey],
+                    allowed_pubkeys: vec![pubkey.clone()],
                     allowed_kinds: vec![30_402],
                     allowed_target_policies: vec![TransportPublishTargetPolicyName::Nostr],
                     allowed_explicit_transport_kinds: Vec::new(),
@@ -4293,9 +4328,9 @@ mod tests {
                         "fingerprint-missing-snapshot",
                         serde_json::to_string(&TransportPublishJobStatus::Publishing)
                             .expect("status"),
-                        request.event.id,
-                        request.event.pubkey,
-                        request.event.kind,
+                        "0".repeat(64),
+                        pubkey,
+                        30_402_i64,
                         serde_json::to_string(&request.target_policy).expect("target policy"),
                         serde_json::to_string(&request.delivery_policy).expect("delivery policy"),
                         request.target_policy.request_target_count(),
@@ -4651,7 +4686,7 @@ mod tests {
             PublishJobVisibility::Own,
         );
         let event = signed_event(&identity, "{}");
-        let raw_event = serde_json::to_string(&event).expect("raw event");
+        let raw_event = event.clone();
         let response = proxy
             .publish_event(
                 &principal,
@@ -4692,8 +4727,11 @@ mod tests {
             false,
             PublishJobVisibility::Own,
         );
-        let mut event = signed_event(&identity, "trusted");
-        event.content = "tampered".to_owned();
+        let event = raw_event_with_field(
+            signed_event(&identity, "trusted"),
+            "content",
+            serde_json::Value::String("tampered".to_owned()),
+        );
         let error = proxy
             .publish_event(
                 &principal,
@@ -4708,12 +4746,7 @@ mod tests {
             .await
             .expect_err("tampered event should fail");
 
-        assert!(matches!(
-            error,
-            TransportPublishError::SignedEventVerification(
-                RadrootsNostrEventVerification::IdMismatch
-            )
-        ));
+        assert!(matches!(error, TransportPublishError::EventWire(_)));
         assert!(adapter.captured_raw_events().is_empty());
     }
 
@@ -4728,9 +4761,13 @@ mod tests {
             false,
             PublishJobVisibility::Own,
         );
-        let mut event = signed_event(&identity, "{}");
-        let replacement = if event.sig.starts_with('0') { "1" } else { "0" };
-        event.sig.replace_range(0..1, replacement);
+        let event = signed_event(&identity, "{}");
+        let parsed: serde_json::Value = serde_json::from_str(event.as_str()).expect("event json");
+        let sig = parsed["sig"].as_str().expect("sig");
+        let replacement = if sig.starts_with('0') { "1" } else { "0" };
+        let mut tampered_sig = sig.to_owned();
+        tampered_sig.replace_range(0..1, replacement);
+        let event = raw_event_with_field(event, "sig", serde_json::Value::String(tampered_sig));
         let error = proxy
             .publish_event(
                 &principal,
@@ -4747,9 +4784,7 @@ mod tests {
 
         assert!(matches!(
             error,
-            TransportPublishError::SignedEventVerification(
-                RadrootsNostrEventVerification::SignatureInvalid
-            )
+            TransportPublishError::SignedEventSignature(_)
         ));
         assert!(adapter.captured_raw_events().is_empty());
     }
@@ -4765,8 +4800,10 @@ mod tests {
             false,
             PublishJobVisibility::Own,
         );
-        let mut event = signed_event(&identity, "{}");
-        event.id = event.id.to_uppercase();
+        let event = signed_event(&identity, "{}");
+        let parsed: serde_json::Value = serde_json::from_str(event.as_str()).expect("event json");
+        let event_id = parsed["id"].as_str().expect("event id").to_uppercase();
+        let event = raw_event_with_field(event, "id", serde_json::Value::String(event_id));
         let error = proxy
             .publish_event(
                 &principal,
@@ -4781,10 +4818,7 @@ mod tests {
             .await
             .expect_err("malformed field should fail");
 
-        assert!(matches!(
-            error,
-            TransportPublishError::InvalidSignedEvent(_)
-        ));
+        assert!(matches!(error, TransportPublishError::EventWire(_)));
         assert!(adapter.captured_raw_events().is_empty());
     }
 
@@ -5181,9 +5215,9 @@ mod tests {
         let principal =
             explicit_target_principal(&proxy, identity.public_key_hex(), PublishJobVisibility::Own);
         let event = signed_event(&identity, "{}");
-        let raw_event = serde_json::to_string(&event).expect("raw event");
+        let raw_event = event.clone();
         let request = TransportPublishEventRequest {
-            event,
+            raw_event_json: event,
             target_policy: TransportPublishTargetPolicy::explicit_targets(vec![
                 TransportPublishTarget::nostr(RELAY_PRIMARY),
             ]),
@@ -5219,9 +5253,9 @@ mod tests {
         let principal =
             explicit_target_principal(&proxy, identity.public_key_hex(), PublishJobVisibility::Own);
         let event = signed_event(&identity, "{}");
-        let raw_event = serde_json::to_string(&event).expect("raw event");
+        let raw_event = event.clone();
         let request = TransportPublishEventRequest {
-            event,
+            raw_event_json: event,
             target_policy: TransportPublishTargetPolicy::explicit_targets(vec![
                 TransportPublishTarget::nostr(RELAY_PRIMARY)
                     .with_scope("farm.local")
@@ -5266,9 +5300,9 @@ mod tests {
         let principal =
             explicit_target_principal(&proxy, identity.public_key_hex(), PublishJobVisibility::Own);
         let event = signed_event(&identity, "{}");
-        let raw_event = serde_json::to_string(&event).expect("raw event");
+        let raw_event = event.clone();
         let request = TransportPublishEventRequest {
-            event,
+            raw_event_json: event,
             target_policy: TransportPublishTargetPolicy::explicit_targets(vec![
                 TransportPublishTarget::nostr(RELAY_PRIMARY)
                     .with_scope("farm.a")
@@ -5337,7 +5371,7 @@ mod tests {
         let required_target =
             RadrootsTransportTarget::nostr_relay(RELAY_PRIMARY).expect("required target");
         let request = TransportPublishEventRequest {
-            event: signed_event(&identity, "{}"),
+            raw_event_json: signed_event(&identity, "{}"),
             target_policy: TransportPublishTargetPolicy::explicit_targets(vec![
                 TransportPublishTarget::nostr(RELAY_PRIMARY),
                 TransportPublishTarget::nostr(RELAY_SECONDARY),
@@ -5384,7 +5418,7 @@ mod tests {
         let required_target =
             RadrootsTransportTarget::nostr_relay(RELAY_PRIMARY).expect("required target");
         let request = TransportPublishEventRequest {
-            event: signed_event(&identity, "{}"),
+            raw_event_json: signed_event(&identity, "{}"),
             target_policy: TransportPublishTargetPolicy::explicit_targets(vec![
                 TransportPublishTarget::nostr(RELAY_PRIMARY),
                 TransportPublishTarget::nostr(RELAY_SECONDARY),
@@ -5425,7 +5459,7 @@ mod tests {
         let stale_target =
             RadrootsTransportTarget::nostr_relay(RELAY_SECONDARY).expect("stale target");
         let request = TransportPublishEventRequest {
-            event: signed_event(&identity, "{}"),
+            raw_event_json: signed_event(&identity, "{}"),
             target_policy: TransportPublishTargetPolicy::explicit_targets(vec![
                 TransportPublishTarget::nostr(RELAY_PRIMARY),
             ]),
@@ -5464,7 +5498,7 @@ mod tests {
         let principal =
             explicit_target_principal(&proxy, identity.public_key_hex(), PublishJobVisibility::Own);
         let request = TransportPublishEventRequest {
-            event: signed_event(&identity, "{}"),
+            raw_event_json: signed_event(&identity, "{}"),
             target_policy: TransportPublishTargetPolicy::explicit_targets(vec![
                 TransportPublishTarget::nostr(RELAY_PRIMARY),
                 TransportPublishTarget::nostr(RELAY_PRIMARY),

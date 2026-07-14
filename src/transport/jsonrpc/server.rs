@@ -259,14 +259,14 @@ mod tests {
                 "jsonrpc":"2.0",
                 "method":"transport.publish.event",
                 "params":{{
-                    "event":{},
+                    "raw_event_json":{},
                     "target_policy":{{"kind":"nostr","source_policy":"daemon_default_only","relay_urls":[]}},
                     "delivery_policy":{{"mode":"any"}},
                     "idempotency_key":"raw-http-idem"
                 }},
                 "id":1
             }}"#,
-            event_json
+            serde_json::to_string(&event_json).expect("raw event param")
         );
         let publish_response = post_json(addr, publish.as_str(), Some(token.as_str())).await;
         let publish_value = json_response_body(publish_response.as_str());
@@ -329,14 +329,14 @@ mod tests {
                 "jsonrpc":"2.0",
                 "method":"transport.publish.event",
                 "params":{{
-                    "event":{},
+                    "raw_event_json":{},
                     "target_policy":{{"kind":"nostr","source_policy":"daemon_default_only","relay_urls":[]}},
                     "delivery_policy":{{"mode":"any"}},
                     "idempotency_key":"raw-http-public-dns-reject"
                 }},
                 "id":1
             }}"#,
-            event_json
+            serde_json::to_string(&event_json).expect("raw event param")
         );
         let publish_response = post_json(addr, publish.as_str(), Some(token.as_str())).await;
         handle.stop().expect("stop server");
@@ -365,12 +365,12 @@ mod tests {
                 "jsonrpc":"2.0",
                 "method":"transport.publish.event",
                 "params":{{
-                    "event":{},
+                    "raw_event_json":{},
                     "target_policy":{{"kind":"nostr","source_policy":"daemon_default_only","relay_urls":[]}},
                     "delivery_policy":{{"mode":"any"}}
                 }}
             }}"#,
-            signed_event_json(&identity)
+            serde_json::to_string(&signed_event_json(&identity)).expect("raw event param")
         );
         let response = post_json(addr, notification.as_str(), Some(token.as_str())).await;
         handle.stop().expect("stop server");
@@ -401,13 +401,13 @@ mod tests {
                 "jsonrpc":"2.0",
                 "method":"transport.publish.event",
                 "params":{{
-                    "event":{},
+                    "raw_event_json":{},
                     "target_policy":{{"kind":"nostr","source_policy":"daemon_default_only","relay_urls":[]}},
                     "delivery_policy":{{"mode":"any"}}
                 }},
                 "id":1
             }}]"#,
-            signed_event_json(&identity)
+            serde_json::to_string(&signed_event_json(&identity)).expect("raw event param")
         );
         let response = post_json(addr, batch.as_str(), Some(token.as_str())).await;
         handle.stop().expect("stop server");

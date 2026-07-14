@@ -1789,6 +1789,7 @@ version = "0.1.0-alpha.2"
 dependencies = [
  "hex",
  "radroots_core",
+ "secp256k1",
  "serde",
  "serde_json",
  "sha2",

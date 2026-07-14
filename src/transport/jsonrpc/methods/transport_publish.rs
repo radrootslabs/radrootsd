@@ -37,7 +37,7 @@ fn register_capabilities(
     registry.track(METHOD_CAPABILITIES);
     module.register_async_method(METHOD_CAPABILITIES, |_params, ctx, extensions| async move {
         require_publish_principal(&extensions)?;
-        Ok::<TransportPublishCapabilities, RpcError>(TransportPublishCapabilities::v4(
+        Ok::<TransportPublishCapabilities, RpcError>(TransportPublishCapabilities::v5(
             ctx.state.transport_publish.config.max_event_bytes,
             ctx.state.transport_publish.config.max_targets_per_request,
         ))
@@ -116,8 +116,9 @@ fn rpc_error_from_transport_publish(error: TransportPublishError) -> RpcError {
     match error {
         TransportPublishError::InvalidScope(message) => RpcError::Unauthorized(message),
         TransportPublishError::InvalidSignedEvent(message) => RpcError::InvalidParams(message),
-        TransportPublishError::SignedEventVerification(_)
-        | TransportPublishError::Draft(_)
+        TransportPublishError::EventWire(_)
+        | TransportPublishError::SignedEvent(_)
+        | TransportPublishError::SignedEventSignature(_)
         | TransportPublishError::Relay(_) => RpcError::InvalidParams(error.to_string()),
         TransportPublishError::IdempotencyConflict(_) => RpcError::Other(error.to_string()),
         other => RpcError::Other(other.to_string()),
@@ -146,10 +147,10 @@ mod tests {
     };
     use radroots_transport_nostr::RadrootsMockRelayPublishAdapter;
     use radroots_transport_publish_protocol::{
-        NostrPublishTargetSourcePolicy, SignedEventWire, TransportPublishTargetPolicyName,
+        NostrPublishTargetSourcePolicy, TransportPublishTargetPolicyName,
     };
 
-    fn signed_event(identity: &RadrootsIdentity) -> SignedEventWire {
+    fn signed_event(identity: &RadrootsIdentity) -> String {
         let event = radroots_nostr_build_event(
             30_402,
             "{}",
@@ -159,13 +160,13 @@ mod tests {
         .custom_created_at(RadrootsNostrTimestamp::from_secs(1_700_000_000))
         .sign_with_keys(identity.keys())
         .expect("signed event");
-        serde_json::from_str(event.as_json().as_str()).expect("event wire")
+        event.as_json()
     }
 
     fn module_with_principal_and_config(
         admin: bool,
         transport_publish_config: TransportPublishConfig,
-    ) -> (RpcModule<RpcContext>, RpcContext, String, SignedEventWire) {
+    ) -> (RpcModule<RpcContext>, RpcContext, String, String) {
         let identity = RadrootsIdentity::generate();
         let signed_event = signed_event(&identity);
         let metadata: RadrootsNostrMetadata =
@@ -214,9 +215,7 @@ mod tests {
         (module, ctx, token, signed_event)
     }
 
-    fn module_with_principal(
-        admin: bool,
-    ) -> (RpcModule<RpcContext>, RpcContext, String, SignedEventWire) {
+    fn module_with_principal(admin: bool) -> (RpcModule<RpcContext>, RpcContext, String, String) {
         module_with_principal_and_config(
             admin,
             TransportPublishConfig {
@@ -237,7 +236,7 @@ mod tests {
                 "jsonrpc":"2.0",
                 "method":"transport.publish.event",
                 "params":{{
-                    "event":{},
+                    "raw_event_json":{},
                     "target_policy":{{"kind":"nostr","source_policy":"daemon_default_only","relay_urls":[]}},
                     "delivery_policy":{{"mode":"any"}},
                     "idempotency_key":"idem-1"
@@ -268,7 +267,7 @@ mod tests {
                 "jsonrpc":"2.0",
                 "method":"transport.publish.event",
                 "params":{{
-                    "event":{},
+                    "raw_event_json":{},
                     "target_policy":{{"kind":"nostr","source_policy":"daemon_default_only","relay_urls":[]}},
                     "delivery_policy":{{"mode":"any"}}
                 }},
@@ -357,7 +356,7 @@ mod tests {
                     "jsonrpc":"2.0",
                     "method":"transport.publish.event",
                     "params":{{
-                        "event":{},
+                        "raw_event_json":{},
                     "target_policy":{{"kind":"nostr","source_policy":"daemon_default_only","relay_urls":[]}},
                         "delivery_policy":{{"mode":"any"}},
                         "idempotency_key":"{idempotency_key}"
