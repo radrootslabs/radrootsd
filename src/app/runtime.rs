@@ -27,9 +27,13 @@ use radroots_nostr::prelude::{
 use std::path::PathBuf;
 
 #[cfg(test)]
-static RUN_LOAD_HOOK: std::sync::OnceLock<
-    std::sync::Mutex<Option<Result<(cli::Args, config::Settings), String>>>,
-> = std::sync::OnceLock::new();
+type RunLoadHookValue = Result<(cli::Args, config::Settings), String>;
+
+#[cfg(test)]
+type RunLoadHook = std::sync::Mutex<Option<RunLoadHookValue>>;
+
+#[cfg(test)]
+static RUN_LOAD_HOOK: std::sync::OnceLock<RunLoadHook> = std::sync::OnceLock::new();
 
 #[cfg(test)]
 static RUN_BOOTSTRAP_HOOK: std::sync::OnceLock<std::sync::Mutex<Option<Result<(), String>>>> =
@@ -71,8 +75,7 @@ struct RadrootsdRuntimeStartupReport {
 }
 
 #[cfg(test)]
-fn run_load_hook()
--> &'static std::sync::Mutex<Option<Result<(cli::Args, config::Settings), String>>> {
+fn run_load_hook() -> &'static RunLoadHook {
     RUN_LOAD_HOOK.get_or_init(|| std::sync::Mutex::new(None))
 }
 
@@ -134,7 +137,7 @@ fn load_args_and_settings() -> Result<(cli::Args, config::Settings)> {
         if let Some(result) = take_load_hook_result() {
             return result.map_err(anyhow::Error::msg);
         }
-        return Err(anyhow::anyhow!("run loader hook not set"));
+        Err(anyhow::anyhow!("run loader hook not set"))
     }
 
     #[cfg(not(test))]
@@ -322,7 +325,6 @@ async fn maybe_publish_service_presence(
         } else {
             info!("Published service presence on startup");
         }
-        return;
     }
 
     #[cfg(not(test))]
@@ -526,14 +528,12 @@ mod tests {
     use radroots_nostr::prelude::RadrootsNostrMetadata;
     use std::path::Path;
     use std::path::PathBuf;
-    use std::sync::{Mutex, MutexGuard};
+    use tokio::sync::{Mutex, MutexGuard};
 
-    static TEST_LOCK: Mutex<()> = Mutex::new(());
+    static TEST_LOCK: Mutex<()> = Mutex::const_new(());
 
-    fn test_guard() -> MutexGuard<'static, ()> {
-        let guard = TEST_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+    async fn test_guard() -> MutexGuard<'static, ()> {
+        let guard = TEST_LOCK.lock().await;
         *run_load_hook()
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
@@ -652,7 +652,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_returns_error_when_hook_is_missing() {
-        let _guard = test_guard();
+        let _guard = test_guard().await;
         let err = run().await.expect_err("missing loader hook should error");
         let msg = format!("{err:#}");
         assert!(msg.contains("run loader hook not set"));
@@ -660,7 +660,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_returns_error_when_identity_missing() {
-        let _guard = test_guard();
+        let _guard = test_guard().await;
         let args = args_for_identity(PathBuf::from("/tmp/radrootsd-missing.secret.json"), false);
         let settings = settings_with_relays(Vec::new());
         *run_load_hook()
@@ -673,7 +673,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_covers_shutdown_path_and_presence_success() {
-        let _guard = test_guard();
+        let _guard = test_guard().await;
         let path = unique_identity_path("shutdown");
         let args = args_for_identity(path.clone(), true);
         let settings = settings_with_relays(vec!["wss://relay.example.com".to_string()]);
@@ -697,7 +697,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_covers_stopped_path_and_presence_failure() {
-        let _guard = test_guard();
+        let _guard = test_guard().await;
         let path = unique_identity_path("stopped");
         let args = args_for_identity(path.clone(), true);
         let settings = settings_with_relays(vec!["wss://relay.example.com".to_string()]);
@@ -722,7 +722,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_skips_presence_when_relays_empty() {
-        let _guard = test_guard();
+        let _guard = test_guard().await;
         let path = unique_identity_path("empty");
         let args = args_for_identity(path.clone(), true);
         let settings = settings_with_relays(Vec::new());
@@ -743,7 +743,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_returns_error_when_relay_is_invalid() {
-        let _guard = test_guard();
+        let _guard = test_guard().await;
         let path = unique_identity_path("invalid-relay");
         let args = args_for_identity(path.clone(), true);
         let settings = settings_with_relays(vec!["not-a-relay".to_string()]);
@@ -758,7 +758,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_returns_error_when_rpc_addr_is_invalid() {
-        let _guard = test_guard();
+        let _guard = test_guard().await;
         let path = unique_identity_path("invalid-rpc-addr");
         let args = args_for_identity(path.clone(), true);
         let mut settings = settings_with_relays(Vec::new());
@@ -774,7 +774,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_returns_error_when_rpc_start_fails() {
-        let _guard = test_guard();
+        let _guard = test_guard().await;
         let path = unique_identity_path("rpc-start-fail");
         let args = args_for_identity(path.clone(), true);
         let settings = settings_with_relays(Vec::new());
@@ -793,7 +793,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_waits_for_stopped_when_wait_hook_is_not_set() {
-        let _guard = test_guard();
+        let _guard = test_guard().await;
         let path = unique_identity_path("wait-no-hook");
         let args = args_for_identity(path.clone(), true);
         let settings = settings_with_relays(Vec::new());
@@ -811,7 +811,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_starts_rpc_when_start_hook_is_not_set() {
-        let _guard = test_guard();
+        let _guard = test_guard().await;
         let path = unique_identity_path("start-rpc-real");
         let args = args_for_identity(path.clone(), true);
         let settings = settings_with_relays(Vec::new());

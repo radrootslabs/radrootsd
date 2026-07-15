@@ -107,7 +107,7 @@ async fn connect_bunker(
         .await;
 
     let request = NostrConnectRequest::Connect {
-        remote_signer_public_key: remote_signer_pubkey.clone(),
+        remote_signer_public_key: remote_signer_pubkey,
         secret: info.secret.clone(),
     };
     let message = NostrConnectMessage::request(&request);
@@ -287,12 +287,9 @@ async fn send_connect_request(
     remote_signer_pubkey: &RadrootsNostrPublicKey,
     message: NostrConnectMessage,
 ) -> Result<(), RpcError> {
-    let event = RadrootsNostrEventBuilder::nostr_connect(
-        client_keys,
-        remote_signer_pubkey.clone(),
-        message,
-    )
-    .map_err(|e| RpcError::Other(format!("nip46 connect request failed: {e}")))?;
+    let event =
+        RadrootsNostrEventBuilder::nostr_connect(client_keys, *remote_signer_pubkey, message)
+            .map_err(|e| RpcError::Other(format!("nip46 connect request failed: {e}")))?;
     client
         .send_event_builder(event)
         .await
@@ -307,7 +304,7 @@ fn connect_response_filter(
 ) -> Result<RadrootsNostrFilter, RpcError> {
     let filter = RadrootsNostrFilter::new()
         .kind(RadrootsNostrKind::NostrConnect)
-        .author(remote_signer_pubkey.clone())
+        .author(*remote_signer_pubkey)
         .since(since);
     radroots_nostr_filter_tag(filter, "p", vec![client_pubkey.to_hex()])
         .map_err(|e| RpcError::Other(format!("nip46 connect filter failed: {e}")))

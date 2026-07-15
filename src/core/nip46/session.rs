@@ -201,6 +201,12 @@ impl Nip46SessionStore {
     }
 }
 
+impl Default for Nip46SessionStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Nip46Session {
     pub fn normalize_authority(
         authority: Option<Nip46SessionAuthority>,

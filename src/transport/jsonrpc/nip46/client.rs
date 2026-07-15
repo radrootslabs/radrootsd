@@ -72,7 +72,7 @@ pub async fn request(
         .map_err(|e| RpcError::Other(format!("nip46 {label} failed: {e}")))?;
     let event = RadrootsNostrEventBuilder::nostr_connect(
         &session.client_keys,
-        session.remote_signer_pubkey.clone(),
+        session.remote_signer_pubkey,
         message,
     )
     .map_err(|e| RpcError::Other(format!("nip46 {label} failed: {e}")))?;
@@ -104,7 +104,7 @@ fn response_filter(
 ) -> Result<RadrootsNostrFilter, RpcError> {
     let filter = RadrootsNostrFilter::new()
         .kind(RadrootsNostrKind::NostrConnect)
-        .author(session.remote_signer_pubkey.clone())
+        .author(session.remote_signer_pubkey)
         .since(since);
     radroots_nostr_filter_tag(filter, "p", vec![session.client_pubkey.to_hex()])
         .map_err(|e| RpcError::Other(format!("nip46 {label} failed: {e}")))

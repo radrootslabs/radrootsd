@@ -129,7 +129,7 @@ pub(crate) async fn handle_request(
                 id: session_id,
                 client: radrootsd.client.clone(),
                 client_keys: radrootsd.keys.clone(),
-                client_pubkey: client_pubkey.clone(),
+                client_pubkey: *client_pubkey,
                 remote_signer_pubkey: radrootsd.pubkey,
                 user_pubkey: Some(radrootsd.pubkey),
                 relays: Vec::new(),
@@ -193,7 +193,7 @@ pub(crate) async fn handle_request(
                 request_id,
                 client_pubkey,
                 NostrConnectRequest::Nip04Encrypt {
-                    public_key: public_key.clone(),
+                    public_key,
                     text: text.clone(),
                 },
             )
@@ -227,7 +227,7 @@ pub(crate) async fn handle_request(
                 request_id,
                 client_pubkey,
                 NostrConnectRequest::Nip04Decrypt {
-                    public_key: public_key.clone(),
+                    public_key,
                     ciphertext: ciphertext.clone(),
                 },
             )
@@ -258,7 +258,7 @@ pub(crate) async fn handle_request(
                 request_id,
                 client_pubkey,
                 NostrConnectRequest::Nip44Encrypt {
-                    public_key: public_key.clone(),
+                    public_key,
                     text: text.clone(),
                 },
             )
@@ -297,7 +297,7 @@ pub(crate) async fn handle_request(
                 request_id,
                 client_pubkey,
                 NostrConnectRequest::Nip44Decrypt {
-                    public_key: public_key.clone(),
+                    public_key,
                     ciphertext: ciphertext.clone(),
                 },
             )
@@ -349,7 +349,7 @@ async fn auth_challenge(
     }
     let pending = PendingNostrRequest {
         request_id: request_id.to_string(),
-        client_pubkey: client_pubkey.clone(),
+        client_pubkey: *client_pubkey,
         request,
     };
     let _ = radrootsd

@@ -64,14 +64,12 @@ async fn run() -> Result<()> {
 mod tests {
     use super::{exit_code_from_run, main, run, run_hook};
     use std::process::ExitCode;
-    use std::sync::Mutex;
+    use tokio::sync::{Mutex, MutexGuard};
 
-    static TEST_LOCK: Mutex<()> = Mutex::new(());
+    static TEST_LOCK: Mutex<()> = Mutex::const_new(());
 
-    fn test_guard() -> std::sync::MutexGuard<'static, ()> {
-        let guard = TEST_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+    async fn test_guard() -> MutexGuard<'static, ()> {
+        let guard = TEST_LOCK.lock().await;
         *run_hook()
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
@@ -94,7 +92,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_returns_error_when_hook_is_missing() {
-        let _guard = test_guard();
+        let _guard = test_guard().await;
         let err = run().await.expect_err("hook missing should error");
         let msg = format!("{err:#}");
         assert!(msg.contains("run hook not set"));
@@ -102,7 +100,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_uses_hook_result() {
-        let _guard = test_guard();
+        let _guard = test_guard().await;
         *run_hook()
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Ok(()));

@@ -504,20 +504,30 @@ mod tests {
 
     #[test]
     fn transport_publish_validation_rejects_zero_limits() {
-        let mut cfg = TransportPublishConfig::default();
-        cfg.max_event_bytes = 0;
+        let cfg = TransportPublishConfig {
+            max_event_bytes: 0,
+            ..TransportPublishConfig::default()
+        };
         assert!(cfg.validate().is_err());
-        let mut cfg = TransportPublishConfig::default();
-        cfg.max_targets_per_request = 0;
+        let cfg = TransportPublishConfig {
+            max_targets_per_request: 0,
+            ..TransportPublishConfig::default()
+        };
         assert!(cfg.validate().is_err());
-        let mut cfg = TransportPublishConfig::default();
-        cfg.job_list_limit = 0;
+        let cfg = TransportPublishConfig {
+            job_list_limit: 0,
+            ..TransportPublishConfig::default()
+        };
         assert!(cfg.validate().is_err());
-        let mut cfg = TransportPublishConfig::default();
-        cfg.max_concurrent_publish_jobs = 0;
+        let cfg = TransportPublishConfig {
+            max_concurrent_publish_jobs: 0,
+            ..TransportPublishConfig::default()
+        };
         assert!(cfg.validate().is_err());
-        let mut cfg = TransportPublishConfig::default();
-        cfg.connect_timeout_secs = 0;
+        let cfg = TransportPublishConfig {
+            connect_timeout_secs: 0,
+            ..TransportPublishConfig::default()
+        };
         assert!(cfg.validate().is_err());
     }
 

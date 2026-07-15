@@ -25,15 +25,14 @@ pub fn register(m: &mut RpcModule<RpcContext>, registry: &MethodRegistry) -> Res
             .map_err(|e| RpcError::InvalidParams(e.to_string()))?;
         let session = session::get_session(ctx.as_ref(), &session_id).await?;
         let (pubkey, updated) = request_get_public_key(&session).await?;
-        if updated {
-            if !ctx
+        if updated
+            && !ctx
                 .state
                 .nip46_sessions
-                .set_user_pubkey(&session_id, pubkey.clone())
+                .set_user_pubkey(&session_id, pubkey)
                 .await
-            {
-                return Err(RpcError::Other("nip46 session update failed".to_string()));
-            }
+        {
+            return Err(RpcError::Other("nip46 session update failed".to_string()));
         }
         Ok::<Nip46GetPublicKeyResponse, RpcError>(Nip46GetPublicKeyResponse {
             pubkey: pubkey.to_hex(),

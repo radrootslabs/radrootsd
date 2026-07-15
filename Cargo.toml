@@ -36,12 +36,13 @@ nostr = { version = "0.44.2", features = ["nip46"] }
 anyhow = { version = "1" }
 clap = { version = "4", features = ["derive"] }
 jsonrpsee = { version = "0.26", features = ["server"] }
+futures-executor = { version = "0.3" }
 rand = { version = "0.9" }
-rusqlite = { version = "0.39.0", features = ["bundled"] }
 serde = { version = "1", default-features = false, features = ["derive"] }
 serde_json = { version = "1", default-features = false }
 serde_qs = { version = "1.0" }
 sha2 = { version = "0.10" }
+sqlx = { version = "0.9.0", default-features = false, features = ["derive", "sqlite-bundled"] }
 tokio = { version = "1", features = ["full"] }
 thiserror = { version = "2" }
 tower = { version = "0.5.3", features = ["util"] }
