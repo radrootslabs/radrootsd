@@ -11,7 +11,7 @@ struct ForbiddenConcept {
 const FORBIDDEN_DAEMON_TRANSPORT_CONCEPTS: &[ForbiddenConcept] = &[
     ForbiddenConcept {
         pattern: "\"radrootsd_proxy\"",
-        reason: "proxy targets must use first-class shared proxy transport modeling",
+        reason: "proxy-as-transport targets are removed",
     },
     ForbiddenConcept {
         pattern: "radrootsd.publish_proxy.v1",
@@ -180,9 +180,9 @@ fn transport_publish_sources_reject_removed_protocol_identifiers() {
             }
         }
 
-        for line in removed_reticulum_preview_endpoint_lines(source.as_str()) {
+        for line in removed_reticulum_endpoint_alias_lines(source.as_str()) {
             findings.push(format!(
-                "{relative_path}:{line} contains removed Reticulum preview endpoint `reticulum:preview`"
+                "{relative_path}:{line} contains removed Reticulum endpoint alias"
             ));
         }
     }
@@ -259,7 +259,7 @@ fn foundation_hardening_sources_reject_retired_names_and_ambiguous_docs() {
 }
 
 #[test]
-fn transport_publish_sources_reject_proxy_explicit_targets() {
+fn transport_publish_sources_reject_removed_execution_transport_targets() {
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     let protocol_source = read_source(
         manifest_dir
@@ -267,21 +267,26 @@ fn transport_publish_sources_reject_proxy_explicit_targets() {
             .as_path(),
     );
     for required in [
-        "ExplicitProxyTarget",
-        "transport_kind == RadrootsTransportKind::Proxy",
-        "cannot be used as a daemon explicit target",
+        "TransportPublishProtocolError::InvalidTransportKind { index }",
+        "RadrootsTransportKind::parse_canonical(self.transport_kind.as_str())",
+        "transport_kind_error(error, index)",
     ] {
         assert!(
             protocol_source.contains(required),
-            "transport publish protocol must retain proxy explicit-target rejection witness `{required}`"
+            "transport publish protocol must retain removed transport kind rejection witness `{required}`"
         );
     }
 
     let daemon_source = read_source(manifest_dir.join("src/core/transport_publish.rs").as_path());
-    assert!(
-        daemon_source.contains("publish_event_rejects_proxy_target_before_recording_job"),
-        "daemon transport publish tests must prove proxy explicit targets are rejected before job recording"
-    );
+    for required in [
+        "publish_event_rejects_removed_execution_kind_before_recording_job",
+        "publish_event_rejects_removed_execution_target_before_recording_job",
+    ] {
+        assert!(
+            daemon_source.contains(required),
+            "daemon transport publish tests must prove removed execution transport targets are rejected before job recording"
+        );
+    }
 }
 
 #[test]
@@ -437,7 +442,7 @@ fn transport_publish_capabilities_expose_per_transport_readiness() {
         r#"\"raw_event_json_ingress\":true"#,
         r#"\"transport\":\"reticulum\""#,
         r#"\"configured\":true"#,
-        r#"\"implementation\":\"preview_unavailable\""#,
+        r#"\"implementation\":\"real\""#,
         r#"\"usable_for_delivery\":false"#,
         r#"\"capabilities\":{\"deliver\":false,\"fetch\":false}"#,
         "RADROOTS_RETICULUM_UNAVAILABLE_MESSAGE",
@@ -489,7 +494,7 @@ fn transport_publish_capabilities_expose_per_transport_readiness() {
 }
 
 #[test]
-fn transport_publish_reticulum_preview_outcomes_use_shared_unavailable_message() {
+fn transport_publish_reticulum_unavailable_outcomes_use_shared_unavailable_message() {
     let daemon_source = read_source(
         Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("src/core/transport_publish.rs")
@@ -498,11 +503,11 @@ fn transport_publish_reticulum_preview_outcomes_use_shared_unavailable_message()
     for required in [
         "RADROOTS_RETICULUM_UNAVAILABLE_MESSAGE",
         "message: Some(RADROOTS_RETICULUM_UNAVAILABLE_MESSAGE.to_owned())",
-        "publish_event_records_reticulum_preview_unavailable_as_terminal_nonfailure",
+        "publish_event_records_reticulum_unavailable_as_deferred_until_implemented",
     ] {
         assert!(
             daemon_source.contains(required),
-            "daemon Reticulum preview publish outcomes must retain shared unavailable-message witness `{required}`"
+            "daemon Reticulum unavailable publish outcomes must retain shared unavailable-message witness `{required}`"
         );
     }
 
@@ -513,7 +518,7 @@ fn transport_publish_reticulum_preview_outcomes_use_shared_unavailable_message()
     .join(" but ");
     assert!(
         !daemon_source.contains(retired_message.as_str()),
-        "daemon Reticulum preview publish outcomes must not revive local unavailable-message copy"
+        "daemon Reticulum unavailable publish outcomes must not revive local unavailable-message copy"
     );
 }
 
@@ -653,11 +658,12 @@ fn contains_forbidden_concept(source: &str, pattern: &str) -> bool {
     })
 }
 
-fn removed_reticulum_preview_endpoint_lines(source: &str) -> Vec<usize> {
+fn removed_reticulum_endpoint_alias_lines(source: &str) -> Vec<usize> {
+    let removed_endpoint = ["reticulum", ":", "preview"].concat();
     source
-        .match_indices("reticulum:preview")
+        .match_indices(removed_endpoint.as_str())
         .filter_map(|(index, _)| {
-            let after = source[index + "reticulum:preview".len()..].chars().next();
+            let after = source[index + removed_endpoint.len()..].chars().next();
             (after != Some('-')).then(|| line_number(source, index))
         })
         .collect()

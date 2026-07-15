@@ -16,8 +16,8 @@ use radroots_nostr::prelude::{
     RadrootsNostrClient, RadrootsNostrFilter, RadrootsNostrKind, RadrootsNostrPublicKey,
 };
 use radroots_transport::{
-    RADROOTS_RETICULUM_PREVIEW_ENDPOINT_URI, RADROOTS_RETICULUM_UNAVAILABLE_MESSAGE,
-    RadrootsTransportKind, RadrootsTransportMeshScopeId, RadrootsTransportSatisfactionClass,
+    RADROOTS_RETICULUM_ENDPOINT_URI, RADROOTS_RETICULUM_UNAVAILABLE_MESSAGE, RadrootsTransportKind,
+    RadrootsTransportMeshScopeId, RadrootsTransportSatisfactionClass,
     RadrootsTransportSatisfactionPolicy, RadrootsTransportTarget,
     RadrootsTransportTargetFingerprint, RadrootsTransportTargetLabel,
 };
@@ -29,9 +29,8 @@ use radroots_transport_nostr::{
 use radroots_transport_publish_protocol::{
     NostrPublishTargetSourcePolicy, TransportPublishDeliveryPolicy, TransportPublishEventRequest,
     TransportPublishEventResponse, TransportPublishJobStatus, TransportPublishJobView,
-    TransportPublishOutcomeKind, TransportPublishPreviewBehavior, TransportPublishTarget,
-    TransportPublishTargetOutcome, TransportPublishTargetPolicy, TransportPublishTargetPolicyName,
-    TransportPublishTargetSource,
+    TransportPublishOutcomeKind, TransportPublishTarget, TransportPublishTargetOutcome,
+    TransportPublishTargetPolicy, TransportPublishTargetPolicyName, TransportPublishTargetSource,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -339,7 +338,7 @@ impl TransportPublish {
                         .await;
                 }
                 RadrootsTransportKind::Reticulum => {
-                    outcomes.push(reticulum_preview_outcome(target));
+                    outcomes.push(reticulum_unavailable_outcome(target));
                 }
                 _ => outcomes.push(unsupported_transport_outcome(target)),
             }
@@ -2471,7 +2470,7 @@ fn finalize_job_view(view: &mut TransportPublishJobView) {
         TransportPublishJobStatus::DeliverySatisfied
             | TransportPublishJobStatus::DeliveryUnsatisfiedTerminal
             | TransportPublishJobStatus::DeliveryDeferred
-            | TransportPublishJobStatus::DeliveryPreviewUnavailable
+            | TransportPublishJobStatus::DeliveryDeferredUntilImplemented
             | TransportPublishJobStatus::Rejected
     );
     view.delivery_satisfied = view.status == TransportPublishJobStatus::DeliverySatisfied;
@@ -2597,11 +2596,6 @@ pub fn parse_explicit_transport_kind(value: &str) -> Result<String, TransportPub
             "unknown explicit transport kind `{value}`: {error}"
         ))
     })?;
-    if kind == RadrootsTransportKind::Proxy {
-        return Err(TransportPublishError::InvalidScope(
-            "proxy cannot be used as a daemon explicit target transport kind".to_owned(),
-        ));
-    }
     Ok(kind.canonical_label())
 }
 
@@ -2679,23 +2673,15 @@ fn push_resolved_relay(
     }
 }
 
-fn reticulum_preview_outcome(target: &TransportPublishTarget) -> TransportPublishTargetOutcome {
-    let outcome_kind = match target.preview_behavior.unwrap_or_default() {
-        TransportPublishPreviewBehavior::RejectDeliveryAttempts => {
-            TransportPublishOutcomeKind::PreviewUnavailable
-        }
-        TransportPublishPreviewBehavior::DeferDeliveryPlans => {
-            TransportPublishOutcomeKind::DeferredUntilImplemented
-        }
-    };
+fn reticulum_unavailable_outcome(target: &TransportPublishTarget) -> TransportPublishTargetOutcome {
     TransportPublishTargetOutcome {
         transport_kind: TRANSPORT_KIND_RETICULUM.to_owned(),
         endpoint_uri: target.endpoint_uri.trim().to_owned(),
         target_scope: target.target_scope.clone(),
         target_label: target.target_label.clone(),
-        source: TransportPublishTargetSource::ReticulumPreview,
+        source: TransportPublishTargetSource::Reticulum,
         attempted: false,
-        outcome_kind,
+        outcome_kind: TransportPublishOutcomeKind::DeferredUntilImplemented,
         message: Some(RADROOTS_RETICULUM_UNAVAILABLE_MESSAGE.to_owned()),
         latency_ms: None,
     }
@@ -2912,19 +2898,13 @@ fn transport_target_from_outcome_parts(
             RadrootsTransportTarget::nostr_relay_with_metadata(endpoint_uri, scope, label)
         }
         RadrootsTransportKind::Reticulum => {
-            if endpoint_uri != RADROOTS_RETICULUM_PREVIEW_ENDPOINT_URI {
+            if endpoint_uri != RADROOTS_RETICULUM_ENDPOINT_URI {
                 return Err(radroots_transport::RadrootsTransportError::InvalidTargetUri);
             }
-            RadrootsTransportTarget::reticulum_preview_with_metadata(scope, label)
+            RadrootsTransportTarget::reticulum_with_metadata(endpoint_uri, scope, label)
         }
         RadrootsTransportKind::Local => {
             RadrootsTransportTarget::local_with_metadata(endpoint_uri, scope, label)
-        }
-        RadrootsTransportKind::Proxy => {
-            RadrootsTransportTarget::proxy_with_metadata(endpoint_uri, scope, label)
-        }
-        RadrootsTransportKind::Mesh | RadrootsTransportKind::Custom(_) => {
-            RadrootsTransportTarget::new_with_metadata(transport_kind, endpoint_uri, scope, label)
         }
     }
 }
@@ -3051,15 +3031,7 @@ fn delivery_status(
         .iter()
         .all(|outcome| !outcome.outcome_kind.is_terminal_failure())
     {
-        TransportPublishJobStatus::DeliveryDeferred
-    } else if status_outcomes
-        .iter()
-        .any(|outcome| outcome.outcome_kind == TransportPublishOutcomeKind::PreviewUnavailable)
-        && status_outcomes
-            .iter()
-            .all(|outcome| !outcome.outcome_kind.is_terminal_failure())
-    {
-        TransportPublishJobStatus::DeliveryPreviewUnavailable
+        TransportPublishJobStatus::DeliveryDeferredUntilImplemented
     } else {
         TransportPublishJobStatus::DeliveryUnsatisfiedTerminal
     }
@@ -3070,8 +3042,8 @@ fn last_error_for_status(status: TransportPublishJobStatus) -> Option<&'static s
         TransportPublishJobStatus::DeliverySatisfied => None,
         TransportPublishJobStatus::Rejected => Some("no_transport_publish_targets"),
         TransportPublishJobStatus::DeliveryDeferred => Some("delivery_deferred_until_implemented"),
-        TransportPublishJobStatus::DeliveryPreviewUnavailable => {
-            Some("delivery_preview_unavailable")
+        TransportPublishJobStatus::DeliveryDeferredUntilImplemented => {
+            Some("delivery_deferred_until_implemented")
         }
         TransportPublishJobStatus::Accepted
         | TransportPublishJobStatus::Publishing
@@ -3289,12 +3261,15 @@ mod tests {
     use nostr::JsonUtil;
     use radroots_identity::RadrootsIdentity;
     use radroots_nostr::prelude::{RadrootsNostrTimestamp, radroots_nostr_build_event};
-    use radroots_transport::{RADROOTS_RETICULUM_UNAVAILABLE_MESSAGE, RadrootsTransportTarget};
+    use radroots_transport::{
+        RADROOTS_RETICULUM_ENDPOINT_URI, RADROOTS_RETICULUM_UNAVAILABLE_MESSAGE,
+        RadrootsTransportTarget,
+    };
     use radroots_transport_nostr::{RadrootsMockRelayPublishAdapter, RadrootsRelayOutcome};
     use radroots_transport_publish_protocol::{
         NostrPublishTargetSourcePolicy, TransportPublishDeliveryPolicy,
         TransportPublishEventRequest, TransportPublishJobStatus, TransportPublishOutcomeKind,
-        TransportPublishPreviewBehavior, TransportPublishTarget, TransportPublishTargetOutcome,
+        TransportPublishReticulumBehavior, TransportPublishTarget, TransportPublishTargetOutcome,
         TransportPublishTargetPolicy, TransportPublishTargetPolicyName,
         TransportPublishTargetSource,
     };
@@ -3449,12 +3424,12 @@ mod tests {
 
     fn reticulum_publish_request(
         raw_event_json: String,
-        behavior: TransportPublishPreviewBehavior,
+        behavior: TransportPublishReticulumBehavior,
     ) -> TransportPublishEventRequest {
         TransportPublishEventRequest {
             raw_event_json,
             target_policy: TransportPublishTargetPolicy::explicit_targets(vec![
-                TransportPublishTarget::reticulum_preview(behavior),
+                TransportPublishTarget::reticulum(behavior),
             ]),
             delivery_policy: TransportPublishDeliveryPolicy::Any,
             idempotency_key: None,
@@ -3679,12 +3654,13 @@ mod tests {
                 if message.contains("canonical and unique")
         ));
 
-        let mut proxy_kind = base.clone();
-        proxy_kind.allowed_explicit_transport_kinds = vec!["proxy".to_owned()];
+        let mut removed_execution_kind = base.clone();
+        removed_execution_kind.allowed_explicit_transport_kinds =
+            vec![removed_proxy_transport_kind_string()];
         assert!(matches!(
-            store.create_principal(proxy_kind),
+            store.create_principal(removed_execution_kind),
             Err(TransportPublishError::InvalidScope(message))
-                if message.contains("proxy cannot be used")
+                if message.contains("unknown explicit transport kind")
         ));
 
         let mut nostr_policy_with_explicit_kinds = base;
@@ -5348,7 +5324,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn publish_event_records_reticulum_preview_unavailable_as_terminal_nonfailure() {
+    async fn publish_event_records_reticulum_unavailable_as_deferred_until_implemented() {
         let identity = RadrootsIdentity::generate();
         let (proxy, adapter) = transport_publish(TransportPublishConfig::default());
         let principal =
@@ -5358,7 +5334,7 @@ mod tests {
                 &principal,
                 reticulum_publish_request(
                     signed_event(&identity, "{}"),
-                    TransportPublishPreviewBehavior::RejectDeliveryAttempts,
+                    TransportPublishReticulumBehavior::RejectDeliveryAttempts,
                 ),
             )
             .await
@@ -5366,7 +5342,7 @@ mod tests {
 
         assert_eq!(
             response.job.status,
-            TransportPublishJobStatus::DeliveryPreviewUnavailable
+            TransportPublishJobStatus::DeliveryDeferredUntilImplemented
         );
         assert!(response.job.terminal);
         assert!(!response.job.delivery_satisfied);
@@ -5374,12 +5350,12 @@ mod tests {
         assert!(response.job.completed_at_ms.is_some());
         assert_eq!(
             response.job.last_error.as_deref(),
-            Some("delivery_preview_unavailable")
+            Some("delivery_deferred_until_implemented")
         );
         assert_eq!(response.job.targets.len(), 1);
         assert_eq!(
             response.job.targets[0].outcome_kind,
-            TransportPublishOutcomeKind::PreviewUnavailable
+            TransportPublishOutcomeKind::DeferredUntilImplemented
         );
         assert_eq!(
             response.job.targets[0].message.as_deref(),
@@ -5725,7 +5701,7 @@ mod tests {
                 &principal,
                 reticulum_publish_request(
                     signed_event(&identity, "{}"),
-                    TransportPublishPreviewBehavior::RejectDeliveryAttempts,
+                    TransportPublishReticulumBehavior::RejectDeliveryAttempts,
                 ),
             )
             .await
@@ -5753,7 +5729,7 @@ mod tests {
                 &principal,
                 reticulum_publish_request(
                     signed_event(&identity, "{}"),
-                    TransportPublishPreviewBehavior::DeferDeliveryPlans,
+                    TransportPublishReticulumBehavior::DeferDeliveryPlans,
                 ),
             )
             .await
@@ -5761,7 +5737,7 @@ mod tests {
 
         assert_eq!(
             response.job.status,
-            TransportPublishJobStatus::DeliveryDeferred
+            TransportPublishJobStatus::DeliveryDeferredUntilImplemented
         );
         assert!(response.job.terminal);
         assert!(!response.job.delivery_satisfied);
@@ -5781,22 +5757,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn publish_event_rejects_noncanonical_reticulum_preview_endpoint_before_recording_job() {
+    async fn publish_event_rejects_noncanonical_reticulum_endpoint_before_recording_job() {
         let identity = RadrootsIdentity::generate();
         let (proxy, adapter) = transport_publish(TransportPublishConfig::default());
         let principal =
             explicit_target_principal(&proxy, identity.public_key_hex(), PublishJobVisibility::Own);
         let mut request = reticulum_publish_request(
             signed_event(&identity, "{}"),
-            TransportPublishPreviewBehavior::RejectDeliveryAttempts,
+            TransportPublishReticulumBehavior::RejectDeliveryAttempts,
         );
         request.target_policy =
             TransportPublishTargetPolicy::explicit_targets(vec![TransportPublishTarget {
                 transport_kind: "reticulum".to_owned(),
-                endpoint_uri: "reticulum:preview-unavailable-alt".to_owned(),
+                endpoint_uri: "reticulum:unavailable-alt".to_owned(),
                 target_scope: None,
                 target_label: None,
-                preview_behavior: Some(TransportPublishPreviewBehavior::RejectDeliveryAttempts),
+                reticulum_behavior: Some(TransportPublishReticulumBehavior::RejectDeliveryAttempts),
             }]);
 
         let err = proxy
@@ -5816,7 +5792,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn publish_event_rejects_preview_behavior_on_non_reticulum_before_recording_job() {
+    async fn publish_event_rejects_reticulum_behavior_on_non_reticulum_before_recording_job() {
         let identity = RadrootsIdentity::generate();
         let (proxy, adapter) = transport_publish(TransportPublishConfig::default());
         let principal =
@@ -5834,13 +5810,13 @@ mod tests {
                 endpoint_uri: RELAY_PRIMARY.to_owned(),
                 target_scope: None,
                 target_label: None,
-                preview_behavior: Some(TransportPublishPreviewBehavior::RejectDeliveryAttempts),
+                reticulum_behavior: Some(TransportPublishReticulumBehavior::RejectDeliveryAttempts),
             }]);
 
         let err = proxy
             .publish_event(&principal, request)
             .await
-            .expect_err("non-Reticulum preview behavior");
+            .expect_err("non-Reticulum reticulum behavior");
 
         assert!(matches!(err, TransportPublishError::InvalidSignedEvent(_)));
         assert!(adapter.captured_raw_events().is_empty());
@@ -5861,15 +5837,15 @@ mod tests {
             explicit_target_principal(&proxy, identity.public_key_hex(), PublishJobVisibility::Own);
         let mut request = reticulum_publish_request(
             signed_event(&identity, "{}"),
-            TransportPublishPreviewBehavior::RejectDeliveryAttempts,
+            TransportPublishReticulumBehavior::RejectDeliveryAttempts,
         );
         request.target_policy =
             TransportPublishTargetPolicy::explicit_targets(vec![TransportPublishTarget {
                 transport_kind: "Reticulum".to_owned(),
-                endpoint_uri: "reticulum:preview-unavailable".to_owned(),
+                endpoint_uri: RADROOTS_RETICULUM_ENDPOINT_URI.to_owned(),
                 target_scope: None,
                 target_label: None,
-                preview_behavior: Some(TransportPublishPreviewBehavior::RejectDeliveryAttempts),
+                reticulum_behavior: Some(TransportPublishReticulumBehavior::RejectDeliveryAttempts),
             }]);
 
         let err = proxy
@@ -5889,28 +5865,28 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn publish_event_rejects_removed_proxy_kind_before_recording_job() {
+    async fn publish_event_rejects_removed_execution_kind_before_recording_job() {
         let identity = RadrootsIdentity::generate();
         let (proxy, adapter) = transport_publish(TransportPublishConfig::default());
         let principal =
             explicit_target_principal(&proxy, identity.public_key_hex(), PublishJobVisibility::Own);
         let mut request = reticulum_publish_request(
             signed_event(&identity, "{}"),
-            TransportPublishPreviewBehavior::RejectDeliveryAttempts,
+            TransportPublishReticulumBehavior::RejectDeliveryAttempts,
         );
         request.target_policy =
             TransportPublishTargetPolicy::explicit_targets(vec![TransportPublishTarget {
-                transport_kind: removed_proxy_kind_string(),
-                endpoint_uri: "radrootsd-proxy:publish".to_owned(),
+                transport_kind: removed_execution_kind_string(),
+                endpoint_uri: removed_execution_endpoint_uri(),
                 target_scope: None,
                 target_label: None,
-                preview_behavior: None,
+                reticulum_behavior: None,
             }]);
 
         let err = proxy
             .publish_event(&principal, request)
             .await
-            .expect_err("removed proxy kind");
+            .expect_err("removed execution kind");
 
         assert!(matches!(err, TransportPublishError::InvalidSignedEvent(_)));
         assert!(adapter.captured_raw_events().is_empty());
@@ -5924,28 +5900,28 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn publish_event_rejects_proxy_target_before_recording_job() {
+    async fn publish_event_rejects_removed_execution_target_before_recording_job() {
         let identity = RadrootsIdentity::generate();
         let (proxy, adapter) = transport_publish(TransportPublishConfig::default());
         let principal =
             explicit_target_principal(&proxy, identity.public_key_hex(), PublishJobVisibility::Own);
         let mut request = reticulum_publish_request(
             signed_event(&identity, "{}"),
-            TransportPublishPreviewBehavior::RejectDeliveryAttempts,
+            TransportPublishReticulumBehavior::RejectDeliveryAttempts,
         );
         request.target_policy =
             TransportPublishTargetPolicy::explicit_targets(vec![TransportPublishTarget {
-                transport_kind: "proxy".to_owned(),
-                endpoint_uri: "radrootsd-proxy:publish".to_owned(),
+                transport_kind: removed_proxy_transport_kind_string(),
+                endpoint_uri: removed_execution_endpoint_uri(),
                 target_scope: None,
                 target_label: None,
-                preview_behavior: None,
+                reticulum_behavior: None,
             }]);
 
         let err = proxy
             .publish_event(&principal, request)
             .await
-            .expect_err("proxy target");
+            .expect_err("removed execution target");
 
         assert!(matches!(err, TransportPublishError::InvalidSignedEvent(_)));
         assert!(adapter.captured_raw_events().is_empty());
@@ -5958,8 +5934,16 @@ mod tests {
         );
     }
 
-    fn removed_proxy_kind_string() -> String {
+    fn removed_execution_kind_string() -> String {
         ["radrootsd", "_proxy"].concat()
+    }
+
+    fn removed_proxy_transport_kind_string() -> String {
+        ["pro", "xy"].concat()
+    }
+
+    fn removed_execution_endpoint_uri() -> String {
+        ["radrootsd-", "pro", "xy:publish"].concat()
     }
 
     #[tokio::test]

@@ -147,11 +147,7 @@ mod tests {
         );
         assert!(response.get().contains("\"transport\":\"reticulum\""));
         assert!(response.get().contains("\"configured\":true"));
-        assert!(
-            response
-                .get()
-                .contains("\"implementation\":\"preview_unavailable\"")
-        );
+        assert!(response.get().contains("\"implementation\":\"real\""));
         assert!(response.get().contains("\"usable_for_delivery\":false"));
         assert!(
             response
