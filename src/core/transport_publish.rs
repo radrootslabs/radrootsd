@@ -1188,6 +1188,12 @@ impl TransportPublishStore {
         let job_id = Uuid::new_v4().to_string();
         let now = current_unix_millis();
         let request_json = serde_json::to_string(&insert.request)?;
+        let requested_target_count = storage_count_i64(
+            insert.request.target_policy.request_target_count(),
+            "requested_target_count",
+        )?;
+        let effective_target_count =
+            storage_count_i64(insert.effective_target_count, "effective_target_count")?;
         let mut connection = self
             .inner
             .lock()
@@ -1225,8 +1231,8 @@ impl TransportPublishStore {
                 insert.event.kind,
                 serde_json::to_string(&insert.request.target_policy)?,
                 serde_json::to_string(&insert.request.delivery_policy)?,
-                insert.request.target_policy.request_target_count(),
-                insert.effective_target_count,
+                requested_target_count,
+                effective_target_count,
                 request_json,
                 now,
                 now,
@@ -1368,7 +1374,7 @@ impl TransportPublishStore {
         last_error: Option<String>,
     ) -> Result<(), TransportPublishError> {
         let now = current_unix_millis();
-        let target_count = outcomes.len();
+        let target_count = storage_count_i64(outcomes.len(), "effective_target_count")?;
         let connection = self
             .inner
             .lock()
@@ -2068,6 +2074,7 @@ fn recover_interrupted_publish_jobs(connection: &Connection) -> Result<(), Trans
             continue;
         }
         let status = delivery_status(&row.view.delivery_policy, snapshots.len(), &snapshots);
+        let effective_target_count = storage_count_i64(snapshots.len(), "effective_target_count")?;
         let last_error = if status == TransportPublishJobStatus::DeliveryUnsatisfiedRetryable {
             Some("publish_attempt_interrupted".to_owned())
         } else {
@@ -2089,7 +2096,7 @@ fn recover_interrupted_publish_jobs(connection: &Connection) -> Result<(), Trans
                 now,
                 now,
                 last_error,
-                snapshots.len(),
+                effective_target_count,
             ],
         )?;
         replace_target_outcomes(connection, job_id.as_str(), &snapshots, now)?;
@@ -3056,6 +3063,14 @@ fn checked_usize_column(
                 target: "usize",
             },
         )
+    })
+}
+
+fn storage_count_i64(value: usize, field: &'static str) -> Result<i64, TransportPublishError> {
+    i64::try_from(value).map_err(|_| {
+        TransportPublishError::InvalidPublishJobState(format!(
+            "{field} value exceeds i64 storage range"
+        ))
     })
 }
 
@@ -4333,7 +4348,11 @@ mod tests {
                         30_402_i64,
                         serde_json::to_string(&request.target_policy).expect("target policy"),
                         serde_json::to_string(&request.delivery_policy).expect("delivery policy"),
-                        request.target_policy.request_target_count(),
+                        super::storage_count_i64(
+                            request.target_policy.request_target_count(),
+                            "requested_target_count",
+                        )
+                        .expect("requested target count"),
                         1_i64,
                         serde_json::to_string(&request).expect("request"),
                         now,

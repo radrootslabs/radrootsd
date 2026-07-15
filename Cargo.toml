@@ -37,7 +37,7 @@ anyhow = { version = "1" }
 clap = { version = "4", features = ["derive"] }
 jsonrpsee = { version = "0.26", features = ["server"] }
 rand = { version = "0.9" }
-rusqlite = { version = "0.32", features = ["bundled"] }
+rusqlite = { version = "0.39.0", features = ["bundled"] }
 serde = { version = "1", default-features = false, features = ["derive"] }
 serde_json = { version = "1", default-features = false }
 serde_qs = { version = "1.0" }
@@ -48,6 +48,9 @@ tower = { version = "0.5.3", features = ["util"] }
 tracing = { version = "0.1" }
 uuid = { version = "1.22.0", features = ["v4"] }
 url = { version = "2.5.8" }
+
+[patch.crates-io]
+libsqlite3-sys = { path = "../lib/crates/libsqlite3_sys_3_53_3" }
 
 [dev-dependencies]
 tempfile = { version = "3" }
