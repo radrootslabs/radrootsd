@@ -117,7 +117,7 @@ async fn connect_bunker(
         &client_pubkey,
         RadrootsNostrTimestamp::now(),
     )?;
-    let notifications = client.notifications();
+    let notifications = client.clone().into_inner().notifications();
     let subscription = client
         .subscribe(filter, None)
         .await
@@ -437,7 +437,7 @@ async fn wait_for_nostrconnect_response(
         .since(RadrootsNostrTimestamp::now());
     let filter = radroots_nostr_filter_tag(filter, "p", vec![client_pubkey.to_hex()])
         .map_err(|e| RpcError::Other(format!("nip46 connect filter failed: {e}")))?;
-    let mut notifications = client.notifications();
+    let mut notifications = client.clone().into_inner().notifications();
     let subscription = client
         .subscribe(filter, None)
         .await

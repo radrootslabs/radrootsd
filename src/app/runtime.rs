@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result, bail};
 use jsonrpsee::server::ServerHandle;
 use radroots_identity::RadrootsIdentity;
 use std::time::Duration;
@@ -16,13 +16,12 @@ use crate::transport::jsonrpc;
 #[cfg(not(test))]
 use crate::transport::nostr::listener::spawn_nip46_listener;
 #[cfg(not(test))]
-use anyhow::Context;
-#[cfg(not(test))]
 use clap::Parser;
-use radroots_event::profile::RadrootsProfileType;
+use radroots_event::profile::RadrootsAuthoredProfile;
+use radroots_event_codec::profile::authored::authored_profile_to_wire_parts;
 use radroots_nostr::prelude::{
     RadrootsNostrApplicationHandlerSpec, RadrootsNostrKind,
-    radroots_nostr_bootstrap_service_presence,
+    radroots_nostr_build_application_handler_event, radroots_nostr_build_event,
 };
 use std::path::PathBuf;
 
@@ -267,24 +266,63 @@ fn log_runtime_startup_report(report: &RadrootsdRuntimeStartupReport) {
 async fn bootstrap_presence(
     client: &radroots_nostr::prelude::RadrootsNostrClient,
     identity: &RadrootsIdentity,
-    metadata: &radroots_nostr::prelude::RadrootsNostrMetadata,
+    profile: &RadrootsAuthoredProfile,
     handler_spec: &RadrootsNostrApplicationHandlerSpec,
 ) -> Result<()> {
-    let bootstrap_result: Result<()> = match take_bootstrap_hook_result() {
-        Some(result) => result.map_err(anyhow::Error::msg),
-        None => radroots_nostr_bootstrap_service_presence(
-            client,
-            identity,
-            Some(RadrootsProfileType::Radrootsd),
-            metadata,
-            handler_spec,
-            Duration::from_secs(5),
-        )
+    if let Some(result) = take_bootstrap_hook_result() {
+        return result.map_err(anyhow::Error::msg);
+    }
+
+    let (profile_event, handler_event) =
+        build_service_presence_events(identity, profile, handler_spec)?;
+
+    client.connect().await;
+    client.wait_for_connection(Duration::from_secs(5)).await;
+    if !client
+        .relays()
         .await
-        .map(|_| ())
-        .map_err(anyhow::Error::from),
-    };
-    bootstrap_result?;
+        .into_values()
+        .any(|relay| relay.is_connected())
+    {
+        bail!("service presence requires at least one connected relay");
+    }
+
+    publish_presence_event(client, &profile_event, "service Profile").await?;
+    publish_presence_event(client, &handler_event, "NIP-89 application handler").await?;
+    Ok(())
+}
+
+fn build_service_presence_events(
+    identity: &RadrootsIdentity,
+    profile: &RadrootsAuthoredProfile,
+    handler_spec: &RadrootsNostrApplicationHandlerSpec,
+) -> Result<(nostr::Event, nostr::Event)> {
+    let profile_wire = authored_profile_to_wire_parts(profile)
+        .context("encode strict authored service Profile")?;
+    let profile_event =
+        radroots_nostr_build_event(profile_wire.kind, profile_wire.content, profile_wire.tags)
+            .context("build service Profile event")?
+            .sign_with_keys(identity.keys())
+            .context("sign service Profile event")?;
+    let handler_event = radroots_nostr_build_application_handler_event(handler_spec)
+        .context("build NIP-89 application handler event")?
+        .sign_with_keys(identity.keys())
+        .context("sign NIP-89 application handler event")?;
+    Ok((profile_event, handler_event))
+}
+
+async fn publish_presence_event(
+    client: &radroots_nostr::prelude::RadrootsNostrClient,
+    event: &nostr::Event,
+    event_name: &str,
+) -> Result<()> {
+    let output = client
+        .send_event(event)
+        .await
+        .with_context(|| format!("publish {event_name}"))?;
+    if output.success.is_empty() {
+        bail!("{event_name} publication did not succeed on any relay");
+    }
     Ok(())
 }
 
@@ -292,6 +330,7 @@ async fn bootstrap_presence(
 async fn publish_service_presence(
     client: radroots_nostr::prelude::RadrootsNostrClient,
     identity: RadrootsIdentity,
+    profile: RadrootsAuthoredProfile,
     metadata: radroots_nostr::prelude::RadrootsNostrMetadata,
     service_cfg: radroots_runtime::RadrootsNostrServiceConfig,
     nip46_config: config::Nip46Config,
@@ -305,21 +344,29 @@ async fn publish_service_presence(
         relays: service_cfg.relays.clone(),
         nostrconnect_url: nip46_config.nostrconnect_url.clone(),
     };
-    bootstrap_presence(&client, &identity, &metadata, &handler_spec).await
+    bootstrap_presence(&client, &identity, &profile, &handler_spec).await
 }
 
 #[cfg_attr(coverage_nightly, coverage(off))]
 async fn maybe_publish_service_presence(
     client: radroots_nostr::prelude::RadrootsNostrClient,
     identity: RadrootsIdentity,
+    profile: RadrootsAuthoredProfile,
     metadata: radroots_nostr::prelude::RadrootsNostrMetadata,
     service_cfg: radroots_runtime::RadrootsNostrServiceConfig,
     nip46_config: config::Nip46Config,
 ) {
     #[cfg(test)]
     {
-        let result =
-            publish_service_presence(client, identity, metadata, service_cfg, nip46_config).await;
+        let result = publish_service_presence(
+            client,
+            identity,
+            profile,
+            metadata,
+            service_cfg,
+            nip46_config,
+        )
+        .await;
         if let Err(err) = result {
             warn!("Failed to publish service presence on startup: {err}");
         } else {
@@ -329,8 +376,15 @@ async fn maybe_publish_service_presence(
 
     #[cfg(not(test))]
     tokio::spawn(async move {
-        let result =
-            publish_service_presence(client, identity, metadata, service_cfg, nip46_config).await;
+        let result = publish_service_presence(
+            client,
+            identity,
+            profile,
+            metadata,
+            service_cfg,
+            nip46_config,
+        )
+        .await;
         if let Err(err) = result {
             warn!("Failed to publish service presence on startup: {err}");
         } else {
@@ -446,7 +500,8 @@ async fn handle_command(command: cli::Command, settings: &config::Settings) -> R
 
 pub async fn run() -> Result<()> {
     let (args, settings): (cli::Args, config::Settings) = load_args_and_settings()?;
-    settings.config.validate()?;
+    settings.validate()?;
+    let authored_profile = settings.authored_profile()?;
 
     #[cfg(not(test))]
     {
@@ -481,6 +536,7 @@ pub async fn run() -> Result<()> {
         maybe_publish_service_presence(
             radrootsd.client.clone(),
             identity.clone(),
+            authored_profile,
             settings.metadata.clone(),
             settings.config.service.clone(),
             settings.config.nip46.clone(),
@@ -518,14 +574,17 @@ fn service_presence_kinds() -> Vec<u32> {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::{
-        RadrootsdRuntimeStartupReport, RunWaitOutcome, run, run_bootstrap_hook, run_load_hook,
-        run_start_rpc_hook, run_wait_hook, runtime_startup_report,
+        RadrootsdRuntimeStartupReport, RunWaitOutcome, build_service_presence_events, run,
+        run_bootstrap_hook, run_load_hook, run_start_rpc_hook, run_wait_hook,
+        runtime_startup_report,
     };
     use crate::app::{cli, config, paths};
     use crate::core::Radrootsd;
     use crate::transport::jsonrpc;
     use radroots_identity::RadrootsIdentity;
-    use radroots_nostr::prelude::RadrootsNostrMetadata;
+    use radroots_nostr::prelude::{
+        RadrootsNostrApplicationHandlerSpec, RadrootsNostrKind, RadrootsNostrMetadata,
+    };
     use std::path::Path;
     use std::path::PathBuf;
     use tokio::sync::{Mutex, MutexGuard};
@@ -835,6 +894,78 @@ mod tests {
             )
         );
         assert_eq!(kinds.len(), 1);
+    }
+
+    #[test]
+    fn service_presence_events_use_strict_profile_and_nip89_contracts() {
+        let identity = RadrootsIdentity::generate();
+        let settings = settings_with_relays(vec!["wss://relay.example.com".to_owned()]);
+        let profile = settings.authored_profile().expect("authored profile");
+        let handler_spec = RadrootsNostrApplicationHandlerSpec {
+            kinds: super::service_presence_kinds(),
+            identifier: Some("radrootsd".to_owned()),
+            metadata: Some(settings.metadata),
+            extra_tags: Vec::new(),
+            relays: settings.config.service.relays,
+            nostrconnect_url: None,
+        };
+
+        let (profile_event, handler_event) =
+            build_service_presence_events(&identity, &profile, &handler_spec)
+                .expect("service presence events");
+
+        assert_eq!(profile_event.kind, RadrootsNostrKind::Metadata);
+        assert!(profile_event.tags.is_empty());
+        assert_eq!(profile_event.pubkey, identity.public_key());
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&profile_event.content)
+                .expect("profile JSON"),
+            serde_json::json!({"name": "radrootsd-test"})
+        );
+        assert_eq!(
+            handler_event.kind,
+            RadrootsNostrKind::Custom(radroots_event::kinds::KIND_APPLICATION_HANDLER as u16)
+        );
+        assert_eq!(handler_event.pubkey, identity.public_key());
+        assert!(
+            handler_event.tags.iter().any(|tag| {
+                tag.as_slice() == ["d".to_owned(), "radrootsd".to_owned()].as_slice()
+            })
+        );
+        assert!(handler_event.tags.iter().any(|tag| {
+            tag.as_slice()
+                == [
+                    "k".to_owned(),
+                    RadrootsNostrKind::NostrConnect.as_u16().to_string(),
+                ]
+                .as_slice()
+        }));
+        assert!(handler_event.tags.iter().any(|tag| {
+            tag.as_slice() == ["relay".to_owned(), "wss://relay.example.com".to_owned()].as_slice()
+        }));
+        assert!(handler_event.verify().is_ok());
+    }
+
+    #[tokio::test]
+    async fn bootstrap_presence_fails_closed_without_a_connected_relay() {
+        let _guard = test_guard().await;
+        let identity = RadrootsIdentity::generate();
+        let client = radroots_nostr::prelude::RadrootsNostrClient::from_identity(&identity);
+        let settings = settings_with_relays(Vec::new());
+        let profile = settings.authored_profile().expect("authored profile");
+        let handler_spec = RadrootsNostrApplicationHandlerSpec {
+            kinds: super::service_presence_kinds(),
+            identifier: Some("radrootsd".to_owned()),
+            metadata: Some(settings.metadata),
+            extra_tags: Vec::new(),
+            relays: Vec::new(),
+            nostrconnect_url: None,
+        };
+
+        let error = super::bootstrap_presence(&client, &identity, &profile, &handler_spec)
+            .await
+            .expect_err("missing relay connection must fail closed");
+        assert!(error.to_string().contains("at least one connected relay"));
     }
 
     #[test]

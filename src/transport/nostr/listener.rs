@@ -40,7 +40,7 @@ async fn run_nip46_listener(radrootsd: Radrootsd) -> Result<()> {
         .kind(RadrootsNostrKind::NostrConnect)
         .since(RadrootsNostrTimestamp::now());
     let filter = radroots_nostr_filter_tag(filter, "p", vec![radrootsd.pubkey.to_hex()])?;
-    let mut notifications = radrootsd.client.notifications();
+    let mut notifications = radrootsd.client.clone().into_inner().notifications();
     let subscription = radrootsd.client.subscribe(filter, None).await?;
 
     info!("NIP-46 listener subscribed: {}", subscription.val);

@@ -438,13 +438,20 @@ fn transport_publish_capabilities_expose_per_transport_readiness() {
     );
     for required in [
         "transport.publish.capabilities",
-        r#"\"api_version\":\"radrootsd.transport_publish.v5\""#,
-        r#"\"raw_event_json_ingress\":true"#,
-        r#"\"transport\":\"reticulum\""#,
-        r#"\"configured\":true"#,
-        r#"\"implementation\":\"real\""#,
-        r#"\"usable_for_delivery\":false"#,
-        r#"\"capabilities\":{\"deliver\":false,\"fetch\":false}"#,
+        "serde_json::from_str(response.get())",
+        r#"result["api_version"]"#,
+        "radrootsd.transport_publish.v5",
+        r#"result["publish"]["raw_event_json_ingress"]"#,
+        r#"transport["transport"] == "reticulum""#,
+        r#"reticulum["configured"]"#,
+        r#"reticulum["implementation"]"#,
+        r#"reticulum["usable_for_delivery"]"#,
+        r#"reticulum["capabilities"]"#,
+        r#""deliver": false"#,
+        r#""fetch": false"#,
+        r#""discovery": false"#,
+        r#""gateway_forwarding": false"#,
+        r#""receipt_observation": false"#,
         "RADROOTS_RETICULUM_UNAVAILABLE_MESSAGE",
     ] {
         assert!(
@@ -467,6 +474,9 @@ fn transport_publish_capabilities_expose_per_transport_readiness() {
         "pub struct TransportPublishOperationCapabilities",
         "pub deliver: bool,",
         "pub fetch: bool,",
+        "pub discovery: bool,",
+        "pub gateway_forwarding: bool,",
+        "pub receipt_observation: bool,",
         "RADROOTS_RETICULUM_UNAVAILABLE_MESSAGE",
     ] {
         assert!(

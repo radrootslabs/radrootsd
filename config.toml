@@ -21,12 +21,8 @@
 name = "radrootsd"
 # display_name = ""
 # about = ""
-# picture = ""
-# banner = ""
-# banner = ""
 # nip05 = ""
-# lud06 = ""
-# lud16 = ""
+# bot = true
 
 [config]
 relays = [

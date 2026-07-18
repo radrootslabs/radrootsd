@@ -137,27 +137,31 @@ mod tests {
             )
             .await
             .expect("request");
-        assert!(response.get().contains("\"scoped_bearer_token\""));
-        assert!(response.get().contains("\"raw_event_json_ingress\":true"));
-        assert!(response.get().contains("\"transports\":["));
-        assert!(
-            response
-                .get()
-                .contains("\"api_version\":\"radrootsd.transport_publish.v5\"")
+        let response: serde_json::Value =
+            serde_json::from_str(response.get()).expect("capabilities response JSON");
+        let result = &response["result"];
+        assert_eq!(result["api_version"], "radrootsd.transport_publish.v5");
+        assert_eq!(result["auth"]["mode"], "scoped_bearer_token");
+        assert_eq!(result["publish"]["raw_event_json_ingress"], true);
+        let reticulum = result["publish"]["transports"]
+            .as_array()
+            .expect("transport capabilities")
+            .iter()
+            .find(|transport| transport["transport"] == "reticulum")
+            .expect("Reticulum capability");
+        assert_eq!(reticulum["configured"], true);
+        assert_eq!(reticulum["implementation"], "real");
+        assert_eq!(reticulum["usable_for_delivery"], false);
+        assert_eq!(
+            reticulum["capabilities"],
+            serde_json::json!({
+                "deliver": false,
+                "fetch": false,
+                "discovery": false,
+                "gateway_forwarding": false,
+                "receipt_observation": false,
+            })
         );
-        assert!(response.get().contains("\"transport\":\"reticulum\""));
-        assert!(response.get().contains("\"configured\":true"));
-        assert!(response.get().contains("\"implementation\":\"real\""));
-        assert!(response.get().contains("\"usable_for_delivery\":false"));
-        assert!(
-            response
-                .get()
-                .contains("\"capabilities\":{\"deliver\":false,\"fetch\":false}")
-        );
-        assert!(
-            response
-                .get()
-                .contains(RADROOTS_RETICULUM_UNAVAILABLE_MESSAGE)
-        );
+        assert_eq!(reticulum["message"], RADROOTS_RETICULUM_UNAVAILABLE_MESSAGE);
     }
 }

@@ -1,4 +1,5 @@
 use anyhow::{Context, Result, bail};
+use radroots_event::profile::{RadrootsAuthoredProfile, RadrootsNip05Identifier};
 use radroots_nostr::prelude::RadrootsNostrMetadata;
 use radroots_runtime::RadrootsNostrServiceConfig;
 use serde::{Deserialize, Serialize};
@@ -394,8 +395,81 @@ pub struct Settings {
 }
 
 impl Settings {
+    pub fn authored_profile(&self) -> Result<RadrootsAuthoredProfile> {
+        let metadata = &self.metadata;
+        let name = metadata
+            .name
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("metadata.name is required for the authored Profile"))?;
+        let mut profile = RadrootsAuthoredProfile::new(name.to_owned())
+            .context("metadata.name is invalid for the authored Profile")?;
+
+        if let Some(display_name) = metadata.display_name.as_ref() {
+            profile = profile.with_display_name(display_name.clone());
+        }
+        if let Some(about) = metadata.about.as_ref() {
+            profile = profile.with_about(about.clone());
+        }
+        if let Some(nip05) = metadata.nip05.as_deref() {
+            let nip05 = RadrootsNip05Identifier::parse(nip05)
+                .context("metadata.nip05 is invalid for the authored Profile")?;
+            profile = profile.with_nip05(nip05);
+        }
+
+        let media_fields = [
+            metadata.picture.as_ref().map(|_| "picture"),
+            metadata.banner.as_ref().map(|_| "banner"),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+        if !media_fields.is_empty() {
+            bail!(
+                "metadata.{} cannot be authored from URL-only configuration; Profile media requires a byte-verified Blossom descriptor",
+                media_fields.join(" and metadata.")
+            );
+        }
+
+        let bot = match metadata.custom.get("bot") {
+            Some(serde_json::Value::Bool(value)) => Some(*value),
+            Some(_) => bail!("metadata.bot must be a Boolean for the authored Profile"),
+            None => None,
+        };
+        if let Some(bot) = bot {
+            profile = profile.with_bot(bot);
+        }
+
+        let mut unsupported_fields = Vec::new();
+        if metadata.website.is_some() {
+            unsupported_fields.push("website".to_owned());
+        }
+        if metadata.lud06.is_some() {
+            unsupported_fields.push("lud06".to_owned());
+        }
+        if metadata.lud16.is_some() {
+            unsupported_fields.push("lud16".to_owned());
+        }
+        unsupported_fields.extend(
+            metadata
+                .custom
+                .keys()
+                .filter(|key| key.as_str() != "bot")
+                .cloned(),
+        );
+        if !unsupported_fields.is_empty() {
+            bail!(
+                "metadata fields are not supported by the strict authored Profile contract: {}",
+                unsupported_fields.join(", ")
+            );
+        }
+
+        Ok(profile)
+    }
+
     pub fn validate(&self) -> Result<()> {
-        self.config.validate()
+        self.config.validate()?;
+        self.authored_profile()?;
+        Ok(())
     }
 }
 
@@ -411,11 +485,13 @@ mod tests {
         RadrootsdRuntimeContractOutput, default_runtime_paths_for_process,
         resolve_runtime_paths_with_resolver, runtime_contract_with_selection,
     };
+    use radroots_event::profile::RadrootsNip05Identifier;
     use radroots_runtime::RadrootsNostrServiceConfig;
     use radroots_runtime_paths::{
         RadrootsHostEnvironment, RadrootsPathProfile, RadrootsPathResolver, RadrootsPlatform,
         RadrootsRuntimePathSelection,
     };
+    use serde_json::json;
 
     fn linux_resolver(home: &str) -> RadrootsPathResolver {
         RadrootsPathResolver::new(
@@ -529,6 +605,90 @@ mod tests {
             ..TransportPublishConfig::default()
         };
         assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn authored_profile_accepts_only_strict_metadata_fields() {
+        let mut metadata = radroots_nostr::prelude::RadrootsNostrMetadata::new()
+            .name("radrootsd")
+            .display_name("Radroots daemon")
+            .about("local relay publishing")
+            .nip05("daemon@radroots.example");
+        metadata.custom.insert("bot".to_owned(), json!(true));
+        let settings = super::Settings {
+            metadata,
+            config: Configuration {
+                service: service_config(),
+                rpc: RpcConfig::default(),
+                rpc_addr: None,
+                nip46: Nip46Config::default(),
+                transport_publish: TransportPublishConfig::default(),
+            },
+        };
+
+        let profile = settings.authored_profile().expect("authored profile");
+        assert_eq!(profile.name(), "radrootsd");
+        assert_eq!(profile.display_name(), Some("Radroots daemon"));
+        assert_eq!(profile.about(), Some("local relay publishing"));
+        assert_eq!(
+            profile.nip05().map(RadrootsNip05Identifier::as_str),
+            Some("daemon@radroots.example")
+        );
+        assert_eq!(profile.bot(), Some(true));
+        assert!(profile.picture().is_none());
+        assert!(profile.banner().is_none());
+    }
+
+    #[test]
+    fn authored_profile_rejects_url_only_media() {
+        let metadata = radroots_nostr::prelude::RadrootsNostrMetadata::new()
+            .name("radrootsd")
+            .picture(url::Url::parse("https://blossom.example/blob").expect("picture URL"));
+        let settings = super::Settings {
+            metadata,
+            config: Configuration {
+                service: service_config(),
+                rpc: RpcConfig::default(),
+                rpc_addr: None,
+                nip46: Nip46Config::default(),
+                transport_publish: TransportPublishConfig::default(),
+            },
+        };
+
+        let error = settings
+            .authored_profile()
+            .expect_err("URL-only media must fail closed");
+        assert!(
+            error
+                .to_string()
+                .contains("byte-verified Blossom descriptor")
+        );
+    }
+
+    #[test]
+    fn authored_profile_rejects_missing_invalid_and_unsupported_fields() {
+        let mut settings = super::Settings {
+            metadata: radroots_nostr::prelude::RadrootsNostrMetadata::new(),
+            config: Configuration {
+                service: service_config(),
+                rpc: RpcConfig::default(),
+                rpc_addr: None,
+                nip46: Nip46Config::default(),
+                transport_publish: TransportPublishConfig::default(),
+            },
+        };
+        assert!(settings.authored_profile().is_err());
+
+        settings.metadata.name = Some("radrootsd".to_owned());
+        settings.metadata.nip05 = Some("invalid".to_owned());
+        assert!(settings.authored_profile().is_err());
+
+        settings.metadata.nip05 = None;
+        settings.metadata.website = Some("https://radroots.example".to_owned());
+        let error = settings
+            .authored_profile()
+            .expect_err("unsupported fields must fail closed");
+        assert!(error.to_string().contains("website"));
     }
 
     #[test]

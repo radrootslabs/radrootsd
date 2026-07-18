@@ -64,7 +64,7 @@ pub async fn request(
     let message = NostrConnectMessage::request(&request);
     let request_id = message.id().to_string();
     let filter = response_filter(session, RadrootsNostrTimestamp::now(), label)?;
-    let notifications = session.client.notifications();
+    let notifications = session.client.clone().into_inner().notifications();
     let subscription = session
         .client
         .subscribe(filter, None)
