@@ -14,9 +14,10 @@ use crate::core::nip46::session::{
     Nip46Session, PendingNostrRequest, session_expires_at, sign_event_allowed,
 };
 use crate::core::state::Radrootsd;
+use crate::transport::nostr::protocol::sign_nip46_message;
 use radroots_nostr::prelude::{
-    RadrootsNostrEventBuilder, RadrootsNostrFilter, RadrootsNostrKind,
-    RadrootsNostrRelayPoolNotification, RadrootsNostrTimestamp, radroots_nostr_filter_tag,
+    RadrootsNostrFilter, RadrootsNostrKind, RadrootsNostrRelayPoolNotification,
+    RadrootsNostrTimestamp, radroots_nostr_filter_tag,
 };
 
 const DEFAULT_TIMEOUT_SECS: u64 = 10;
@@ -90,13 +91,9 @@ async fn run_nip46_listener(radrootsd: Radrootsd) -> Result<()> {
         };
         let response = handle_request(&radrootsd, &event.pubkey, &request_id, request).await;
         let response_message = NostrConnectMessage::response(request_id, response);
-        let response_event = RadrootsNostrEventBuilder::nostr_connect(
-            &radrootsd.keys,
-            event.pubkey,
-            response_message,
-        )
-        .map_err(|err| anyhow!("nip46 response build failed: {err}"))?;
-        let _ = radrootsd.client.send_event_builder(response_event).await;
+        let response_event = sign_nip46_message(&radrootsd.keys, event.pubkey, response_message)
+            .map_err(|err| anyhow!("nip46 response build failed: {err}"))?;
+        let _ = radrootsd.client.send_event(&response_event).await;
     }
 }
 

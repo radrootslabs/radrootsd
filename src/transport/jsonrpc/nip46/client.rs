@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use crate::core::nip46::session::Nip46Session;
 use crate::transport::jsonrpc::{RpcError, params::DEFAULT_TIMEOUT_SECS};
+use crate::transport::nostr::protocol::sign_nip46_message;
 use nostr::JsonUtil;
 use nostr::UnsignedEvent;
 use nostr::nips::{
@@ -11,18 +12,22 @@ use nostr::nips::{
     nip46::{NostrConnectMessage, NostrConnectMethod, NostrConnectRequest, ResponseResult},
 };
 use radroots_nostr::prelude::{
-    RadrootsNostrEventBuilder, RadrootsNostrFilter, RadrootsNostrKind,
-    RadrootsNostrRelayPoolNotification, RadrootsNostrSubscriptionId, RadrootsNostrTimestamp,
-    radroots_nostr_filter_tag,
+    RadrootsNostrFilter, RadrootsNostrKind, RadrootsNostrRelayPoolNotification,
+    RadrootsNostrSubscriptionId, RadrootsNostrTimestamp, radroots_nostr_filter_tag,
 };
 use tokio::sync::broadcast;
 use tokio::time::sleep;
 
 pub async fn sign_event(
     session: &Nip46Session,
-    unsigned: UnsignedEvent,
+    mut unsigned: UnsignedEvent,
     label: &str,
 ) -> Result<nostr::Event, RpcError> {
+    unsigned.verify_id().map_err(|_| {
+        RpcError::InvalidParams(format!("nip46 {label} unsigned event ID mismatch"))
+    })?;
+    let expected_public_key = unsigned.pubkey;
+    let expected_event_id = unsigned.id();
     let req = NostrConnectRequest::SignEvent(unsigned);
     let response = request(session, req, label).await?;
     let response = response
@@ -43,11 +48,7 @@ pub async fn sign_event(
         None => return Err(RpcError::Other(format!("nip46 {label} missing response"))),
     };
 
-    event
-        .verify()
-        .map_err(|e| RpcError::Other(format!("nip46 {label} invalid event: {e}")))?;
-
-    Ok(event)
+    validate_signed_event_response(expected_public_key, expected_event_id, event, label)
 }
 
 pub async fn request(
@@ -70,16 +71,12 @@ pub async fn request(
         .subscribe(filter, None)
         .await
         .map_err(|e| RpcError::Other(format!("nip46 {label} failed: {e}")))?;
-    let event = RadrootsNostrEventBuilder::nostr_connect(
-        &session.client_keys,
-        session.remote_signer_pubkey,
-        message,
-    )
-    .map_err(|e| RpcError::Other(format!("nip46 {label} failed: {e}")))?;
+    let event = sign_nip46_message(&session.client_keys, session.remote_signer_pubkey, message)
+        .map_err(|e| RpcError::Other(format!("nip46 {label} failed: {e}")))?;
 
     if let Err(error) = session
         .client
-        .send_event_builder(event)
+        .send_event(&event)
         .await
         .map_err(|e| RpcError::Other(format!("nip46 {label} failed: {e}")))
     {
@@ -95,6 +92,28 @@ pub async fn request(
         &subscription.val,
     )
     .await
+}
+
+fn validate_signed_event_response(
+    expected_public_key: nostr::PublicKey,
+    expected_event_id: nostr::EventId,
+    event: nostr::Event,
+    label: &str,
+) -> Result<nostr::Event, RpcError> {
+    if event.pubkey != expected_public_key {
+        return Err(RpcError::Other(format!(
+            "nip46 {label} response author mismatch"
+        )));
+    }
+    if event.id != expected_event_id {
+        return Err(RpcError::Other(format!(
+            "nip46 {label} response event ID mismatch"
+        )));
+    }
+    event
+        .verify()
+        .map_err(|_| RpcError::Other(format!("nip46 {label} response event is invalid")))?;
+    Ok(event)
 }
 
 fn response_filter(
@@ -158,5 +177,73 @@ async fn wait_for_response(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use nostr::{EventBuilder, EventId, Kind, Timestamp};
+    use radroots_nostr::prelude::RadrootsNostrKeys;
+
+    use super::validate_signed_event_response;
+
+    fn signed_fixture() -> (nostr::UnsignedEvent, nostr::Event) {
+        let keys = RadrootsNostrKeys::generate();
+        let unsigned = EventBuilder::new(Kind::Custom(30_001), "checked")
+            .custom_created_at(Timestamp::from_secs(1_784_347_200))
+            .build(keys.public_key());
+        let event = unsigned
+            .clone()
+            .sign_with_keys(&keys)
+            .expect("signed fixture");
+        (unsigned, event)
+    }
+
+    #[test]
+    fn sign_event_response_accepts_only_the_exact_valid_event() {
+        let (mut unsigned, event) = signed_fixture();
+        let expected_public_key = unsigned.pubkey;
+        let expected_event_id = unsigned.id();
+        assert!(
+            validate_signed_event_response(
+                expected_public_key,
+                expected_event_id,
+                event.clone(),
+                "test",
+            )
+            .is_ok()
+        );
+
+        let (_, wrong_author) = signed_fixture();
+        let error = validate_signed_event_response(
+            expected_public_key,
+            expected_event_id,
+            wrong_author,
+            "test",
+        )
+        .expect_err("wrong author");
+        assert!(error.to_string().contains("author mismatch"));
+
+        let mut wrong_id = event.clone();
+        wrong_id.id = EventId::all_zeros();
+        let error = validate_signed_event_response(
+            expected_public_key,
+            expected_event_id,
+            wrong_id,
+            "test",
+        )
+        .expect_err("wrong event ID");
+        assert!(error.to_string().contains("event ID mismatch"));
+
+        let mut wrong_signature = event;
+        wrong_signature.content.push('!');
+        let error = validate_signed_event_response(
+            expected_public_key,
+            expected_event_id,
+            wrong_signature,
+            "test",
+        )
+        .expect_err("invalid event");
+        assert!(error.to_string().contains("event is invalid"));
     }
 }

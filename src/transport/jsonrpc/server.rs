@@ -134,10 +134,9 @@ mod tests {
     use crate::transport::jsonrpc::{MethodRegistry, RpcContext};
     use jsonrpsee::server::RpcModule;
     use nostr::JsonUtil;
+    use nostr::{EventBuilder, Kind, Tag};
     use radroots_identity::RadrootsIdentity;
-    use radroots_nostr::prelude::{
-        RadrootsNostrMetadata, RadrootsNostrTimestamp, radroots_nostr_build_event,
-    };
+    use radroots_nostr::prelude::{RadrootsNostrMetadata, RadrootsNostrTimestamp};
     use radroots_transport_nostr::RadrootsMockRelayPublishAdapter;
     use radroots_transport_publish_protocol::{
         NostrPublishTargetSourcePolicy, TransportPublishTargetPolicyName,
@@ -156,16 +155,13 @@ mod tests {
     }
 
     fn signed_event_json(identity: &RadrootsIdentity) -> String {
-        radroots_nostr_build_event(
-            30_402,
-            "{}",
-            vec![vec!["d".to_owned(), "listing-1".to_owned()]],
-        )
-        .expect("event builder")
-        .custom_created_at(RadrootsNostrTimestamp::from_secs(1_700_000_000))
-        .sign_with_keys(identity.keys())
-        .expect("signed event")
-        .as_json()
+        // The JSON-RPC server consumes an already-signed transport fixture.
+        EventBuilder::new(Kind::Custom(30_402), "{}")
+            .tag(Tag::identifier("listing-1"))
+            .custom_created_at(RadrootsNostrTimestamp::from_secs(1_700_000_000))
+            .sign_with_keys(identity.keys())
+            .expect("signed event")
+            .as_json()
     }
 
     async fn post_json(addr: SocketAddr, body: &str, token: Option<&str>) -> String {

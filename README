@@ -3,6 +3,12 @@
 This is the README for `radrootsd` which is a long-running daemon for
 authenticated publishing and optional NIP-46 control on Rad Roots networks.
 
+NIP-46 kind-24133 request and response events are locally completed through a
+dedicated protocol helper and then relayed as already-signed transport
+messages. Remote `sign_event` results are accepted only when the author and
+canonical event ID match the exact unsigned request and the complete NIP-01
+event verifies.
+
 ## Copyright
 
 Except as otherwise noted, all files in the `radrootsd` distribution are

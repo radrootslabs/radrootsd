@@ -3259,8 +3259,9 @@ mod tests {
         NostrRelayUrlPolicy, TransportPublishConfig, TransportPublishNostrConfig,
     };
     use nostr::JsonUtil;
+    use nostr::{EventBuilder, Kind, Tag};
     use radroots_identity::RadrootsIdentity;
-    use radroots_nostr::prelude::{RadrootsNostrTimestamp, radroots_nostr_build_event};
+    use radroots_nostr::prelude::RadrootsNostrTimestamp;
     use radroots_transport::{
         RADROOTS_RETICULUM_ENDPOINT_URI, RADROOTS_RETICULUM_UNAVAILABLE_MESSAGE,
         RadrootsTransportTarget,
@@ -3383,15 +3384,13 @@ mod tests {
     }
 
     fn signed_event(identity: &RadrootsIdentity, content: &str) -> String {
-        let event = radroots_nostr_build_event(
-            30_402,
-            content,
-            vec![vec!["d".to_owned(), "listing-1".to_owned()]],
-        )
-        .expect("event builder")
-        .custom_created_at(RadrootsNostrTimestamp::from_secs(1_700_000_000))
-        .sign_with_keys(identity.keys())
-        .expect("signed event");
+        // Transport tests require an already-signed wire fixture; they do not
+        // exercise a Radroots product-authoring boundary.
+        let event = EventBuilder::new(Kind::Custom(30_402), content)
+            .tag(Tag::identifier("listing-1"))
+            .custom_created_at(RadrootsNostrTimestamp::from_secs(1_700_000_000))
+            .sign_with_keys(identity.keys())
+            .expect("signed event");
         event.as_json()
     }
 

@@ -18,10 +18,9 @@ use crate::transport::nostr::listener::spawn_nip46_listener;
 #[cfg(not(test))]
 use clap::Parser;
 use radroots_event::profile::RadrootsAuthoredProfile;
-use radroots_event_codec::profile::authored::authored_profile_to_wire_parts;
 use radroots_nostr::prelude::{
     RadrootsNostrApplicationHandlerSpec, RadrootsNostrKind,
-    radroots_nostr_build_application_handler_event, radroots_nostr_build_event,
+    radroots_nostr_build_application_handler_event, radroots_nostr_build_profile_event,
 };
 use std::path::PathBuf;
 
@@ -297,13 +296,10 @@ fn build_service_presence_events(
     profile: &RadrootsAuthoredProfile,
     handler_spec: &RadrootsNostrApplicationHandlerSpec,
 ) -> Result<(nostr::Event, nostr::Event)> {
-    let profile_wire = authored_profile_to_wire_parts(profile)
-        .context("encode strict authored service Profile")?;
-    let profile_event =
-        radroots_nostr_build_event(profile_wire.kind, profile_wire.content, profile_wire.tags)
-            .context("build service Profile event")?
-            .sign_with_keys(identity.keys())
-            .context("sign service Profile event")?;
+    let profile_event = radroots_nostr_build_profile_event(profile)
+        .context("build service Profile event")?
+        .sign_with_keys(identity.keys())
+        .context("sign service Profile event")?;
     let handler_event = radroots_nostr_build_application_handler_event(handler_spec)
         .context("build NIP-89 application handler event")?
         .sign_with_keys(identity.keys())

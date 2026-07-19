@@ -15,13 +15,14 @@ use crate::transport::jsonrpc::nip46::connection::{
 };
 use crate::transport::jsonrpc::params::DEFAULT_TIMEOUT_SECS;
 use crate::transport::jsonrpc::{MethodRegistry, RpcContext, RpcError};
+use crate::transport::nostr::protocol::sign_nip46_message;
 use nostr::JsonUtil;
 use nostr::nips::{nip44, nip46::NostrConnectMessage, nip46::NostrConnectRequest};
 use radroots_nostr::prelude::{
-    RadrootsNostrClient, RadrootsNostrEventBuilder, RadrootsNostrFilter, RadrootsNostrKeys,
-    RadrootsNostrKind, RadrootsNostrPublicKey, RadrootsNostrRelayPoolNotification,
-    RadrootsNostrSecretKey, RadrootsNostrSubscriptionId, RadrootsNostrTimestamp,
-    radroots_nostr_filter_tag, radroots_nostr_parse_pubkey,
+    RadrootsNostrClient, RadrootsNostrFilter, RadrootsNostrKeys, RadrootsNostrKind,
+    RadrootsNostrPublicKey, RadrootsNostrRelayPoolNotification, RadrootsNostrSecretKey,
+    RadrootsNostrSubscriptionId, RadrootsNostrTimestamp, radroots_nostr_filter_tag,
+    radroots_nostr_parse_pubkey,
 };
 
 #[derive(Debug, Deserialize)]
@@ -287,11 +288,10 @@ async fn send_connect_request(
     remote_signer_pubkey: &RadrootsNostrPublicKey,
     message: NostrConnectMessage,
 ) -> Result<(), RpcError> {
-    let event =
-        RadrootsNostrEventBuilder::nostr_connect(client_keys, *remote_signer_pubkey, message)
-            .map_err(|e| RpcError::Other(format!("nip46 connect request failed: {e}")))?;
+    let event = sign_nip46_message(client_keys, *remote_signer_pubkey, message)
+        .map_err(|e| RpcError::Other(format!("nip46 connect request failed: {e}")))?;
     client
-        .send_event_builder(event)
+        .send_event(&event)
         .await
         .map_err(|e| RpcError::Other(format!("nip46 connect request failed: {e}")))?;
     Ok(())

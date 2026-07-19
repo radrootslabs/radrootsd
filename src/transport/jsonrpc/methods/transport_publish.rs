@@ -141,25 +141,22 @@ mod tests {
     use crate::transport::jsonrpc::{MethodRegistry, RpcContext};
     use jsonrpsee::server::RpcModule;
     use nostr::JsonUtil;
+    use nostr::{EventBuilder, Kind, Tag};
     use radroots_identity::RadrootsIdentity;
-    use radroots_nostr::prelude::{
-        RadrootsNostrMetadata, RadrootsNostrTimestamp, radroots_nostr_build_event,
-    };
+    use radroots_nostr::prelude::{RadrootsNostrMetadata, RadrootsNostrTimestamp};
     use radroots_transport_nostr::RadrootsMockRelayPublishAdapter;
     use radroots_transport_publish_protocol::{
         NostrPublishTargetSourcePolicy, TransportPublishTargetPolicyName,
     };
 
     fn signed_event(identity: &RadrootsIdentity) -> String {
-        let event = radroots_nostr_build_event(
-            30_402,
-            "{}",
-            vec![vec!["d".to_owned(), "listing-1".to_owned()]],
-        )
-        .expect("event builder")
-        .custom_created_at(RadrootsNostrTimestamp::from_secs(1_700_000_000))
-        .sign_with_keys(identity.keys())
-        .expect("signed event");
+        // This method accepts an already-signed wire event; construct the test
+        // fixture at that explicit low-level interoperability boundary.
+        let event = EventBuilder::new(Kind::Custom(30_402), "{}")
+            .tag(Tag::identifier("listing-1"))
+            .custom_created_at(RadrootsNostrTimestamp::from_secs(1_700_000_000))
+            .sign_with_keys(identity.keys())
+            .expect("signed event");
         event.as_json()
     }
 

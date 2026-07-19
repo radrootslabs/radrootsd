@@ -690,3 +690,44 @@ fn line_number(source: &str, index: usize) -> usize {
         .count()
         + 1
 }
+
+#[test]
+fn nip46_transport_uses_completed_events_and_exact_sign_event_binding() {
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let protocol = read_source(
+        manifest_dir
+            .join("src/transport/nostr/protocol.rs")
+            .as_path(),
+    );
+    let client = read_source(
+        manifest_dir
+            .join("src/transport/jsonrpc/nip46/client.rs")
+            .as_path(),
+    );
+    let production_sources = [
+        "src/transport/nostr/listener.rs",
+        "src/transport/jsonrpc/nip46/client.rs",
+        "src/transport/jsonrpc/methods/nip46/connect.rs",
+        "src/transport/jsonrpc/methods/nip46/session_authorize.rs",
+    ]
+    .map(|path| read_source(manifest_dir.join(path).as_path()))
+    .join("\n");
+
+    assert!(protocol.contains("EventBuilder::nostr_connect"));
+    assert!(protocol.contains(".sign_with_keys(sender_keys)"));
+    assert!(!production_sources.contains("RadrootsNostrEventBuilder"));
+    assert!(!production_sources.contains("radroots_nostr_build_event"));
+    assert!(!production_sources.contains(".send_event_builder("));
+    for required in [
+        "unsigned.verify_id()",
+        "let expected_event_id = unsigned.id()",
+        "event.pubkey != expected_public_key",
+        "event.id != expected_event_id",
+        ".verify()",
+    ] {
+        assert!(
+            client.contains(required),
+            "NIP-46 client must retain exact sign_event binding witness `{required}`"
+        );
+    }
+}

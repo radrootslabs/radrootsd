@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use nostr::nips::nip46::NostrConnectMessage;
 
 use crate::transport::jsonrpc::{MethodRegistry, RpcContext, RpcError};
-use radroots_nostr::prelude::RadrootsNostrEventBuilder;
+use crate::transport::nostr::protocol::sign_nip46_message;
 
 #[derive(Debug, Deserialize)]
 struct Nip46SessionAuthorizeParams {
@@ -42,13 +42,11 @@ pub fn register(m: &mut RpcModule<RpcContext>, registry: &MethodRegistry) -> Res
             )
             .await;
             let message = NostrConnectMessage::response(pending.request_id, response);
-            let response_event = RadrootsNostrEventBuilder::nostr_connect(
-                &ctx.state.keys,
-                pending.client_pubkey,
-                message,
-            )
-            .map_err(|err| RpcError::Other(format!("nip46 response build failed: {err}")))?;
-            let _ = ctx.state.client.send_event_builder(response_event).await;
+            let response_event =
+                sign_nip46_message(&ctx.state.keys, pending.client_pubkey, message).map_err(
+                    |err| RpcError::Other(format!("nip46 response build failed: {err}")),
+                )?;
+            let _ = ctx.state.client.send_event(&response_event).await;
             replayed = true;
         }
         Ok::<Nip46SessionAuthorizeResponse, RpcError>(Nip46SessionAuthorizeResponse {
