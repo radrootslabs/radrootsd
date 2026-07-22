@@ -53,8 +53,5 @@ tracing = { version = "0.1" }
 uuid = { version = "1.22.0", features = ["v4"] }
 url = { version = "2.5.8" }
 
-[patch.crates-io]
-libsqlite3-sys = { path = "../lib/crates/libsqlite3_sys_3_53_3" }
-
 [dev-dependencies]
 tempfile = { version = "3" }
