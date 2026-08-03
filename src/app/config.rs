@@ -1,14 +1,24 @@
 use crate::host_nostr::Metadata;
 use anyhow::{Context, Result, bail};
 use radroots_event::profile::{AuthoredProfile, Nip05Identifier};
-use radroots_runtime::RadrootsNostrServiceConfig;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 use super::paths::{
-    RadrootsdRuntimePaths, default_transport_publish_database_path, process_path_selection,
-    resolve_runtime_paths_with_resolver,
+    PathProfile, PathResolver, RadrootsdRuntimePaths, default_transport_publish_database_path,
+    process_path_selection, resolve_runtime_paths_with_resolver,
 };
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct NostrServiceConfig {
+    pub logs_dir: String,
+    #[serde(default)]
+    pub relays: Vec<String>,
+    #[serde(default)]
+    pub nip89_identifier: Option<String>,
+    #[serde(default)]
+    pub nip89_extra_tags: Vec<Vec<String>>,
+}
 
 fn default_rpc_addr() -> String {
     "127.0.0.1:7070".to_string()
@@ -91,8 +101,8 @@ struct RawServiceConfig {
 }
 
 impl RawServiceConfig {
-    fn into_service_config(self, paths: &RadrootsdRuntimePaths) -> RadrootsNostrServiceConfig {
-        RadrootsNostrServiceConfig {
+    fn into_service_config(self, paths: &RadrootsdRuntimePaths) -> NostrServiceConfig {
+        NostrServiceConfig {
             logs_dir: self
                 .logs_dir
                 .unwrap_or_else(|| paths.logs_dir.display().to_string()),
@@ -200,12 +210,14 @@ impl RawSettings {
 
 fn load_settings_from_path_with_resolver(
     path: &Path,
-    resolver: &radroots_runtime_paths::RadrootsPathResolver,
-    profile: radroots_runtime_paths::RadrootsPathProfile,
+    resolver: &PathResolver,
+    profile: PathProfile,
     repo_local_root: Option<&Path>,
 ) -> Result<Settings> {
-    let raw: RawSettings = radroots_runtime::load_required_file(path)
-        .with_context(|| format!("load configuration from {}", path.display()))?;
+    let source = std::fs::read_to_string(path)
+        .with_context(|| format!("read configuration from {}", path.display()))?;
+    let raw: RawSettings = toml::from_str(source.as_str())
+        .with_context(|| format!("parse configuration from {}", path.display()))?;
     let paths = resolve_runtime_paths_with_resolver(resolver, profile, repo_local_root)?;
     let settings = raw.into_settings(&paths);
     settings.validate()?;
@@ -217,7 +229,7 @@ pub fn load_settings_from_path(path: impl AsRef<Path>) -> Result<Settings> {
     let (profile, repo_local_root) = process_path_selection()?;
     load_settings_from_path_with_resolver(
         path,
-        &radroots_runtime_paths::RadrootsPathResolver::current(),
+        &PathResolver::current(),
         profile,
         repo_local_root.as_deref(),
     )
@@ -366,7 +378,7 @@ impl Default for RpcConfig {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Configuration {
     #[serde(flatten)]
-    pub service: RadrootsNostrServiceConfig,
+    pub service: NostrServiceConfig,
     #[serde(default)]
     pub rpc: RpcConfig,
     #[serde(default)]
@@ -477,40 +489,39 @@ impl Settings {
 mod tests {
     use std::path::PathBuf;
 
+    use super::NostrServiceConfig;
     use super::{
         Configuration, Nip46Config, NostrRelayUrlPolicy, RpcConfig, TransportPublishConfig,
         load_settings_from_path_with_resolver,
+    };
+    use crate::app::paths::{
+        HostEnvironment, PathProfile, PathResolver, Platform, RuntimePathSelection,
     };
     use crate::app::paths::{
         RadrootsdRuntimeContractOutput, default_runtime_paths_for_process,
         resolve_runtime_paths_with_resolver, runtime_contract_with_selection,
     };
     use radroots_event::profile::Nip05Identifier;
-    use radroots_runtime::RadrootsNostrServiceConfig;
-    use radroots_runtime_paths::{
-        RadrootsHostEnvironment, RadrootsPathProfile, RadrootsPathResolver, RadrootsPlatform,
-        RadrootsRuntimePathSelection,
-    };
     use serde_json::json;
 
-    fn linux_resolver(home: &str) -> RadrootsPathResolver {
-        RadrootsPathResolver::new(
-            RadrootsPlatform::Linux,
-            RadrootsHostEnvironment {
+    fn linux_resolver(home: &str) -> PathResolver {
+        PathResolver::new(
+            Platform::Linux,
+            HostEnvironment {
                 home_dir: Some(PathBuf::from(home)),
-                ..RadrootsHostEnvironment::default()
+                ..HostEnvironment::default()
             },
         )
     }
 
-    fn service_config() -> RadrootsNostrServiceConfig {
+    fn service_config() -> NostrServiceConfig {
         let paths = resolve_runtime_paths_with_resolver(
             &linux_resolver("/home/treesap"),
-            RadrootsPathProfile::InteractiveUser,
+            PathProfile::InteractiveUser,
             None,
         )
         .expect("resolve interactive-user paths");
-        RadrootsNostrServiceConfig {
+        NostrServiceConfig {
             logs_dir: paths.logs_dir.display().to_string(),
             relays: Vec::new(),
             nip89_identifier: Some("radrootsd".to_string()),
@@ -519,13 +530,13 @@ mod tests {
     }
 
     fn runtime_contract_with_resolver(
-        resolver: &RadrootsPathResolver,
-        profile: RadrootsPathProfile,
+        resolver: &PathResolver,
+        profile: PathProfile,
         repo_local_root: Option<&std::path::Path>,
     ) -> anyhow::Result<RadrootsdRuntimeContractOutput> {
         runtime_contract_with_selection(
             resolver,
-            &RadrootsRuntimePathSelection::caller(profile, repo_local_root.map(PathBuf::from)),
+            &RuntimePathSelection::caller(profile, repo_local_root.map(PathBuf::from)),
         )
     }
 
@@ -695,7 +706,7 @@ mod tests {
     fn runtime_paths_follow_interactive_user_contract() {
         let paths = resolve_runtime_paths_with_resolver(
             &linux_resolver("/home/treesap"),
-            RadrootsPathProfile::InteractiveUser,
+            PathProfile::InteractiveUser,
             None,
         )
         .expect("resolve interactive-user paths");
@@ -726,7 +737,7 @@ mod tests {
     fn runtime_paths_follow_service_host_contract() {
         let paths = resolve_runtime_paths_with_resolver(
             &linux_resolver("/home/treesap"),
-            RadrootsPathProfile::ServiceHost,
+            PathProfile::ServiceHost,
             None,
         )
         .expect("resolve service-host paths");
@@ -754,7 +765,7 @@ mod tests {
         let repo_local_root = PathBuf::from("/repo/.local/radroots/dev/radrootsd");
         let paths = resolve_runtime_paths_with_resolver(
             &linux_resolver("/home/treesap"),
-            RadrootsPathProfile::RepoLocal,
+            PathProfile::RepoLocal,
             Some(repo_local_root.as_path()),
         )
         .expect("resolve repo-local paths");
@@ -799,7 +810,7 @@ addr = "127.0.0.1:7070"
         let settings = load_settings_from_path_with_resolver(
             &config_path,
             &linux_resolver("/home/treesap"),
-            RadrootsPathProfile::InteractiveUser,
+            PathProfile::InteractiveUser,
             None,
         )
         .expect("load settings");
@@ -838,7 +849,7 @@ relay_url_policy = "localhost"
         let err = load_settings_from_path_with_resolver(
             &config_path,
             &linux_resolver("/home/treesap"),
-            RadrootsPathProfile::InteractiveUser,
+            PathProfile::InteractiveUser,
             None,
         )
         .expect_err("obsolete transport_publish config should fail");
@@ -851,7 +862,7 @@ relay_url_policy = "localhost"
     fn runtime_contract_output_matches_interactive_user_contract() {
         let contract = runtime_contract_with_resolver(
             &linux_resolver("/home/treesap"),
-            RadrootsPathProfile::InteractiveUser,
+            PathProfile::InteractiveUser,
             None,
         )
         .expect("interactive-user contract");

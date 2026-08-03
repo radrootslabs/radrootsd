@@ -3,6 +3,8 @@ use anyhow::{Context, Result, bail};
 use jsonrpsee::server::ServerHandle;
 use std::time::Duration;
 use tracing::{info, warn};
+#[cfg(not(test))]
+use tracing_subscriber::EnvFilter;
 
 use crate::app::identity_storage::load_service_identity;
 use crate::app::{cli, config, paths};
@@ -47,6 +49,52 @@ static RUN_START_RPC_HOOK: std::sync::OnceLock<
 enum RunWaitOutcome {
     Shutdown,
     Stopped,
+}
+
+#[cfg(not(test))]
+fn init_logging(logs_dir: &std::path::Path, default_level: Option<&str>) -> Result<()> {
+    std::fs::create_dir_all(logs_dir)
+        .with_context(|| format!("create log directory {}", logs_dir.display()))?;
+    let appender = tracing_appender::rolling::never(logs_dir, "radrootsd.log");
+    let (writer, guard) = tracing_appender::non_blocking(appender);
+    static LOG_GUARD: std::sync::OnceLock<tracing_appender::non_blocking::WorkerGuard> =
+        std::sync::OnceLock::new();
+    let filter = std::env::var("RADROOTS_LOG_LEVEL")
+        .or_else(|_| std::env::var("RUST_LOG"))
+        .ok()
+        .or_else(|| default_level.map(str::to_owned))
+        .unwrap_or_else(|| "info".to_owned());
+    tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::new(filter))
+        .with_writer(writer)
+        .try_init()
+        .map_err(|error| anyhow::anyhow!("initialize logging: {error}"))?;
+    LOG_GUARD
+        .set(guard)
+        .map_err(|_| anyhow::anyhow!("logging is already initialized"))?;
+    Ok(())
+}
+
+#[cfg(not(test))]
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        tokio::signal::ctrl_c()
+            .await
+            .expect("failed to install Ctrl+C handler");
+    };
+    #[cfg(unix)]
+    let terminate = async {
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("failed to install signal handler")
+            .recv()
+            .await;
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+    tokio::select! {
+        _ = ctrl_c => {},
+        _ = terminate => {},
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -137,7 +185,7 @@ fn load_args_and_settings() -> Result<(cli::Args, config::Settings)> {
 
     #[cfg(not(test))]
     {
-        let args = cli::Args::try_parse().map_err(radroots_runtime::RuntimeCliError::from)?;
+        let args = cli::Args::try_parse()?;
         let config_path = args
             .service
             .config
@@ -146,7 +194,7 @@ fn load_args_and_settings() -> Result<(cli::Args, config::Settings)> {
             .unwrap_or_else(paths::default_config_path_for_process)?;
         let settings =
             config::load_settings_from_path(&config_path).context("load configuration")?;
-        radroots_runtime::init_with_logs_dir(
+        init_logging(
             std::path::Path::new(settings.config.service.logs_dir.as_str()),
             None,
         )?;
@@ -325,7 +373,7 @@ async fn publish_service_presence(
     identity: DaemonIdentity,
     profile: AuthoredProfile,
     metadata: crate::host_nostr::Metadata,
-    service_cfg: radroots_runtime::RadrootsNostrServiceConfig,
+    service_cfg: config::NostrServiceConfig,
     nip46_config: config::Nip46Config,
 ) -> Result<()> {
     let kinds = service_presence_kinds();
@@ -348,7 +396,7 @@ async fn maybe_publish_service_presence(
     identity: DaemonIdentity,
     profile: AuthoredProfile,
     metadata: crate::host_nostr::Metadata,
-    service_cfg: radroots_runtime::RadrootsNostrServiceConfig,
+    service_cfg: config::NostrServiceConfig,
     nip46_config: config::Nip46Config,
 ) {
     #[cfg(test)]
@@ -432,7 +480,7 @@ async fn wait_for_shutdown_or_stopped(handle: ServerHandle) -> RunWaitOutcome {
 #[cfg_attr(coverage_nightly, coverage(off))]
 async fn wait_for_shutdown_or_stopped(handle: ServerHandle) -> RunWaitOutcome {
     tokio::select! {
-        _ = radroots_runtime::shutdown_signal() => RunWaitOutcome::Shutdown,
+        _ = shutdown_signal() => RunWaitOutcome::Shutdown,
         _ = handle.stopped() => RunWaitOutcome::Stopped,
     }
 }
@@ -618,7 +666,7 @@ mod tests {
 
     fn args_for_identity(path: PathBuf, allow_generate: bool) -> cli::Args {
         cli::Args {
-            service: radroots_runtime::RadrootsServiceCliArgs {
+            service: cli::ServiceCliArgs {
                 config: Some(PathBuf::from("config.toml")),
                 identity: Some(path),
                 allow_generate_identity: allow_generate,
@@ -633,7 +681,7 @@ mod tests {
         config::Settings {
             metadata,
             config: config::Configuration {
-                service: radroots_runtime::RadrootsNostrServiceConfig {
+                service: config::NostrServiceConfig {
                     logs_dir: "logs".to_string(),
                     relays,
                     nip89_identifier: Some("radrootsd".to_string()),
@@ -946,7 +994,7 @@ mod tests {
     #[test]
     fn runtime_startup_report_prefers_explicit_cli_paths() {
         let args = cli::Args {
-            service: radroots_runtime::RadrootsServiceCliArgs {
+            service: cli::ServiceCliArgs {
                 config: Some(PathBuf::from("/tmp/radrootsd/config.toml")),
                 identity: Some(PathBuf::from("/tmp/radrootsd/identity.secret.json")),
                 allow_generate_identity: false,
@@ -997,7 +1045,7 @@ mod tests {
     #[test]
     fn runtime_startup_report_falls_back_to_canonical_contract_paths() {
         let args = cli::Args {
-            service: radroots_runtime::RadrootsServiceCliArgs {
+            service: cli::ServiceCliArgs {
                 config: None,
                 identity: None,
                 allow_generate_identity: false,

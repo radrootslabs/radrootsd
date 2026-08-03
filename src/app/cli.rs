@@ -1,7 +1,30 @@
 use std::path::PathBuf;
 
-use clap::{Args as ClapArgs, Parser, Subcommand};
-use radroots_runtime::RadrootsServiceCliArgs;
+use clap::{ArgAction, Args as ClapArgs, Parser, Subcommand, ValueHint};
+
+#[derive(ClapArgs, Debug, Clone)]
+pub struct ServiceCliArgs {
+    #[arg(
+        long,
+        value_name = "PATH",
+        value_hint = ValueHint::FilePath,
+        help = "Path to the daemon configuration file; no implicit cwd-rooted default is used"
+    )]
+    pub config: Option<PathBuf>,
+    #[arg(
+        long,
+        value_name = "PATH",
+        value_hint = ValueHint::FilePath,
+        help = "Path to the daemon encrypted identity envelope"
+    )]
+    pub identity: Option<PathBuf>,
+    #[arg(
+        long,
+        action = ArgAction::SetTrue,
+        help = "Allow generating a new encrypted identity when the configured path is missing"
+    )]
+    pub allow_generate_identity: bool,
+}
 
 #[derive(Parser, Debug, Clone)]
 #[command(
@@ -11,7 +34,7 @@ use radroots_runtime::RadrootsServiceCliArgs;
 )]
 pub struct Args {
     #[command(flatten)]
-    pub service: RadrootsServiceCliArgs,
+    pub service: ServiceCliArgs,
     #[command(subcommand)]
     pub command: Option<Command>,
 }

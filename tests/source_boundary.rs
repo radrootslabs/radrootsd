@@ -197,12 +197,20 @@ fn transport_publish_sources_reject_removed_protocol_identifiers() {
         }
     }
     assert!(
-        manifest_source.contains("radroots_transport_nostr = { path = "),
-        "Cargo.toml must depend on radroots_transport_nostr directly"
+        manifest_source.contains("radroots_transport_nostr = { version = \"=0.1.0-alpha\""),
+        "Cargo.toml must depend on the exact radroots_transport_nostr registry version"
     );
     assert!(
         !manifest_source.contains("package = \"radroots_transport_nostr\""),
         "Cargo.toml must not disguise radroots_transport_nostr through a package alias"
+    );
+    assert!(
+        !manifest_source.contains("path = \"../lib"),
+        "Cargo.toml must not retain sibling source dependencies"
+    );
+    assert!(
+        !manifest_source.contains("radroots_runtime"),
+        "daemon lifecycle and path policy must remain host-owned"
     );
 
     assert!(
@@ -261,20 +269,26 @@ fn foundation_hardening_sources_reject_retired_names_and_ambiguous_docs() {
 #[test]
 fn transport_publish_sources_reject_removed_execution_transport_targets() {
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let protocol_source = read_source(
-        manifest_dir
-            .join("../lib/crates/protocol/src/radrootsd/transport_publish/v5.rs")
-            .as_path(),
+    use radroots_protocol::radrootsd::transport_publish::v5::{
+        DeliveryPolicy, Error, EventRequest, Target, TargetPolicy,
+    };
+    let request = EventRequest {
+        raw_event_json: "{}".to_owned(),
+        target_policy: TargetPolicy::explicit_targets(vec![Target {
+            transport_kind: "proxy".to_owned(),
+            endpoint_uri: "proxy:publish".to_owned(),
+            target_scope: None,
+            target_label: None,
+            reticulum_behavior: None,
+        }]),
+        delivery_policy: DeliveryPolicy::Any,
+        idempotency_key: None,
+        timeout_ms: None,
+    };
+    assert_eq!(
+        request.validate(20),
+        Err(Error::InvalidTransportKind { index: 0 })
     );
-    for required in [
-        "\"local\" | \"nostr\" | \"reticulum\" => {}",
-        "_ => return Err(Error::InvalidTransportKind { index })",
-    ] {
-        assert!(
-            protocol_source.contains(required),
-            "transport publish protocol must retain removed transport kind rejection witness `{required}`"
-        );
-    }
 
     let daemon_source = read_source(manifest_dir.join("src/core/transport_publish.rs").as_path());
     for required in [
@@ -369,12 +383,6 @@ fn transport_publish_store_egress_requires_protocol_validation() {
 fn transport_publish_required_targets_stay_fingerprint_exact() {
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     let daemon_source = read_source(manifest_dir.join("src/core/transport_publish.rs").as_path());
-    let protocol_source = read_source(
-        manifest_dir
-            .join("../lib/crates/protocol/src/radrootsd/transport_publish/v5.rs")
-            .as_path(),
-    );
-
     for required in [
         "validate_delivery_policy_for_resolution",
         "let target_fingerprints = resolution.target_fingerprints()?;",
@@ -418,16 +426,10 @@ fn transport_publish_required_targets_stay_fingerprint_exact() {
         );
     }
 
-    for required in [
-        "RequiredTargetNotInTargetSet",
-        "Matching fingerprints to native targets is intentionally deferred",
-        "Self::RequiredTargets { targets } => targets.len()",
-    ] {
-        assert!(
-            protocol_source.contains(required),
-            "transport publish protocol must retain exact required-target witness `{required}`"
-        );
-    }
+    use radroots_protocol::radrootsd::transport_publish::v5::{DeliveryPolicy, TargetFingerprint};
+    let target = TargetFingerprint::parse("a".repeat(64)).expect("fingerprint");
+    let policy = DeliveryPolicy::required_targets(vec![target]).expect("required targets");
+    assert_eq!(policy.required_target_count(9), 1);
 }
 
 #[test]
@@ -461,44 +463,21 @@ fn transport_publish_capabilities_expose_per_transport_readiness() {
         );
     }
 
-    let protocol_source = read_source(
-        Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../lib/crates/protocol/src/radrootsd/transport_publish/v5.rs")
-            .as_path(),
-    );
-    for required in [
-        "pub transport: String,",
-        "pub configured: bool,",
-        "pub implementation: Implementation,",
-        "pub usable_for_delivery: bool,",
-        "pub capabilities: OperationCapabilities,",
-        "pub struct OperationCapabilities",
-        "pub deliver: bool,",
-        "pub fetch: bool,",
-        "pub discovery: bool,",
-        "pub gateway_forwarding: bool,",
-        "pub receipt_observation: bool,",
-        "RETICULUM_UNAVAILABLE_MESSAGE",
-    ] {
-        assert!(
-            protocol_source.contains(required),
-            "transport publish protocol must retain capability field `{required}`"
-        );
-    }
-    let capability_source = source_window(
-        protocol_source.as_str(),
-        "pub struct TransportCapability",
-        "#[cfg_attr(feature = \"serde\", derive(serde::Serialize, serde::Deserialize))]\n#[cfg_attr(feature = \"serde\", serde(rename_all = \"snake_case\"))]\n#[derive(Clone, Copy, Debug, PartialEq, Eq)]\npub enum DeliveryPolicyName",
-    );
-    for forbidden in [
-        "pub transport_kind: String,",
-        concat!("pub implementation", "_state: ImplementationState,"),
-    ] {
-        assert!(
-            !capability_source.contains(forbidden),
-            "transport publish capability rows must not retain removed field `{forbidden}`"
-        );
-    }
+    use radroots_protocol::radrootsd::transport_publish::v5::{
+        Capabilities, Implementation, RETICULUM_UNAVAILABLE_MESSAGE,
+    };
+    let capabilities = Capabilities::v5(1024, 20);
+    let reticulum = capabilities
+        .publish
+        .transports
+        .iter()
+        .find(|transport| transport.transport == "reticulum")
+        .expect("reticulum capability");
+    assert!(reticulum.configured);
+    assert_eq!(reticulum.implementation, Implementation::Real);
+    assert!(!reticulum.usable_for_delivery);
+    assert!(!reticulum.capabilities.deliver);
+    assert_eq!(reticulum.message, RETICULUM_UNAVAILABLE_MESSAGE);
 }
 
 #[test]
