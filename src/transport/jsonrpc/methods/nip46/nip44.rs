@@ -42,7 +42,7 @@ pub fn register(m: &mut RpcModule<RpcContext>, registry: &MethodRegistry) -> Res
             .map_err(|e| RpcError::InvalidParams(e.to_string()))?;
         let session = session::get_session(ctx.as_ref(), &session_id).await?;
         session::require_permission(&session, "nip44_encrypt")?;
-        let public_key = radroots_nostr::prelude::radroots_nostr_parse_pubkey(&public_key)
+        let public_key = crate::host_nostr::parse_public_key(&public_key)
             .map_err(|e| RpcError::InvalidParams(format!("invalid public_key: {e}")))?;
         let req = NostrConnectRequest::Nip44Encrypt { public_key, text };
         let response = client::request(&session, req, "nip44_encrypt").await?;
@@ -81,7 +81,7 @@ pub fn register(m: &mut RpcModule<RpcContext>, registry: &MethodRegistry) -> Res
             .map_err(|e| RpcError::InvalidParams(e.to_string()))?;
         let session = session::get_session(ctx.as_ref(), &session_id).await?;
         session::require_permission(&session, "nip44_decrypt")?;
-        let public_key = radroots_nostr::prelude::radroots_nostr_parse_pubkey(&public_key)
+        let public_key = crate::host_nostr::parse_public_key(&public_key)
             .map_err(|e| RpcError::InvalidParams(format!("invalid public_key: {e}")))?;
         let req = NostrConnectRequest::Nip44Decrypt {
             public_key,

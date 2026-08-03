@@ -59,8 +59,8 @@ pub(crate) fn require_publish_principal(
 #[cfg(test)]
 mod tests {
     use jsonrpsee::core::server::Extensions;
-    use radroots_transport_publish_protocol::{
-        NostrPublishTargetSourcePolicy, TransportPublishTargetPolicyName,
+    use radroots_protocol::radrootsd::transport_publish::v5::{
+        NostrTargetSourcePolicy, TargetPolicyName,
     };
 
     use super::{
@@ -81,11 +81,9 @@ mod tests {
                 token_hash: hash_bearer_token(token.as_str()),
                 allowed_pubkeys: vec!["a".repeat(64)],
                 allowed_kinds: vec![30_402],
-                allowed_target_policies: vec![TransportPublishTargetPolicyName::Nostr],
+                allowed_target_policies: vec![TargetPolicyName::Nostr],
                 allowed_explicit_transport_kinds: Vec::new(),
-                allowed_nostr_source_policies: vec![
-                    NostrPublishTargetSourcePolicy::DaemonDefaultOnly,
-                ],
+                allowed_nostr_source_policies: vec![NostrTargetSourcePolicy::DaemonDefaultOnly],
                 allow_request_targets: false,
                 job_visibility: PublishJobVisibility::Own,
                 expires_at_unix: None,

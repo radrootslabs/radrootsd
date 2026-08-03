@@ -3,6 +3,7 @@
 
 pub mod app;
 pub mod core;
+mod host_nostr;
 #[cfg_attr(coverage_nightly, coverage(off))]
 pub mod transport;
 

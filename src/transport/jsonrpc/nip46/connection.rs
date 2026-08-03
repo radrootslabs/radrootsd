@@ -1,4 +1,4 @@
-use radroots_nostr::prelude::radroots_nostr_parse_pubkey;
+use crate::host_nostr::parse_public_key;
 use serde::{Deserialize, Serialize};
 use url::Url;
 
@@ -74,7 +74,7 @@ fn parse_nostrconnect_url(url: &Url) -> Result<Nip46ConnectInfo, RpcError> {
         .host_str()
         .map(|host| host.to_string())
         .ok_or_else(|| RpcError::InvalidParams("missing client pubkey".to_string()))?;
-    radroots_nostr_parse_pubkey(&client_pubkey)
+    parse_public_key(&client_pubkey)
         .map_err(|e| RpcError::InvalidParams(format!("invalid client pubkey: {e}")))?;
     let query: Nip46ConnectQuery = serde_qs::from_str(url.query().unwrap_or_default())
         .map_err(|e| RpcError::InvalidParams(e.to_string()))?;

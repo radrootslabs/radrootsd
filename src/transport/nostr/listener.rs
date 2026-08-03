@@ -14,11 +14,8 @@ use crate::core::nip46::session::{
     Nip46Session, PendingNostrRequest, session_expires_at, sign_event_allowed,
 };
 use crate::core::state::Radrootsd;
+use crate::host_nostr::{Filter, Kind, RelayPoolNotification, Timestamp, with_filter_tag};
 use crate::transport::nostr::protocol::sign_nip46_message;
-use radroots_nostr::prelude::{
-    RadrootsNostrFilter, RadrootsNostrKind, RadrootsNostrRelayPoolNotification,
-    RadrootsNostrTimestamp, radroots_nostr_filter_tag,
-};
 
 const DEFAULT_TIMEOUT_SECS: u64 = 10;
 
@@ -37,10 +34,10 @@ async fn run_nip46_listener(radrootsd: Radrootsd) -> Result<()> {
         .wait_for_connection(Duration::from_secs(DEFAULT_TIMEOUT_SECS))
         .await;
 
-    let filter = RadrootsNostrFilter::new()
-        .kind(RadrootsNostrKind::NostrConnect)
-        .since(RadrootsNostrTimestamp::now());
-    let filter = radroots_nostr_filter_tag(filter, "p", vec![radrootsd.pubkey.to_hex()])?;
+    let filter = Filter::new()
+        .kind(Kind::NostrConnect)
+        .since(Timestamp::now());
+    let filter = with_filter_tag(filter, "p", vec![radrootsd.pubkey.to_hex()])?;
     let mut notifications = radrootsd.client.clone().into_inner().notifications();
     let subscription = radrootsd.client.subscribe(filter, None).await?;
 
@@ -54,11 +51,11 @@ async fn run_nip46_listener(radrootsd: Radrootsd) -> Result<()> {
                 return Err(anyhow!("nip46 listener notification closed"));
             }
         };
-        let RadrootsNostrRelayPoolNotification::Event { event, .. } = notification else {
+        let RelayPoolNotification::Event { event, .. } = notification else {
             continue;
         };
         let event = (*event).clone();
-        if event.kind != RadrootsNostrKind::NostrConnect {
+        if event.kind != Kind::NostrConnect {
             continue;
         }
 
@@ -99,7 +96,7 @@ async fn run_nip46_listener(radrootsd: Radrootsd) -> Result<()> {
 
 pub(crate) async fn handle_request(
     radrootsd: &Radrootsd,
-    client_pubkey: &radroots_nostr::prelude::RadrootsNostrPublicKey,
+    client_pubkey: &crate::host_nostr::PublicKey,
     request_id: &str,
     request: NostrConnectRequest,
 ) -> NostrConnectResponse {
@@ -317,7 +314,7 @@ pub(crate) async fn handle_request(
 
 async fn session_for_client(
     radrootsd: &Radrootsd,
-    client_pubkey: &radroots_nostr::prelude::RadrootsNostrPublicKey,
+    client_pubkey: &crate::host_nostr::PublicKey,
 ) -> Result<Nip46Session, NostrConnectResponse> {
     let session_id = client_pubkey.to_hex();
     match radrootsd.nip46_sessions.get(&session_id).await {
@@ -338,7 +335,7 @@ async fn auth_challenge(
     radrootsd: &Radrootsd,
     session: &Nip46Session,
     request_id: &str,
-    client_pubkey: &radroots_nostr::prelude::RadrootsNostrPublicKey,
+    client_pubkey: &crate::host_nostr::PublicKey,
     request: NostrConnectRequest,
 ) -> Option<NostrConnectResponse> {
     if !session.auth_required || session.authorized {

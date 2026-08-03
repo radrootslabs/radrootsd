@@ -43,7 +43,7 @@ pub fn register(m: &mut RpcModule<RpcContext>, registry: &MethodRegistry) -> Res
 
 async fn request_get_public_key(
     session: &Nip46Session,
-) -> Result<(radroots_nostr::prelude::RadrootsNostrPublicKey, bool), RpcError> {
+) -> Result<(crate::host_nostr::PublicKey, bool), RpcError> {
     let req = NostrConnectRequest::GetPublicKey;
     let response = client::request(session, req, "get_public_key").await?;
     let response = response

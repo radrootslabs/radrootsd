@@ -3,6 +3,9 @@
 use std::time::Duration;
 
 use crate::core::nip46::session::Nip46Session;
+use crate::host_nostr::{
+    Filter, Kind, RelayPoolNotification, SubscriptionId, Timestamp, with_filter_tag,
+};
 use crate::transport::jsonrpc::{RpcError, params::DEFAULT_TIMEOUT_SECS};
 use crate::transport::nostr::protocol::sign_nip46_message;
 use nostr::JsonUtil;
@@ -10,10 +13,6 @@ use nostr::UnsignedEvent;
 use nostr::nips::{
     nip44,
     nip46::{NostrConnectMessage, NostrConnectMethod, NostrConnectRequest, ResponseResult},
-};
-use radroots_nostr::prelude::{
-    RadrootsNostrFilter, RadrootsNostrKind, RadrootsNostrRelayPoolNotification,
-    RadrootsNostrSubscriptionId, RadrootsNostrTimestamp, radroots_nostr_filter_tag,
 };
 use tokio::sync::broadcast;
 use tokio::time::sleep;
@@ -64,7 +63,7 @@ pub async fn request(
 
     let message = NostrConnectMessage::request(&request);
     let request_id = message.id().to_string();
-    let filter = response_filter(session, RadrootsNostrTimestamp::now(), label)?;
+    let filter = response_filter(session, Timestamp::now(), label)?;
     let notifications = session.client.clone().into_inner().notifications();
     let subscription = session
         .client
@@ -118,14 +117,14 @@ fn validate_signed_event_response(
 
 fn response_filter(
     session: &Nip46Session,
-    since: RadrootsNostrTimestamp,
+    since: Timestamp,
     label: &str,
-) -> Result<RadrootsNostrFilter, RpcError> {
-    let filter = RadrootsNostrFilter::new()
-        .kind(RadrootsNostrKind::NostrConnect)
+) -> Result<Filter, RpcError> {
+    let filter = Filter::new()
+        .kind(Kind::NostrConnect)
         .author(session.remote_signer_pubkey)
         .since(since);
-    radroots_nostr_filter_tag(filter, "p", vec![session.client_pubkey.to_hex()])
+    with_filter_tag(filter, "p", vec![session.client_pubkey.to_hex()])
         .map_err(|e| RpcError::Other(format!("nip46 {label} failed: {e}")))
 }
 
@@ -133,8 +132,8 @@ async fn wait_for_response(
     session: &Nip46Session,
     request_id: &str,
     label: &str,
-    mut notifications: broadcast::Receiver<RadrootsNostrRelayPoolNotification>,
-    subscription_id: &RadrootsNostrSubscriptionId,
+    mut notifications: broadcast::Receiver<RelayPoolNotification>,
+    subscription_id: &SubscriptionId,
 ) -> Result<NostrConnectMessage, RpcError> {
     let timeout = sleep(Duration::from_secs(DEFAULT_TIMEOUT_SECS));
     tokio::pin!(timeout);
@@ -154,11 +153,11 @@ async fn wait_for_response(
                         return Err(RpcError::Other(format!("nip46 {label} notification closed")));
                     }
                 };
-                let RadrootsNostrRelayPoolNotification::Event { event, .. } = notification else {
+                let RelayPoolNotification::Event { event, .. } = notification else {
                     continue;
                 };
                 let event = (*event).clone();
-                if event.kind != RadrootsNostrKind::NostrConnect
+                if event.kind != Kind::NostrConnect
                     || event.pubkey != session.remote_signer_pubkey
                 {
                     continue;
@@ -182,13 +181,13 @@ async fn wait_for_response(
 
 #[cfg(test)]
 mod tests {
+    use crate::host_nostr::Keys;
     use nostr::{EventBuilder, EventId, Kind, Timestamp};
-    use radroots_nostr::prelude::RadrootsNostrKeys;
 
     use super::validate_signed_event_response;
 
     fn signed_fixture() -> (nostr::UnsignedEvent, nostr::Event) {
-        let keys = RadrootsNostrKeys::generate();
+        let keys = Keys::generate();
         let unsigned = EventBuilder::new(Kind::Custom(30_001), "checked")
             .custom_created_at(Timestamp::from_secs(1_784_347_200))
             .build(keys.public_key());

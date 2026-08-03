@@ -125,21 +125,21 @@ mod tests {
         Nip46Config, NostrRelayUrlPolicy, RpcConfig, TransportPublishConfig,
         TransportPublishNostrConfig,
     };
+    use crate::app::identity_storage::DaemonIdentity;
     use crate::core::Radrootsd;
     use crate::core::transport_publish::{
         PublishJobVisibility, PublishPrincipalInit, PublishRelayResolveFuture,
         PublishRelayResolver, generate_bearer_token, hash_bearer_token,
     };
+    use crate::host_nostr::{Metadata, Timestamp};
     use crate::transport::jsonrpc::methods;
     use crate::transport::jsonrpc::{MethodRegistry, RpcContext};
+    use crate::transport::relay_publish::MockRelayPublishAdapter as RadrootsMockRelayPublishAdapter;
     use jsonrpsee::server::RpcModule;
     use nostr::JsonUtil;
     use nostr::{EventBuilder, Kind, Tag};
-    use radroots_identity::RadrootsIdentity;
-    use radroots_nostr::prelude::{RadrootsNostrMetadata, RadrootsNostrTimestamp};
-    use radroots_transport_nostr::RadrootsMockRelayPublishAdapter;
-    use radroots_transport_publish_protocol::{
-        NostrPublishTargetSourcePolicy, TransportPublishTargetPolicyName,
+    use radroots_protocol::radrootsd::transport_publish::v5::{
+        NostrTargetSourcePolicy, TargetPolicyName,
     };
     use serde_json::Value;
     use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener};
@@ -154,11 +154,11 @@ mod tests {
         listener.local_addr().expect("local addr")
     }
 
-    fn signed_event_json(identity: &RadrootsIdentity) -> String {
+    fn signed_event_json(identity: &DaemonIdentity) -> String {
         // The JSON-RPC server consumes an already-signed transport fixture.
         EventBuilder::new(Kind::Custom(30_402), "{}")
             .tag(Tag::identifier("listing-1"))
-            .custom_created_at(RadrootsNostrTimestamp::from_secs(1_700_000_000))
+            .custom_created_at(Timestamp::from_secs(1_700_000_000))
             .sign_with_keys(identity.keys())
             .expect("signed event")
             .as_json()
@@ -188,11 +188,11 @@ mod tests {
     ) -> (
         Radrootsd,
         String,
-        RadrootsIdentity,
+        DaemonIdentity,
         RadrootsMockRelayPublishAdapter,
     ) {
-        let identity = RadrootsIdentity::generate();
-        let metadata: RadrootsNostrMetadata =
+        let identity = DaemonIdentity::generate();
+        let metadata: Metadata =
             serde_json::from_str(r#"{"name":"radrootsd-test"}"#).expect("metadata");
         let mut state = Radrootsd::new(
             identity.clone(),
@@ -216,11 +216,9 @@ mod tests {
                 token_hash: hash_bearer_token(token.as_str()),
                 allowed_pubkeys: vec![identity.public_key_hex()],
                 allowed_kinds: vec![30_402],
-                allowed_target_policies: vec![TransportPublishTargetPolicyName::Nostr],
+                allowed_target_policies: vec![TargetPolicyName::Nostr],
                 allowed_explicit_transport_kinds: Vec::new(),
-                allowed_nostr_source_policies: vec![
-                    NostrPublishTargetSourcePolicy::DaemonDefaultOnly,
-                ],
+                allowed_nostr_source_policies: vec![NostrTargetSourcePolicy::DaemonDefaultOnly],
                 allow_request_targets: false,
                 job_visibility: PublishJobVisibility::Own,
                 expires_at_unix: None,
@@ -232,7 +230,7 @@ mod tests {
     fn publish_server_state() -> (
         Radrootsd,
         String,
-        RadrootsIdentity,
+        DaemonIdentity,
         RadrootsMockRelayPublishAdapter,
     ) {
         publish_server_state_with_config(
@@ -263,7 +261,7 @@ mod tests {
     impl PublishRelayResolver for StaticPublishRelayResolver {
         fn resolve<'a>(
             &'a self,
-            _url: &'a radroots_transport_nostr::RadrootsRelayUrl,
+            _url: &'a crate::transport::relay_publish::RelayUrl,
         ) -> PublishRelayResolveFuture<'a> {
             Box::pin(async move { Ok(self.addresses.clone()) })
         }

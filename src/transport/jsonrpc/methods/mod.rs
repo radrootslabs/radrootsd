@@ -24,10 +24,10 @@ pub fn register_all(
 
 #[cfg(test)]
 mod tests {
+    use crate::app::identity_storage::DaemonIdentity;
+    use crate::host_nostr::Metadata;
     use jsonrpsee::server::RpcModule;
-    use radroots_identity::RadrootsIdentity;
-    use radroots_nostr::prelude::RadrootsNostrMetadata;
-    use radroots_transport::RADROOTS_RETICULUM_UNAVAILABLE_MESSAGE;
+    use radroots_protocol::radrootsd::transport_publish::v5::RETICULUM_UNAVAILABLE_MESSAGE as RADROOTS_RETICULUM_UNAVAILABLE_MESSAGE;
 
     use super::register_all;
     use crate::app::config::{Nip46Config, TransportPublishConfig};
@@ -40,8 +40,8 @@ mod tests {
     }
 
     fn state(transport_publish_enabled: bool, nip46_public_jsonrpc_enabled: bool) -> Radrootsd {
-        let identity = RadrootsIdentity::generate();
-        let metadata: RadrootsNostrMetadata =
+        let identity = DaemonIdentity::generate();
+        let metadata: Metadata =
             serde_json::from_str(r#"{"name":"radrootsd-test"}"#).expect("metadata");
         let transport_publish = TransportPublishConfig {
             enabled: transport_publish_enabled,
@@ -114,11 +114,11 @@ mod tests {
                 allowed_pubkeys: vec!["a".repeat(64)],
                 allowed_kinds: vec![30_402],
                 allowed_target_policies: vec![
-                    radroots_transport_publish_protocol::TransportPublishTargetPolicyName::Nostr,
+                    radroots_protocol::radrootsd::transport_publish::v5::TargetPolicyName::Nostr,
                 ],
                 allowed_explicit_transport_kinds: Vec::new(),
                 allowed_nostr_source_policies: vec![
-                    radroots_transport_publish_protocol::NostrPublishTargetSourcePolicy::DaemonDefaultOnly,
+                    radroots_protocol::radrootsd::transport_publish::v5::NostrTargetSourcePolicy::DaemonDefaultOnly,
                 ],
                 allow_request_targets: false,
                 job_visibility: crate::core::transport_publish::PublishJobVisibility::Own,

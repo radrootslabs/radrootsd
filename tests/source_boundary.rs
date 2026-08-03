@@ -263,13 +263,12 @@ fn transport_publish_sources_reject_removed_execution_transport_targets() {
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     let protocol_source = read_source(
         manifest_dir
-            .join("../lib/crates/transport_publish_protocol/src/lib.rs")
+            .join("../lib/crates/protocol/src/radrootsd/transport_publish/v5.rs")
             .as_path(),
     );
     for required in [
-        "TransportPublishProtocolError::InvalidTransportKind { index }",
-        "RadrootsTransportKind::parse_canonical(self.transport_kind.as_str())",
-        "transport_kind_error(error, index)",
+        "\"local\" | \"nostr\" | \"reticulum\" => {}",
+        "_ => return Err(Error::InvalidTransportKind { index })",
     ] {
         assert!(
             protocol_source.contains(required),
@@ -281,6 +280,7 @@ fn transport_publish_sources_reject_removed_execution_transport_targets() {
     for required in [
         "publish_event_rejects_removed_execution_kind_before_recording_job",
         "publish_event_rejects_removed_execution_target_before_recording_job",
+        "!matches!(canonical.as_str(), \"local\" | \"nostr\" | \"reticulum\")",
     ] {
         assert!(
             daemon_source.contains(required),
@@ -371,16 +371,17 @@ fn transport_publish_required_targets_stay_fingerprint_exact() {
     let daemon_source = read_source(manifest_dir.join("src/core/transport_publish.rs").as_path());
     let protocol_source = read_source(
         manifest_dir
-            .join("../lib/crates/transport_publish_protocol/src/lib.rs")
+            .join("../lib/crates/protocol/src/radrootsd/transport_publish/v5.rs")
             .as_path(),
     );
 
     for required in [
         "validate_delivery_policy_for_resolution",
-        "delivery_policy\n        .validate_target_membership(target_fingerprints.as_slice())",
+        "let target_fingerprints = resolution.target_fingerprints()?;",
+        ".any(|actual| actual.as_str() == required.as_str())",
         "fn required_outcomes_for_policy",
         "target_outcome_fingerprint(outcome, index)",
-        "fingerprint == required",
+        "fingerprint.as_str() == required.as_str()",
         "let required_outcomes = required_outcomes_for_policy(targets, outcomes);",
         "required_outcomes.len() == targets.len()",
     ] {
@@ -392,13 +393,13 @@ fn transport_publish_required_targets_stay_fingerprint_exact() {
 
     let satisfaction_arm = source_window(
         daemon_source.as_str(),
-        "TransportPublishDeliveryPolicy::RequiredTargets { targets } => {",
+        "DeliveryPolicy::RequiredTargets { targets } => {",
         "fn delivery_status(",
     );
     for required in [
         "let nostr_required_targets = targets",
         "target\n                            .fingerprint()",
-        "filter(|fingerprint| fingerprint == required)",
+        "filter(|fingerprint| fingerprint.as_str() == required.as_str())",
         "RadrootsTransportSatisfactionPolicy::required_targets(",
     ] {
         assert!(
@@ -418,8 +419,8 @@ fn transport_publish_required_targets_stay_fingerprint_exact() {
     }
 
     for required in [
-        "pub fn validate_target_membership",
-        "TransportPublishProtocolError::RequiredTargetNotInTargetSet { index }",
+        "RequiredTargetNotInTargetSet",
+        "Matching fingerprints to native targets is intentionally deferred",
         "Self::RequiredTargets { targets } => targets.len()",
     ] {
         assert!(
@@ -462,22 +463,22 @@ fn transport_publish_capabilities_expose_per_transport_readiness() {
 
     let protocol_source = read_source(
         Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../lib/crates/transport_publish_protocol/src/lib.rs")
+            .join("../lib/crates/protocol/src/radrootsd/transport_publish/v5.rs")
             .as_path(),
     );
     for required in [
         "pub transport: String,",
         "pub configured: bool,",
-        "pub implementation: TransportPublishImplementation,",
+        "pub implementation: Implementation,",
         "pub usable_for_delivery: bool,",
-        "pub capabilities: TransportPublishOperationCapabilities,",
-        "pub struct TransportPublishOperationCapabilities",
+        "pub capabilities: OperationCapabilities,",
+        "pub struct OperationCapabilities",
         "pub deliver: bool,",
         "pub fetch: bool,",
         "pub discovery: bool,",
         "pub gateway_forwarding: bool,",
         "pub receipt_observation: bool,",
-        "RADROOTS_RETICULUM_UNAVAILABLE_MESSAGE",
+        "RETICULUM_UNAVAILABLE_MESSAGE",
     ] {
         assert!(
             protocol_source.contains(required),
@@ -486,15 +487,12 @@ fn transport_publish_capabilities_expose_per_transport_readiness() {
     }
     let capability_source = source_window(
         protocol_source.as_str(),
-        "pub struct TransportPublishTransportCapability",
-        "#[cfg_attr(feature = \"serde\", derive(serde::Serialize, serde::Deserialize))]\n#[cfg_attr(feature = \"serde\", serde(rename_all = \"snake_case\"))]\n#[derive(Clone, Copy, Debug, PartialEq, Eq)]\npub enum TransportPublishDeliveryPolicyName",
+        "pub struct TransportCapability",
+        "#[cfg_attr(feature = \"serde\", derive(serde::Serialize, serde::Deserialize))]\n#[cfg_attr(feature = \"serde\", serde(rename_all = \"snake_case\"))]\n#[derive(Clone, Copy, Debug, PartialEq, Eq)]\npub enum DeliveryPolicyName",
     );
     for forbidden in [
         "pub transport_kind: String,",
-        concat!(
-            "pub implementation",
-            "_state: TransportPublishImplementationState,"
-        ),
+        concat!("pub implementation", "_state: ImplementationState,"),
     ] {
         assert!(
             !capability_source.contains(forbidden),
@@ -710,12 +708,15 @@ fn nip46_transport_uses_completed_events_and_exact_sign_event_binding() {
         "src/transport/jsonrpc/methods/nip46/connect.rs",
         "src/transport/jsonrpc/methods/nip46/session_authorize.rs",
     ]
-    .map(|path| read_source(manifest_dir.join(path).as_path()))
+    .map(|path| {
+        let source = read_source(manifest_dir.join(path).as_path());
+        production_source(source.as_str()).to_owned()
+    })
     .join("\n");
 
     assert!(protocol.contains("EventBuilder::nostr_connect"));
     assert!(protocol.contains(".sign_with_keys(sender_keys)"));
-    assert!(!production_sources.contains("RadrootsNostrEventBuilder"));
+    assert!(!production_sources.contains("EventBuilder"));
     assert!(!production_sources.contains("radroots_nostr_build_event"));
     assert!(!production_sources.contains(".send_event_builder("));
     for required in [

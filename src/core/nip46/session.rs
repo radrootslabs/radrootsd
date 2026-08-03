@@ -7,8 +7,8 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
+use crate::host_nostr::{DaemonNostrClient, Keys, PublicKey};
 use nostr::nips::nip46::NostrConnectRequest;
-use radroots_nostr::prelude::{RadrootsNostrClient, RadrootsNostrKeys, RadrootsNostrPublicKey};
 
 #[derive(Clone)]
 pub struct Nip46SessionStore {
@@ -19,7 +19,7 @@ pub struct Nip46SessionStore {
 #[derive(Clone)]
 pub struct PendingNostrRequest {
     pub request_id: String,
-    pub client_pubkey: RadrootsNostrPublicKey,
+    pub client_pubkey: PublicKey,
     pub request: NostrConnectRequest,
 }
 
@@ -65,11 +65,11 @@ pub struct Nip46SessionAuthority {
 #[derive(Clone)]
 pub struct Nip46Session {
     pub id: String,
-    pub client: RadrootsNostrClient,
-    pub client_keys: RadrootsNostrKeys,
-    pub client_pubkey: RadrootsNostrPublicKey,
-    pub remote_signer_pubkey: RadrootsNostrPublicKey,
-    pub user_pubkey: Option<RadrootsNostrPublicKey>,
+    pub(crate) client: DaemonNostrClient,
+    pub client_keys: Keys,
+    pub client_pubkey: PublicKey,
+    pub remote_signer_pubkey: PublicKey,
+    pub user_pubkey: Option<PublicKey>,
     pub relays: Vec<String>,
     pub perms: Vec<String>,
     pub name: Option<String>,
@@ -114,7 +114,7 @@ impl Nip46SessionStore {
         sessions.remove(session_id).is_some()
     }
 
-    pub async fn set_user_pubkey(&self, session_id: &str, pubkey: RadrootsNostrPublicKey) -> bool {
+    pub async fn set_user_pubkey(&self, session_id: &str, pubkey: PublicKey) -> bool {
         let mut sessions = self.inner.lock().await;
         match sessions.get_mut(session_id) {
             Some(session) => {
@@ -322,8 +322,8 @@ mod tests {
     use super::*;
 
     fn build_session(id: &str, expires_at: Option<Instant>) -> Nip46Session {
-        let keys = RadrootsNostrKeys::generate();
-        let client = RadrootsNostrClient::new(keys.clone());
+        let keys = Keys::generate();
+        let client = DaemonNostrClient::with_keys(keys.clone());
         let pubkey = keys.public_key();
         Nip46Session {
             id: id.to_string(),
@@ -372,11 +372,11 @@ mod tests {
 
     #[test]
     fn public_view_marks_outbound_remote_signer_sessions() {
-        let client_keys = RadrootsNostrKeys::generate();
-        let remote_signer_keys = RadrootsNostrKeys::generate();
+        let client_keys = Keys::generate();
+        let remote_signer_keys = Keys::generate();
         let session = Nip46Session {
             id: "outbound".to_string(),
-            client: RadrootsNostrClient::new(client_keys.clone()),
+            client: DaemonNostrClient::with_keys(client_keys.clone()),
             client_keys: client_keys.clone(),
             client_pubkey: client_keys.public_key(),
             remote_signer_pubkey: remote_signer_keys.public_key(),
@@ -410,12 +410,12 @@ mod tests {
 
     #[test]
     fn public_view_keeps_remote_signer_and_user_pubkeys_distinct() {
-        let client_keys = RadrootsNostrKeys::generate();
-        let remote_signer_keys = RadrootsNostrKeys::generate();
-        let user_keys = RadrootsNostrKeys::generate();
+        let client_keys = Keys::generate();
+        let remote_signer_keys = Keys::generate();
+        let user_keys = Keys::generate();
         let session = Nip46Session {
             id: "hydrated-outbound".to_string(),
-            client: RadrootsNostrClient::new(client_keys.clone()),
+            client: DaemonNostrClient::with_keys(client_keys.clone()),
             client_keys: client_keys.clone(),
             client_pubkey: client_keys.public_key(),
             remote_signer_pubkey: remote_signer_keys.public_key(),
@@ -538,7 +538,7 @@ mod tests {
     #[tokio::test]
     async fn session_store_set_user_pubkey_handles_missing_and_expired() {
         let store = Nip46SessionStore::new();
-        let keys = RadrootsNostrKeys::generate();
+        let keys = Keys::generate();
         assert!(!store.set_user_pubkey("missing", keys.public_key()).await);
 
         let session = build_session(
@@ -560,7 +560,7 @@ mod tests {
             "active-user",
             Some(Instant::now() + Duration::from_secs(30)),
         );
-        let keys = RadrootsNostrKeys::generate();
+        let keys = Keys::generate();
         let pubkey = keys.public_key();
         store.insert(session).await;
         assert!(store.set_user_pubkey("active-user", pubkey).await);
@@ -572,7 +572,7 @@ mod tests {
     async fn session_store_require_auth_sets_flags_and_clears_pending() {
         let store = Nip46SessionStore::new();
         let mut session = build_session("auth", Some(Instant::now() + Duration::from_secs(30)));
-        let keys = RadrootsNostrKeys::generate();
+        let keys = Keys::generate();
         session.pending_request = Some(PendingNostrRequest {
             request_id: "req-1".to_string(),
             client_pubkey: keys.public_key(),
@@ -615,7 +615,7 @@ mod tests {
         let store = Nip46SessionStore::new();
         let mut session =
             build_session("authorize", Some(Instant::now() + Duration::from_secs(30)));
-        let keys = RadrootsNostrKeys::generate();
+        let keys = Keys::generate();
         session.pending_request = Some(PendingNostrRequest {
             request_id: "req-2".to_string(),
             client_pubkey: keys.public_key(),
@@ -646,7 +646,7 @@ mod tests {
     #[tokio::test]
     async fn session_store_set_pending_request_handles_missing_and_expired() {
         let store = Nip46SessionStore::new();
-        let keys = RadrootsNostrKeys::generate();
+        let keys = Keys::generate();
         let pending = PendingNostrRequest {
             request_id: "req-3".to_string(),
             client_pubkey: keys.public_key(),
@@ -671,7 +671,7 @@ mod tests {
                 Some(Instant::now() + Duration::from_secs(30)),
             ))
             .await;
-        let keys = RadrootsNostrKeys::generate();
+        let keys = Keys::generate();
         let pending = PendingNostrRequest {
             request_id: "req-active".to_string(),
             client_pubkey: keys.public_key(),

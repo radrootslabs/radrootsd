@@ -10,6 +10,10 @@ use uuid::Uuid;
 use crate::core::nip46::session::{
     Nip46Session, Nip46SessionAuthority, filter_perms, session_expires_at,
 };
+use crate::host_nostr::{
+    DaemonNostrClient, Filter, Keys, Kind, PublicKey, RelayPoolNotification, SecretKey,
+    SubscriptionId, Timestamp, parse_public_key, with_filter_tag,
+};
 use crate::transport::jsonrpc::nip46::connection::{
     Nip46ConnectInfo, Nip46ConnectMode, parse_connect_url,
 };
@@ -18,12 +22,6 @@ use crate::transport::jsonrpc::{MethodRegistry, RpcContext, RpcError};
 use crate::transport::nostr::protocol::sign_nip46_message;
 use nostr::JsonUtil;
 use nostr::nips::{nip44, nip46::NostrConnectMessage, nip46::NostrConnectRequest};
-use radroots_nostr::prelude::{
-    RadrootsNostrClient, RadrootsNostrFilter, RadrootsNostrKeys, RadrootsNostrKind,
-    RadrootsNostrPublicKey, RadrootsNostrRelayPoolNotification, RadrootsNostrSecretKey,
-    RadrootsNostrSubscriptionId, RadrootsNostrTimestamp, radroots_nostr_filter_tag,
-    radroots_nostr_parse_pubkey,
-};
 
 #[derive(Debug, Deserialize)]
 struct Nip46ConnectParams {
@@ -94,12 +92,12 @@ async fn connect_bunker(
         .remote_signer_pubkey
         .as_ref()
         .ok_or_else(|| RpcError::InvalidParams("missing remote signer pubkey".to_string()))?;
-    let remote_signer_pubkey = radroots_nostr_parse_pubkey(remote_signer_raw)
+    let remote_signer_pubkey = parse_public_key(remote_signer_raw)
         .map_err(|e| RpcError::InvalidParams(format!("invalid remote signer: {e}")))?;
 
-    let client_keys = RadrootsNostrKeys::generate();
+    let client_keys = Keys::generate();
     let client_pubkey = client_keys.public_key();
-    let client = RadrootsNostrClient::new(client_keys.clone());
+    let client = DaemonNostrClient::with_keys(client_keys.clone());
 
     add_relays(&client, &info.relays).await?;
     client.connect().await;
@@ -113,11 +111,7 @@ async fn connect_bunker(
     };
     let message = NostrConnectMessage::request(&request);
     let request_id = message.id().to_string();
-    let filter = connect_response_filter(
-        &remote_signer_pubkey,
-        &client_pubkey,
-        RadrootsNostrTimestamp::now(),
-    )?;
+    let filter = connect_response_filter(&remote_signer_pubkey, &client_pubkey, Timestamp::now())?;
     let notifications = client.clone().into_inner().notifications();
     let subscription = client
         .subscribe(filter, None)
@@ -195,15 +189,15 @@ async fn connect_nostrconnect(
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
         .ok_or_else(|| RpcError::InvalidParams("missing client_secret_key".to_string()))?;
-    let client_secret_key = RadrootsNostrSecretKey::parse(&client_secret_key)
+    let client_secret_key = SecretKey::parse(&client_secret_key)
         .map_err(|e| RpcError::InvalidParams(format!("invalid client_secret_key: {e}")))?;
-    let client_keys = RadrootsNostrKeys::new(client_secret_key);
+    let client_keys = Keys::new(client_secret_key);
     let client_pubkey = client_keys.public_key();
     let client_pubkey_raw = info
         .client_pubkey
         .as_ref()
         .ok_or_else(|| RpcError::InvalidParams("missing client pubkey".to_string()))?;
-    let expected_pubkey = radroots_nostr_parse_pubkey(client_pubkey_raw)
+    let expected_pubkey = parse_public_key(client_pubkey_raw)
         .map_err(|e| RpcError::InvalidParams(format!("invalid client pubkey: {e}")))?;
     if expected_pubkey != client_pubkey {
         return Err(RpcError::InvalidParams(
@@ -211,7 +205,7 @@ async fn connect_nostrconnect(
         ));
     }
 
-    let client = RadrootsNostrClient::new(client_keys.clone());
+    let client = DaemonNostrClient::with_keys(client_keys.clone());
     add_relays(&client, &info.relays).await?;
     client.connect().await;
     client
@@ -257,7 +251,7 @@ async fn connect_nostrconnect(
     })
 }
 
-async fn add_relays(client: &RadrootsNostrClient, relays: &[String]) -> Result<(), RpcError> {
+async fn add_relays(client: &DaemonNostrClient, relays: &[String]) -> Result<(), RpcError> {
     for relay in relays.iter() {
         client
             .add_relay(relay)
@@ -283,9 +277,9 @@ async fn claim_secret(ctx: &RpcContext, secret: Option<&str>) -> Result<(), RpcE
 }
 
 async fn send_connect_request(
-    client: &RadrootsNostrClient,
-    client_keys: &RadrootsNostrKeys,
-    remote_signer_pubkey: &RadrootsNostrPublicKey,
+    client: &DaemonNostrClient,
+    client_keys: &Keys,
+    remote_signer_pubkey: &PublicKey,
     message: NostrConnectMessage,
 ) -> Result<(), RpcError> {
     let event = sign_nip46_message(client_keys, *remote_signer_pubkey, message)
@@ -298,25 +292,25 @@ async fn send_connect_request(
 }
 
 fn connect_response_filter(
-    remote_signer_pubkey: &RadrootsNostrPublicKey,
-    client_pubkey: &RadrootsNostrPublicKey,
-    since: RadrootsNostrTimestamp,
-) -> Result<RadrootsNostrFilter, RpcError> {
-    let filter = RadrootsNostrFilter::new()
-        .kind(RadrootsNostrKind::NostrConnect)
+    remote_signer_pubkey: &PublicKey,
+    client_pubkey: &PublicKey,
+    since: Timestamp,
+) -> Result<Filter, RpcError> {
+    let filter = Filter::new()
+        .kind(Kind::NostrConnect)
         .author(*remote_signer_pubkey)
         .since(since);
-    radroots_nostr_filter_tag(filter, "p", vec![client_pubkey.to_hex()])
+    with_filter_tag(filter, "p", vec![client_pubkey.to_hex()])
         .map_err(|e| RpcError::Other(format!("nip46 connect filter failed: {e}")))
 }
 
 async fn wait_for_connect_response(
-    client: &RadrootsNostrClient,
-    client_keys: &RadrootsNostrKeys,
-    remote_signer_pubkey: &RadrootsNostrPublicKey,
+    client: &DaemonNostrClient,
+    client_keys: &Keys,
+    remote_signer_pubkey: &PublicKey,
     request_id: &str,
-    mut notifications: broadcast::Receiver<RadrootsNostrRelayPoolNotification>,
-    subscription_id: &RadrootsNostrSubscriptionId,
+    mut notifications: broadcast::Receiver<RelayPoolNotification>,
+    subscription_id: &SubscriptionId,
 ) -> Result<NostrConnectMessage, RpcError> {
     let timeout = sleep(Duration::from_secs(DEFAULT_TIMEOUT_SECS));
     tokio::pin!(timeout);
@@ -336,11 +330,11 @@ async fn wait_for_connect_response(
                         return Err(RpcError::Other("nip46 connect notification closed".to_string()));
                     }
                 };
-                let RadrootsNostrRelayPoolNotification::Event { event, .. } = notification else {
+                let RelayPoolNotification::Event { event, .. } = notification else {
                     continue;
                 };
                 let event = (*event).clone();
-                if event.kind != RadrootsNostrKind::NostrConnect
+                if event.kind != Kind::NostrConnect
                     || event.pubkey != *remote_signer_pubkey
                 {
                     continue;
@@ -427,15 +421,15 @@ fn validate_nostrconnect_response(
 }
 
 async fn wait_for_nostrconnect_response(
-    client: &RadrootsNostrClient,
-    client_keys: &RadrootsNostrKeys,
-    client_pubkey: &RadrootsNostrPublicKey,
+    client: &DaemonNostrClient,
+    client_keys: &Keys,
+    client_pubkey: &PublicKey,
     secret: &str,
-) -> Result<(RadrootsNostrPublicKey, NostrConnectMessage), RpcError> {
-    let filter = RadrootsNostrFilter::new()
-        .kind(RadrootsNostrKind::NostrConnect)
-        .since(RadrootsNostrTimestamp::now());
-    let filter = radroots_nostr_filter_tag(filter, "p", vec![client_pubkey.to_hex()])
+) -> Result<(PublicKey, NostrConnectMessage), RpcError> {
+    let filter = Filter::new()
+        .kind(Kind::NostrConnect)
+        .since(Timestamp::now());
+    let filter = with_filter_tag(filter, "p", vec![client_pubkey.to_hex()])
         .map_err(|e| RpcError::Other(format!("nip46 connect filter failed: {e}")))?;
     let mut notifications = client.clone().into_inner().notifications();
     let subscription = client
@@ -459,11 +453,11 @@ async fn wait_for_nostrconnect_response(
                         return Err(RpcError::Other("nip46 connect notification closed".to_string()));
                     }
                 };
-                let RadrootsNostrRelayPoolNotification::Event { event, .. } = notification else {
+                let RelayPoolNotification::Event { event, .. } = notification else {
                     continue;
                 };
                 let event = (*event).clone();
-                if event.kind != RadrootsNostrKind::NostrConnect {
+                if event.kind != Kind::NostrConnect {
                     continue;
                 }
                 let decrypted = nip44::decrypt(

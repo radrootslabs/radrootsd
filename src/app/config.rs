@@ -1,6 +1,6 @@
+use crate::host_nostr::Metadata;
 use anyhow::{Context, Result, bail};
-use radroots_event::profile::{RadrootsAuthoredProfile, RadrootsNip05Identifier};
-use radroots_nostr::prelude::RadrootsNostrMetadata;
+use radroots_event::profile::{AuthoredProfile, Nip05Identifier};
 use radroots_runtime::RadrootsNostrServiceConfig;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -176,7 +176,7 @@ struct RawConfiguration {
 
 #[derive(Debug, Deserialize, Clone)]
 struct RawSettings {
-    pub metadata: RadrootsNostrMetadata,
+    pub metadata: Metadata,
     pub config: RawConfiguration,
 }
 
@@ -390,18 +390,18 @@ impl Configuration {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Settings {
-    pub metadata: RadrootsNostrMetadata,
+    pub metadata: Metadata,
     pub config: Configuration,
 }
 
 impl Settings {
-    pub fn authored_profile(&self) -> Result<RadrootsAuthoredProfile> {
+    pub fn authored_profile(&self) -> Result<AuthoredProfile> {
         let metadata = &self.metadata;
         let name = metadata
             .name
             .as_deref()
             .ok_or_else(|| anyhow::anyhow!("metadata.name is required for the authored Profile"))?;
-        let mut profile = RadrootsAuthoredProfile::new(name.to_owned())
+        let mut profile = AuthoredProfile::new(name.to_owned())
             .context("metadata.name is invalid for the authored Profile")?;
 
         if let Some(display_name) = metadata.display_name.as_ref() {
@@ -411,7 +411,7 @@ impl Settings {
             profile = profile.with_about(about.clone());
         }
         if let Some(nip05) = metadata.nip05.as_deref() {
-            let nip05 = RadrootsNip05Identifier::parse(nip05)
+            let nip05 = Nip05Identifier::parse(nip05)
                 .context("metadata.nip05 is invalid for the authored Profile")?;
             profile = profile.with_nip05(nip05);
         }
@@ -485,7 +485,7 @@ mod tests {
         RadrootsdRuntimeContractOutput, default_runtime_paths_for_process,
         resolve_runtime_paths_with_resolver, runtime_contract_with_selection,
     };
-    use radroots_event::profile::RadrootsNip05Identifier;
+    use radroots_event::profile::Nip05Identifier;
     use radroots_runtime::RadrootsNostrServiceConfig;
     use radroots_runtime_paths::{
         RadrootsHostEnvironment, RadrootsPathProfile, RadrootsPathResolver, RadrootsPlatform,
@@ -609,7 +609,7 @@ mod tests {
 
     #[test]
     fn authored_profile_accepts_only_strict_metadata_fields() {
-        let mut metadata = radroots_nostr::prelude::RadrootsNostrMetadata::new()
+        let mut metadata = crate::host_nostr::Metadata::new()
             .name("radrootsd")
             .display_name("Radroots daemon")
             .about("local relay publishing")
@@ -631,7 +631,7 @@ mod tests {
         assert_eq!(profile.display_name(), Some("Radroots daemon"));
         assert_eq!(profile.about(), Some("local relay publishing"));
         assert_eq!(
-            profile.nip05().map(RadrootsNip05Identifier::as_str),
+            profile.nip05().map(Nip05Identifier::as_str),
             Some("daemon@radroots.example")
         );
         assert_eq!(profile.bot(), Some(true));
@@ -641,7 +641,7 @@ mod tests {
 
     #[test]
     fn authored_profile_rejects_url_only_media() {
-        let metadata = radroots_nostr::prelude::RadrootsNostrMetadata::new()
+        let metadata = crate::host_nostr::Metadata::new()
             .name("radrootsd")
             .picture(url::Url::parse("https://blossom.example/blob").expect("picture URL"));
         let settings = super::Settings {
@@ -668,7 +668,7 @@ mod tests {
     #[test]
     fn authored_profile_rejects_missing_invalid_and_unsupported_fields() {
         let mut settings = super::Settings {
-            metadata: radroots_nostr::prelude::RadrootsNostrMetadata::new(),
+            metadata: crate::host_nostr::Metadata::new(),
             config: Configuration {
                 service: service_config(),
                 rpc: RpcConfig::default(),

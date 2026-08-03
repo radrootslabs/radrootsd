@@ -1,8 +1,7 @@
 use anyhow::Result;
 use jsonrpsee::server::RpcModule;
-use radroots_transport_publish_protocol::{
-    METHOD_CAPABILITIES, METHOD_EVENT, METHOD_JOB_GET, METHOD_JOB_LIST,
-    TransportPublishCapabilities, TransportPublishEventRequest,
+use radroots_protocol::radrootsd::transport_publish::v5::{
+    Capabilities, EventRequest, METHOD_CAPABILITIES, METHOD_EVENT, METHOD_JOB_GET, METHOD_JOB_LIST,
 };
 use serde::Deserialize;
 
@@ -37,7 +36,7 @@ fn register_capabilities(
     registry.track(METHOD_CAPABILITIES);
     module.register_async_method(METHOD_CAPABILITIES, |_params, ctx, extensions| async move {
         require_publish_principal(&extensions)?;
-        Ok::<TransportPublishCapabilities, RpcError>(TransportPublishCapabilities::v5(
+        Ok::<Capabilities, RpcError>(Capabilities::v5(
             ctx.state.transport_publish.config.max_event_bytes,
             ctx.state.transport_publish.config.max_targets_per_request,
         ))
@@ -49,7 +48,7 @@ fn register_event(module: &mut RpcModule<RpcContext>, registry: &MethodRegistry)
     registry.track(METHOD_EVENT);
     module.register_async_method(METHOD_EVENT, |params, ctx, extensions| async move {
         let principal = require_publish_principal(&extensions)?;
-        let request: TransportPublishEventRequest = params
+        let request: EventRequest = params
             .parse()
             .map_err(|error| RpcError::InvalidParams(error.to_string()))?;
         ctx.state
@@ -118,7 +117,6 @@ fn rpc_error_from_transport_publish(error: TransportPublishError) -> RpcError {
         TransportPublishError::InvalidSignedEvent(message) => RpcError::InvalidParams(message),
         TransportPublishError::EventWire(_)
         | TransportPublishError::SignedEvent(_)
-        | TransportPublishError::SignedEventSignature(_)
         | TransportPublishError::Relay(_) => RpcError::InvalidParams(error.to_string()),
         TransportPublishError::IdempotencyConflict(_) => RpcError::Other(error.to_string()),
         other => RpcError::Other(other.to_string()),
@@ -131,30 +129,30 @@ mod tests {
     use std::sync::Arc;
 
     use crate::app::config::{Nip46Config, TransportPublishConfig, TransportPublishNostrConfig};
+    use crate::app::identity_storage::DaemonIdentity;
     use crate::core::Radrootsd;
     use crate::core::transport_publish::{
         PublishJobVisibility, PublishPrincipalInit, generate_bearer_token, hash_bearer_token,
     };
+    use crate::host_nostr::{Metadata, Timestamp};
     use crate::transport::jsonrpc::auth::{
         TransportPublishAuthorization, authorize_transport_publish_request,
     };
     use crate::transport::jsonrpc::{MethodRegistry, RpcContext};
+    use crate::transport::relay_publish::MockRelayPublishAdapter as RadrootsMockRelayPublishAdapter;
     use jsonrpsee::server::RpcModule;
     use nostr::JsonUtil;
     use nostr::{EventBuilder, Kind, Tag};
-    use radroots_identity::RadrootsIdentity;
-    use radroots_nostr::prelude::{RadrootsNostrMetadata, RadrootsNostrTimestamp};
-    use radroots_transport_nostr::RadrootsMockRelayPublishAdapter;
-    use radroots_transport_publish_protocol::{
-        NostrPublishTargetSourcePolicy, TransportPublishTargetPolicyName,
+    use radroots_protocol::radrootsd::transport_publish::v5::{
+        NostrTargetSourcePolicy, TargetPolicyName,
     };
 
-    fn signed_event(identity: &RadrootsIdentity) -> String {
+    fn signed_event(identity: &DaemonIdentity) -> String {
         // This method accepts an already-signed wire event; construct the test
         // fixture at that explicit low-level interoperability boundary.
         let event = EventBuilder::new(Kind::Custom(30_402), "{}")
             .tag(Tag::identifier("listing-1"))
-            .custom_created_at(RadrootsNostrTimestamp::from_secs(1_700_000_000))
+            .custom_created_at(Timestamp::from_secs(1_700_000_000))
             .sign_with_keys(identity.keys())
             .expect("signed event");
         event.as_json()
@@ -164,9 +162,9 @@ mod tests {
         admin: bool,
         transport_publish_config: TransportPublishConfig,
     ) -> (RpcModule<RpcContext>, RpcContext, String, String) {
-        let identity = RadrootsIdentity::generate();
+        let identity = DaemonIdentity::generate();
         let signed_event = signed_event(&identity);
-        let metadata: RadrootsNostrMetadata =
+        let metadata: Metadata =
             serde_json::from_str(r#"{"name":"radrootsd-test"}"#).expect("metadata");
         let state = Radrootsd::new(
             identity.clone(),
@@ -189,11 +187,9 @@ mod tests {
                 token_hash: hash_bearer_token(token.as_str()),
                 allowed_pubkeys: vec![identity.public_key_hex()],
                 allowed_kinds: vec![30_402],
-                allowed_target_policies: vec![TransportPublishTargetPolicyName::Nostr],
+                allowed_target_policies: vec![TargetPolicyName::Nostr],
                 allowed_explicit_transport_kinds: Vec::new(),
-                allowed_nostr_source_policies: vec![
-                    NostrPublishTargetSourcePolicy::DaemonDefaultOnly,
-                ],
+                allowed_nostr_source_policies: vec![NostrTargetSourcePolicy::DaemonDefaultOnly],
                 allow_request_targets: false,
                 job_visibility: if admin {
                     PublishJobVisibility::Admin
@@ -257,7 +253,7 @@ mod tests {
     #[tokio::test]
     async fn publish_event_rejects_principal_scope_gap() {
         let (module, _ctx, _token, _pubkey) = module_with_principal(false);
-        let other_identity = RadrootsIdentity::generate();
+        let other_identity = DaemonIdentity::generate();
         let event = signed_event(&other_identity);
         let request = format!(
             r#"{{

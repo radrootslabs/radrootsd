@@ -1,8 +1,8 @@
 #![forbid(unsafe_code)]
 
+use crate::host_nostr::{Keys, PublicKey};
 use nostr::nips::nip46::NostrConnectMessage;
 use nostr::{Event, EventBuilder};
-use radroots_nostr::prelude::{RadrootsNostrKeys, RadrootsNostrPublicKey};
 
 /// Encrypts and locally signs a NIP-46 transport message.
 ///
@@ -10,8 +10,8 @@ use radroots_nostr::prelude::{RadrootsNostrKeys, RadrootsNostrPublicKey};
 /// kind 24133 is protocol traffic, not a generic Radroots product-authoring
 /// surface.
 pub(crate) fn sign_nip46_message(
-    sender_keys: &RadrootsNostrKeys,
-    receiver_pubkey: RadrootsNostrPublicKey,
+    sender_keys: &Keys,
+    receiver_pubkey: PublicKey,
     message: NostrConnectMessage,
 ) -> Result<Event, nostr::event::builder::Error> {
     EventBuilder::nostr_connect(sender_keys, receiver_pubkey, message)?.sign_with_keys(sender_keys)
@@ -19,23 +19,23 @@ pub(crate) fn sign_nip46_message(
 
 #[cfg(test)]
 mod tests {
+    use crate::host_nostr::{Keys, Kind};
     use nostr::JsonUtil;
     use nostr::nips::{nip44, nip46::NostrConnectRequest};
-    use radroots_nostr::prelude::{RadrootsNostrKeys, RadrootsNostrKind};
 
     use super::sign_nip46_message;
 
     #[test]
     fn signed_nip46_message_is_bound_to_sender_and_receiver() {
-        let sender = RadrootsNostrKeys::generate();
-        let receiver = RadrootsNostrKeys::generate();
+        let sender = Keys::generate();
+        let receiver = Keys::generate();
         let message = nostr::nips::nip46::NostrConnectMessage::request(&NostrConnectRequest::Ping);
         let request_id = message.id().to_owned();
 
         let event = sign_nip46_message(&sender, receiver.public_key(), message)
             .expect("signed NIP-46 message");
 
-        assert_eq!(event.kind, RadrootsNostrKind::NostrConnect);
+        assert_eq!(event.kind, Kind::NostrConnect);
         assert_eq!(event.pubkey, sender.public_key());
         assert!(
             event

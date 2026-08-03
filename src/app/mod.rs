@@ -1,6 +1,6 @@
 pub mod cli;
 pub mod config;
-mod identity_storage;
+pub(crate) mod identity_storage;
 mod paths;
 mod runtime;
 
