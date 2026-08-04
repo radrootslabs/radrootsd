@@ -122,9 +122,6 @@
               }
               export LLVM_COV="${llvmToolsBin}/llvm-cov"
               export LLVM_PROFDATA="${llvmToolsBin}/llvm-profdata"
-              coverage_target_dir="$(mktemp -d "''${TMPDIR:-/tmp}/radrootsd-llvm-cov.XXXXXX")"
-              trap 'rm -rf "$coverage_target_dir"' EXIT
-              export CARGO_TARGET_DIR="$coverage_target_dir"
               mkdir -p target/coverage
               cargo +nightly llvm-cov clean --workspace
               cargo +nightly llvm-cov --workspace --all-features --branch --no-report

@@ -197,8 +197,10 @@ fn transport_publish_sources_reject_removed_protocol_identifiers() {
         }
     }
     assert!(
-        manifest_source.contains("radroots_transport_nostr = { version = \"=0.1.0-alpha\""),
-        "Cargo.toml must depend on the exact radroots_transport_nostr registry version"
+        manifest_source.contains(
+            "radroots_transport_nostr = { git = \"https://github.com/radrootslabs/lib.git\", rev = \"74f5c91cbc80248df1f51f644004daaf8ae8e9be\", version = \"=0.1.0-alpha\""
+        ),
+        "Cargo.toml must pin radroots_transport_nostr to the approved Lib revision and exact version"
     );
     assert!(
         !manifest_source.contains("package = \"radroots_transport_nostr\""),

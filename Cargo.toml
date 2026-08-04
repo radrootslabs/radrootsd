@@ -11,14 +11,14 @@ description = "Radroots local runtime daemon for storage, sync, and relay publis
 resolver = "3"
 
 [workspace.dependencies]
-radroots_event = { version = "=0.1.0-alpha" }
-radroots_event_codec = { version = "=0.1.0-alpha" }
-radroots_identity = { version = "=0.1.0-alpha" }
-radroots_nostr = { version = "=0.1.0-alpha" }
-radroots_protocol = { version = "=0.1.0-alpha", default-features = false }
-radroots_secrets = { version = "=0.1.0-alpha", default-features = false }
-radroots_transport_nostr = { version = "=0.1.0-alpha", default-features = false }
-radroots_transport = { version = "=0.1.0-alpha", default-features = false }
+radroots_event = { git = "https://github.com/radrootslabs/lib.git", rev = "74f5c91cbc80248df1f51f644004daaf8ae8e9be", version = "=0.1.0-alpha" }
+radroots_event_codec = { git = "https://github.com/radrootslabs/lib.git", rev = "74f5c91cbc80248df1f51f644004daaf8ae8e9be", version = "=0.1.0-alpha" }
+radroots_identity = { git = "https://github.com/radrootslabs/lib.git", rev = "74f5c91cbc80248df1f51f644004daaf8ae8e9be", version = "=0.1.0-alpha" }
+radroots_nostr = { git = "https://github.com/radrootslabs/lib.git", rev = "74f5c91cbc80248df1f51f644004daaf8ae8e9be", version = "=0.1.0-alpha" }
+radroots_protocol = { git = "https://github.com/radrootslabs/lib.git", rev = "74f5c91cbc80248df1f51f644004daaf8ae8e9be", version = "=0.1.0-alpha", default-features = false }
+radroots_secrets = { git = "https://github.com/radrootslabs/lib.git", rev = "74f5c91cbc80248df1f51f644004daaf8ae8e9be", version = "=0.1.0-alpha", default-features = false }
+radroots_transport_nostr = { git = "https://github.com/radrootslabs/lib.git", rev = "74f5c91cbc80248df1f51f644004daaf8ae8e9be", version = "=0.1.0-alpha", default-features = false }
+radroots_transport = { git = "https://github.com/radrootslabs/lib.git", rev = "74f5c91cbc80248df1f51f644004daaf8ae8e9be", version = "=0.1.0-alpha", default-features = false }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage_nightly)'] }
