@@ -1313,9 +1313,9 @@ checksum = "f0efe882e02d206d8d279c20eb40e03baf7cb5136a1476dc084a324fbc3ec42d"
 
 [[package]]
 name = "nostr"
-version = "0.44.2"
+version = "0.44.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3aa5e3b6a278ed061835fe1ee293b71641e6bf8b401cfe4e1834bbf4ef0a34e1"
+checksum = "c7d3d987ea7078dc36947cde532637c472a229426702e4331dd7667325378bd9"
 dependencies = [
  "aes",
  "base64",
@@ -1670,7 +1670,7 @@ dependencies = [
  "radroots_identity",
  "serde",
  "serde_json",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

@@ -27,9 +27,9 @@ use radroots_protocol::radrootsd::transport_publish::v5::{
     TargetSource,
 };
 use radroots_transport::{
-    RadrootsTransportKind, RadrootsTransportMeshScopeId, RadrootsTransportSatisfactionClass,
-    RadrootsTransportSatisfactionPolicy, RadrootsTransportTarget,
-    RadrootsTransportTargetFingerprint, RadrootsTransportTargetLabel,
+    RadrootsTransportSatisfactionClass, RadrootsTransportSatisfactionPolicy,
+    Target as TransportTarget, TransportId,
+    target::{TargetFingerprint, TargetLabel, TargetScope},
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -328,18 +328,16 @@ impl TransportPublish {
         let mut resolved = Vec::new();
         let mut outcomes = Vec::new();
         for (index, target) in targets.iter().enumerate() {
-            match RadrootsTransportKind::parse_canonical(target.transport_kind.as_str()).map_err(
-                |error| {
-                    TransportPublishError::InvalidSignedEvent(format!(
-                        "transport target {index} kind is invalid: {error}"
-                    ))
-                },
-            )? {
-                RadrootsTransportKind::Nostr => {
+            match TransportId::parse_canonical(target.transport_kind.as_str()).map_err(|error| {
+                TransportPublishError::InvalidSignedEvent(format!(
+                    "transport target {index} kind is invalid: {error}"
+                ))
+            })? {
+                TransportId::NOSTR => {
                     self.resolve_request_target(&mut resolved, &mut outcomes, target)
                         .await;
                 }
-                RadrootsTransportKind::Reticulum => {
+                TransportId::RETICULUM => {
                     outcomes.push(reticulum_unavailable_outcome(target));
                 }
                 _ => outcomes.push(unsupported_transport_outcome(target)),
@@ -768,13 +766,12 @@ impl PublishPrincipal {
                     ));
                 }
                 for target in targets {
-                    let kind =
-                        RadrootsTransportKind::parse_canonical(target.transport_kind.as_str())
-                            .map_err(|error| {
-                                TransportPublishError::InvalidScope(format!(
-                                    "principal explicit target kind check failed: {error}"
-                                ))
-                            })?;
+                    let kind = TransportId::parse_canonical(target.transport_kind.as_str())
+                        .map_err(|error| {
+                            TransportPublishError::InvalidScope(format!(
+                                "principal explicit target kind check failed: {error}"
+                            ))
+                        })?;
                     let transport_kind = kind.canonical_label();
                     if !self
                         .allowed_explicit_transport_kinds
@@ -866,9 +863,7 @@ impl PublishRelayResolution {
         self.targets.len() + self.outcomes.len()
     }
 
-    fn target_fingerprints(
-        &self,
-    ) -> Result<Vec<RadrootsTransportTargetFingerprint>, TransportPublishError> {
+    fn target_fingerprints(&self) -> Result<Vec<TargetFingerprint>, TransportPublishError> {
         let mut fingerprints = Vec::with_capacity(self.target_count());
         for target in &self.targets {
             fingerprints.push(target.fingerprint()?);
@@ -881,22 +876,21 @@ impl PublishRelayResolution {
 }
 
 impl ResolvedPublishRelay {
-    fn fingerprint(&self) -> Result<RadrootsTransportTargetFingerprint, TransportPublishError> {
+    fn fingerprint(&self) -> Result<TargetFingerprint, TransportPublishError> {
         let scope = self
             .target_scope
             .as_deref()
-            .map(RadrootsTransportMeshScopeId::parse)
+            .map(TargetScope::parse)
             .transpose()
             .map_err(|error| TransportPublishError::Transport(error.to_string()))?;
         let label = self
             .target_label
             .as_deref()
-            .map(RadrootsTransportTargetLabel::parse)
+            .map(TargetLabel::parse)
             .transpose()
             .map_err(|error| TransportPublishError::Transport(error.to_string()))?;
-        let target =
-            RadrootsTransportTarget::nostr_relay_with_metadata(self.url.as_str(), scope, label)
-                .map_err(|error| TransportPublishError::Transport(error.to_string()))?;
+        let target = TransportTarget::nostr_relay_with_metadata(self.url.as_str(), scope, label)
+            .map_err(|error| TransportPublishError::Transport(error.to_string()))?;
         Ok(target.fingerprint().clone())
     }
 }
@@ -2561,7 +2555,7 @@ pub fn parse_target_policy(value: &str) -> Result<TargetPolicyName, TransportPub
 }
 
 pub fn parse_explicit_transport_kind(value: &str) -> Result<String, TransportPublishError> {
-    let kind = RadrootsTransportKind::parse_canonical(value).map_err(|error| {
+    let kind = TransportId::parse_canonical(value).map_err(|error| {
         TransportPublishError::InvalidScope(format!(
             "unknown explicit transport kind `{value}`: {error}"
         ))
@@ -2812,9 +2806,9 @@ fn publish_outcome_kind(kind: RadrootsRelayOutcomeKind) -> OutcomeKind {
 fn target_outcome_fingerprint(
     target: &TargetOutcome,
     index: usize,
-) -> Result<RadrootsTransportTargetFingerprint, TransportPublishError> {
-    let transport_kind = RadrootsTransportKind::parse_canonical(target.transport_kind.as_str())
-        .map_err(|error| {
+) -> Result<TargetFingerprint, TransportPublishError> {
+    let transport_kind =
+        TransportId::parse_canonical(target.transport_kind.as_str()).map_err(|error| {
             TransportPublishError::InvalidPublishJobState(format!(
                 "target outcome {index} has invalid transport kind: {error}"
             ))
@@ -2822,7 +2816,7 @@ fn target_outcome_fingerprint(
     let scope = target
         .target_scope
         .as_deref()
-        .map(RadrootsTransportMeshScopeId::parse)
+        .map(TargetScope::parse)
         .transpose()
         .map_err(|error| {
             TransportPublishError::InvalidPublishJobState(format!(
@@ -2832,7 +2826,7 @@ fn target_outcome_fingerprint(
     let label = target
         .target_label
         .as_deref()
-        .map(RadrootsTransportTargetLabel::parse)
+        .map(TargetLabel::parse)
         .transpose()
         .map_err(|error| {
             TransportPublishError::InvalidPublishJobState(format!(
@@ -2854,24 +2848,31 @@ fn target_outcome_fingerprint(
 }
 
 fn transport_target_from_outcome_parts(
-    transport_kind: RadrootsTransportKind,
+    transport_kind: TransportId,
     endpoint_uri: &str,
-    scope: Option<RadrootsTransportMeshScopeId>,
-    label: Option<RadrootsTransportTargetLabel>,
-) -> Result<RadrootsTransportTarget, radroots_transport::RadrootsTransportError> {
+    scope: Option<TargetScope>,
+    label: Option<TargetLabel>,
+) -> Result<TransportTarget, radroots_transport::RadrootsTransportError> {
     match transport_kind {
-        RadrootsTransportKind::Nostr => {
-            RadrootsTransportTarget::nostr_relay_with_metadata(endpoint_uri, scope, label)
+        TransportId::NOSTR => {
+            TransportTarget::nostr_relay_with_metadata(endpoint_uri, scope, label)
         }
-        RadrootsTransportKind::Reticulum => {
+        TransportId::RETICULUM => {
             if endpoint_uri != RADROOTS_RETICULUM_ENDPOINT_URI {
                 return Err(radroots_transport::RadrootsTransportError::InvalidTargetUri);
             }
-            RadrootsTransportTarget::reticulum_with_metadata(endpoint_uri, scope, label)
+            let scope = match scope {
+                Some(scope) => scope,
+                None => TargetScope::parse("local")?,
+            };
+            TransportTarget::new_with_metadata(
+                TransportId::RETICULUM,
+                endpoint_uri,
+                Some(scope),
+                label,
+            )
         }
-        RadrootsTransportKind::Local => {
-            RadrootsTransportTarget::local_with_metadata(endpoint_uri, scope, label)
-        }
+        TransportId::LOCAL => TransportTarget::local_with_metadata(endpoint_uri, scope, label),
         _ => Err(radroots_transport::RadrootsTransportError::InvalidTargetUri),
     }
 }
@@ -3235,7 +3236,7 @@ mod tests {
         RETICULUM_ENDPOINT_URI as RADROOTS_RETICULUM_ENDPOINT_URI,
         RETICULUM_UNAVAILABLE_MESSAGE as RADROOTS_RETICULUM_UNAVAILABLE_MESSAGE,
     };
-    use radroots_transport::RadrootsTransportTarget;
+    use radroots_transport::Target as TransportTarget;
     use sqlx::Row;
     use sqlx::sqlite::{SqliteConnectOptions, SqliteConnection};
     use std::collections::BTreeMap;
@@ -5356,8 +5357,7 @@ mod tests {
         let proxy = proxy.with_publisher(Arc::new(adapter.clone()));
         let principal =
             explicit_target_principal(&proxy, identity.public_key_hex(), PublishJobVisibility::Own);
-        let required_target =
-            RadrootsTransportTarget::nostr_relay(RELAY_PRIMARY).expect("required target");
+        let required_target = TransportTarget::nostr_relay(RELAY_PRIMARY).expect("required target");
         let request = EventRequest {
             raw_event_json: signed_event(&identity, "{}"),
             target_policy: TargetPolicy::explicit_targets(vec![
@@ -5401,8 +5401,7 @@ mod tests {
         let proxy = proxy.with_publisher(Arc::new(adapter.clone()));
         let principal =
             explicit_target_principal(&proxy, identity.public_key_hex(), PublishJobVisibility::Own);
-        let required_target =
-            RadrootsTransportTarget::nostr_relay(RELAY_PRIMARY).expect("required target");
+        let required_target = TransportTarget::nostr_relay(RELAY_PRIMARY).expect("required target");
         let request = EventRequest {
             raw_event_json: signed_event(&identity, "{}"),
             target_policy: TargetPolicy::explicit_targets(vec![
@@ -5440,8 +5439,7 @@ mod tests {
         let (proxy, adapter) = transport_publish(config_with_defaults(vec![RELAY_PRIMARY]));
         let principal =
             explicit_target_principal(&proxy, identity.public_key_hex(), PublishJobVisibility::Own);
-        let stale_target =
-            RadrootsTransportTarget::nostr_relay(RELAY_SECONDARY).expect("stale target");
+        let stale_target = TransportTarget::nostr_relay(RELAY_SECONDARY).expect("stale target");
         let request = EventRequest {
             raw_event_json: signed_event(&identity, "{}"),
             target_policy: TargetPolicy::explicit_targets(vec![Target::nostr(RELAY_PRIMARY)]),
