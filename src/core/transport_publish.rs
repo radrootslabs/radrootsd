@@ -27,8 +27,7 @@ use radroots_protocol::radrootsd::transport_publish::v5::{
     TargetSource,
 };
 use radroots_transport::{
-    RadrootsTransportSatisfactionClass, RadrootsTransportSatisfactionPolicy,
-    Target as TransportTarget, TransportId,
+    Error as TransportError, Target as TransportTarget, TransportId,
     target::{TargetFingerprint, TargetLabel, TargetScope},
 };
 use serde::{Deserialize, Serialize};
@@ -616,15 +615,9 @@ impl TransportPublish {
                 .collect(),
         )
         .map_err(|error| TransportPublishError::Relay(error.to_string()))?;
-        let satisfaction_policy = satisfaction_policy_from_delivery_policy(
-            &delivery_policy,
-            target_count,
-            resolution.targets.as_slice(),
-        )?;
         let publish_relays = target_set.relays().to_vec();
         let publish_request =
-            RadrootsRelayPublishRequest::new(signed_event, target_set, current_unix_millis())
-                .with_satisfaction_policy(satisfaction_policy);
+            RadrootsRelayPublishRequest::new(signed_event, target_set, current_unix_millis());
         let started = Instant::now();
         let publish_timeout = Duration::from_millis(timeout_ms);
         let receipts =
@@ -2852,14 +2845,14 @@ fn transport_target_from_outcome_parts(
     endpoint_uri: &str,
     scope: Option<TargetScope>,
     label: Option<TargetLabel>,
-) -> Result<TransportTarget, radroots_transport::RadrootsTransportError> {
+) -> Result<TransportTarget, TransportError> {
     match transport_kind {
         TransportId::NOSTR => {
             TransportTarget::nostr_relay_with_metadata(endpoint_uri, scope, label)
         }
         TransportId::RETICULUM => {
             if endpoint_uri != RADROOTS_RETICULUM_ENDPOINT_URI {
-                return Err(radroots_transport::RadrootsTransportError::InvalidTargetUri);
+                return Err(TransportError::InvalidTargetUri);
             }
             let scope = match scope {
                 Some(scope) => scope,
@@ -2873,7 +2866,7 @@ fn transport_target_from_outcome_parts(
             )
         }
         TransportId::LOCAL => TransportTarget::local_with_metadata(endpoint_uri, scope, label),
-        _ => Err(radroots_transport::RadrootsTransportError::InvalidTargetUri),
+        _ => Err(TransportError::InvalidTargetUri),
     }
 }
 
@@ -2912,45 +2905,6 @@ fn required_outcomes_for_policy<'a>(
             })
         })
         .collect()
-}
-
-fn satisfaction_policy_from_delivery_policy(
-    delivery_policy: &DeliveryPolicy,
-    target_count: usize,
-    nostr_targets: &[ResolvedPublishRelay],
-) -> Result<RadrootsTransportSatisfactionPolicy, TransportPublishError> {
-    match delivery_policy {
-        DeliveryPolicy::Any => Ok(RadrootsTransportSatisfactionPolicy::any_accepted()),
-        DeliveryPolicy::All => Ok(RadrootsTransportSatisfactionPolicy::all_accepted()),
-        DeliveryPolicy::Quorum { quorum } => {
-            let required = (*quorum).min(target_count).min(nostr_targets.len()).max(1);
-            Ok(RadrootsTransportSatisfactionPolicy::quorum_accepted(
-                u16::try_from(required).unwrap_or(u16::MAX),
-            ))
-        }
-        DeliveryPolicy::RequiredTargets { targets } => {
-            let nostr_required_targets = targets
-                .iter()
-                .filter_map(|required| {
-                    nostr_targets.iter().find_map(|target| {
-                        target
-                            .fingerprint()
-                            .ok()
-                            .filter(|fingerprint| fingerprint.as_str() == required.as_str())
-                    })
-                })
-                .collect::<Vec<_>>();
-            if nostr_required_targets.is_empty() {
-                Ok(RadrootsTransportSatisfactionPolicy::no_wait())
-            } else {
-                Ok(RadrootsTransportSatisfactionPolicy::required_targets(
-                    RadrootsTransportSatisfactionClass::Accepted,
-                    nostr_required_targets,
-                )
-                .map_err(|error| TransportPublishError::Transport(error.to_string()))?)
-            }
-        }
-    }
 }
 
 fn delivery_status(

@@ -198,7 +198,7 @@ fn transport_publish_sources_reject_removed_protocol_identifiers() {
     }
     assert!(
         manifest_source.contains(
-            "radroots_transport_nostr = { git = \"https://github.com/radrootslabs/lib.git\", rev = \"74f5c91cbc80248df1f51f644004daaf8ae8e9be\", version = \"=0.1.0-alpha\""
+            "radroots_transport_nostr = { git = \"https://github.com/radrootslabs/lib.git\", rev = \"691b3c844bb8824fd16b2ff4fb37b8c09bac208d\", version = \"=0.1.0-alpha\""
         ),
         "Cargo.toml must pin radroots_transport_nostr to the approved Lib revision and exact version"
     );
@@ -401,32 +401,10 @@ fn transport_publish_required_targets_stay_fingerprint_exact() {
         );
     }
 
-    let satisfaction_arm = source_window(
-        daemon_source.as_str(),
-        "DeliveryPolicy::RequiredTargets { targets } => {",
-        "fn delivery_status(",
+    assert!(
+        !daemon_source.contains("SatisfactionPolicy"),
+        "daemon V5 delivery policy must not be duplicated in the transport adapter"
     );
-    for required in [
-        "let nostr_required_targets = targets",
-        "target\n                            .fingerprint()",
-        "filter(|fingerprint| fingerprint.as_str() == required.as_str())",
-        "RadrootsTransportSatisfactionPolicy::required_targets(",
-    ] {
-        assert!(
-            satisfaction_arm.contains(required),
-            "daemon RequiredTargets resolution arm must retain exact fingerprint witness `{required}`"
-        );
-    }
-    for forbidden in [
-        "RadrootsTransportSatisfactionPolicy::all_accepted()",
-        "RadrootsTransportSatisfactionPolicy::any_accepted()",
-        "RadrootsTransportSatisfactionPolicy::quorum_accepted(",
-    ] {
-        assert!(
-            !satisfaction_arm.contains(forbidden),
-            "daemon RequiredTargets resolution arm must not lower to count policy `{forbidden}`"
-        );
-    }
 
     use radroots_protocol::radrootsd::transport_publish::v5::{DeliveryPolicy, TargetFingerprint};
     let target = TargetFingerprint::parse("a".repeat(64)).expect("fingerprint");
@@ -617,21 +595,6 @@ fn is_doc_surface(path: &Path) -> bool {
         path.extension().and_then(|extension| extension.to_str()),
         Some("md")
     )
-}
-
-fn source_window<'source>(
-    source: &'source str,
-    start_marker: &str,
-    end_marker: &str,
-) -> &'source str {
-    let start = source
-        .find(start_marker)
-        .unwrap_or_else(|| panic!("source must contain start marker `{start_marker}`"));
-    let end = source[start..]
-        .find(end_marker)
-        .map(|index| start + index)
-        .unwrap_or_else(|| panic!("source must contain end marker `{end_marker}`"));
-    &source[start..end]
 }
 
 fn contains_forbidden_concept(source: &str, pattern: &str) -> bool {

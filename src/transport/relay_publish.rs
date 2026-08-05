@@ -11,7 +11,6 @@ use std::sync::{Arc, Mutex};
 
 use nostr::JsonUtil;
 use radroots_event::SignedEvent;
-use radroots_transport::RadrootsTransportSatisfactionPolicy;
 
 use crate::host_nostr::DaemonNostrClient;
 
@@ -89,7 +88,6 @@ impl RelayTargetSet {
 pub(crate) struct RelayPublishRequest {
     signed_event: SignedEvent,
     targets: RelayTargetSet,
-    satisfaction_policy: RadrootsTransportSatisfactionPolicy,
     now_ms: i64,
 }
 
@@ -98,17 +96,8 @@ impl RelayPublishRequest {
         Self {
             signed_event,
             targets,
-            satisfaction_policy: RadrootsTransportSatisfactionPolicy::all_accepted(),
             now_ms,
         }
-    }
-
-    pub(crate) fn with_satisfaction_policy(
-        mut self,
-        satisfaction_policy: RadrootsTransportSatisfactionPolicy,
-    ) -> Self {
-        self.satisfaction_policy = satisfaction_policy;
-        self
     }
 }
 
