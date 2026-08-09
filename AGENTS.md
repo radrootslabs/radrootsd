@@ -35,9 +35,9 @@
 - `.github/**` and capsule-local CI workflows are forbidden; keep validation
   forge-agnostic, and place any required monorepo orchestration exclusively
   under the parent monorepo's root `.act/**` authority.
-- Do not add tracked `docs/**` or `.act/**`. Keep standalone contributor and
-  operator guidance in `README` or `AGENTS.md`, and keep machine authority in
-  explicit repository-root contracts.
+- Do not add or retain tracked `docs/**` or `.act/**`. Keep standalone
+  contributor and operator guidance in `README` or `AGENTS.md`, and keep
+  machine authority in explicit repository-root contracts.
 
 ## Change discipline
 
