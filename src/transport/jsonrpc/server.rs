@@ -131,7 +131,7 @@ mod tests {
         PublishJobVisibility, PublishPrincipalInit, PublishRelayResolveFuture,
         PublishRelayResolver, generate_bearer_token, hash_bearer_token,
     };
-    use crate::host_nostr::{Metadata, Timestamp};
+    use crate::host_nostr::Timestamp;
     use crate::transport::jsonrpc::methods;
     use crate::transport::jsonrpc::{MethodRegistry, RpcContext};
     use crate::transport::relay_publish::MockRelayPublishAdapter as RadrootsMockRelayPublishAdapter;
@@ -192,11 +192,8 @@ mod tests {
         RadrootsMockRelayPublishAdapter,
     ) {
         let identity = DaemonIdentity::generate();
-        let metadata: Metadata =
-            serde_json::from_str(r#"{"name":"radrootsd-test"}"#).expect("metadata");
         let mut state = Radrootsd::new(
             identity.clone(),
-            metadata,
             transport_publish_config,
             Nip46Config::default(),
         )
@@ -274,7 +271,7 @@ mod tests {
         let addr = unused_addr();
         let store = state.transport_publish.store.clone();
         let registry = MethodRegistry::default();
-        let ctx = RpcContext::new(state, registry.clone());
+        let ctx = RpcContext::new(state);
         let mut root = RpcModule::new(ctx.clone());
         methods::register_all(&mut root, ctx, registry).expect("register methods");
         let handle = start_server(addr, &rpc_cfg, store, root)

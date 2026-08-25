@@ -1,24 +1,34 @@
+#[cfg(not(test))]
 use std::time::Duration;
 
-use anyhow::{Result, anyhow};
+use anyhow::Result;
+#[cfg(not(test))]
+use anyhow::anyhow;
+#[cfg(not(test))]
 use nostr::JsonUtil;
 use nostr::nips::nip04;
 use nostr::nips::nip44;
-use nostr::nips::nip46::{
-    NostrConnectMessage, NostrConnectRequest, NostrConnectResponse, ResponseResult,
-};
+#[cfg(not(test))]
+use nostr::nips::nip46::NostrConnectMessage;
+use nostr::nips::nip46::{NostrConnectRequest, NostrConnectResponse, ResponseResult};
+#[cfg(not(test))]
 use tokio::sync::broadcast;
+#[cfg(not(test))]
 use tracing::{info, warn};
 
 use crate::core::nip46::session::{
     Nip46Session, PendingNostrRequest, session_expires_at, sign_event_allowed,
 };
 use crate::core::state::Radrootsd;
+#[cfg(not(test))]
 use crate::host_nostr::{Filter, Kind, RelayPoolNotification, Timestamp, with_filter_tag};
+#[cfg(not(test))]
 use crate::transport::nostr::protocol::sign_nip46_message;
 
+#[cfg(not(test))]
 const DEFAULT_TIMEOUT_SECS: u64 = 10;
 
+#[cfg(not(test))]
 pub fn spawn_nip46_listener(radrootsd: Radrootsd) {
     tokio::spawn(async move {
         if let Err(error) = run_nip46_listener(radrootsd).await {
@@ -27,6 +37,7 @@ pub fn spawn_nip46_listener(radrootsd: Radrootsd) {
     });
 }
 
+#[cfg(not(test))]
 async fn run_nip46_listener(radrootsd: Radrootsd) -> Result<()> {
     radrootsd.client.connect().await;
     radrootsd

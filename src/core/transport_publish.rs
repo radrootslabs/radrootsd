@@ -170,6 +170,7 @@ pub struct TransportPublish {
 }
 
 impl TransportPublish {
+    #[cfg(not(test))]
     pub fn open(config: TransportPublishConfig) -> Result<Self, TransportPublishError> {
         let store = TransportPublishStore::open(config.database_path.clone())?;
         let publish_jobs = Arc::new(Semaphore::new(config.max_concurrent_publish_jobs));
@@ -183,6 +184,7 @@ impl TransportPublish {
         })
     }
 
+    #[cfg(test)]
     pub fn memory(config: TransportPublishConfig) -> Result<Self, TransportPublishError> {
         let store = TransportPublishStore::memory()?;
         let publish_jobs = Arc::new(Semaphore::new(config.max_concurrent_publish_jobs));
@@ -992,6 +994,7 @@ impl TransportPublishStore {
         Self::from_connection(connection)
     }
 
+    #[cfg(test)]
     pub fn memory() -> Result<Self, TransportPublishError> {
         Self::from_connection(connect_sqlite(SqliteConnectOptions::new().in_memory(true))?)
     }

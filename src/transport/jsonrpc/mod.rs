@@ -29,7 +29,7 @@ pub async fn start_rpc(
 ) -> Result<ServerHandle> {
     state.transport_publish.config.validate()?;
     let registry = MethodRegistry::default();
-    let ctx = RpcContext::new(state, registry.clone());
+    let ctx = RpcContext::new(state);
     let transport_publish_store = ctx.state.transport_publish.store.clone();
 
     let mut root = RpcModule::new(ctx.clone());

@@ -565,7 +565,6 @@ pub async fn run() -> Result<()> {
     )?;
     let radrootsd = Radrootsd::new(
         identity.clone(),
-        settings.metadata.clone(),
         settings.config.transport_publish.clone(),
         settings.config.nip46.clone(),
     );
@@ -736,7 +735,6 @@ mod tests {
         let identity = DaemonIdentity::generate();
         let state = Radrootsd::new(
             identity,
-            settings.metadata.clone(),
             settings.config.transport_publish.clone(),
             settings.config.nip46.clone(),
         )

@@ -1,3 +1,3 @@
-pub mod session;
+pub(crate) mod session;
 
-pub use session::{Nip46Session, Nip46SessionStore};
+pub(crate) use session::Nip46Session;

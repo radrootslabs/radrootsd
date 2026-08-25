@@ -21,12 +21,15 @@ cargo check --workspace --all-targets --locked
 cargo test --workspace --all-targets --locked
 cargo clippy --workspace --all-targets --locked -- -D warnings
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked
+scripts/verify-boundaries.sh
 scripts/verify-supply-chain.sh
 ```
 
-The supply-chain command checks the locked dependency, license, advisory, and
-immutable public-source policy. Nix and OCI are deferred and unclaimed through
-RCLD-RSHR-170.
+The boundary command byte-compares the root-only public API against its
+reviewed baseline and rejects forbidden repository roots or credential
+material. The supply-chain command checks the locked dependency, license,
+advisory, and immutable public-source policy. Nix and OCI are deferred and
+unclaimed through RCLD-RSHR-170.
 
 ## Copyright
 

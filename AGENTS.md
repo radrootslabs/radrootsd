@@ -79,8 +79,9 @@
   --check`, `cargo check --workspace --all-targets --locked`, `cargo test
   --workspace --all-targets --locked`, `cargo clippy --workspace --all-targets
   --locked -- -D warnings`, warnings-denied Rustdoc, and
-  `scripts/verify-supply-chain.sh`. Route them through extbuild when it is
-  enabled. Nix and OCI remain deferred and unclaimed.
+  `scripts/verify-boundaries.sh` plus `scripts/verify-supply-chain.sh`. Route
+  them through extbuild when it is enabled. Nix and OCI remain deferred and
+  unclaimed.
 - The supply-chain gate uses exact cargo-deny 0.19.8 and cargo-vet 0.10.2. Its
   checked-in exemptions are visible accepted review debt, not claims of
   independent source audits; only the justified Nostr 0.44 advisory exceptions

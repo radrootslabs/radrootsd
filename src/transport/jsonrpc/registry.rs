@@ -16,8 +16,4 @@ impl MethodRegistry {
         methods.push(name.to_string());
         methods.sort();
     }
-
-    pub fn list(&self) -> Vec<String> {
-        self.inner.read().unwrap_or_else(|e| e.into_inner()).clone()
-    }
 }

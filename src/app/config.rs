@@ -4,9 +4,11 @@ use radroots_event::profile::{AuthoredProfile, Nip05Identifier};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+#[cfg(not(test))]
+use super::paths::process_path_selection;
 use super::paths::{
     PathProfile, PathResolver, RadrootsdRuntimePaths, default_transport_publish_database_path,
-    process_path_selection, resolve_runtime_paths_with_resolver,
+    resolve_runtime_paths_with_resolver,
 };
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -224,6 +226,7 @@ fn load_settings_from_path_with_resolver(
     Ok(settings)
 }
 
+#[cfg(not(test))]
 pub fn load_settings_from_path(path: impl AsRef<Path>) -> Result<Settings> {
     let path = path.as_ref();
     let (profile, repo_local_root) = process_path_selection()?;

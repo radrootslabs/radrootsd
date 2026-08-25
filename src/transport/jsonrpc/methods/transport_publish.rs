@@ -134,7 +134,7 @@ mod tests {
     use crate::core::transport_publish::{
         PublishJobVisibility, PublishPrincipalInit, generate_bearer_token, hash_bearer_token,
     };
-    use crate::host_nostr::{Metadata, Timestamp};
+    use crate::host_nostr::Timestamp;
     use crate::transport::jsonrpc::auth::{
         TransportPublishAuthorization, authorize_transport_publish_request,
     };
@@ -164,11 +164,8 @@ mod tests {
     ) -> (RpcModule<RpcContext>, RpcContext, String, String) {
         let identity = DaemonIdentity::generate();
         let signed_event = signed_event(&identity);
-        let metadata: Metadata =
-            serde_json::from_str(r#"{"name":"radrootsd-test"}"#).expect("metadata");
         let state = Radrootsd::new(
             identity.clone(),
-            metadata,
             transport_publish_config,
             Nip46Config::default(),
         )
@@ -200,7 +197,7 @@ mod tests {
             })
             .expect("principal");
         let registry = MethodRegistry::default();
-        let ctx = RpcContext::new(state, registry.clone());
+        let ctx = RpcContext::new(state);
         let mut module = module(ctx.clone(), registry).expect("module");
         module
             .extensions_mut()

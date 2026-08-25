@@ -2,16 +2,13 @@
 
 use crate::core::Radrootsd;
 
-use super::registry::MethodRegistry;
-
 #[derive(Clone)]
 pub struct RpcContext {
     pub state: Radrootsd,
-    pub methods: MethodRegistry,
 }
 
 impl RpcContext {
-    pub fn new(state: Radrootsd, methods: MethodRegistry) -> Self {
-        Self { state, methods }
+    pub fn new(state: Radrootsd) -> Self {
+        Self { state }
     }
 }

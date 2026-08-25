@@ -56,7 +56,7 @@ async fn run() -> Result<()> {
 #[cfg(not(test))]
 #[cfg_attr(coverage_nightly, coverage(off))]
 async fn run() -> Result<()> {
-    radrootsd::app::run().await
+    radrootsd::run_daemon().await.map_err(anyhow::Error::new)
 }
 
 #[cfg(test)]

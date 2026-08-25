@@ -25,7 +25,6 @@ pub fn register_all(
 #[cfg(test)]
 mod tests {
     use crate::app::identity_storage::DaemonIdentity;
-    use crate::host_nostr::Metadata;
     use jsonrpsee::server::RpcModule;
     use radroots_protocol::radrootsd::transport_publish::v5::RETICULUM_UNAVAILABLE_MESSAGE as RADROOTS_RETICULUM_UNAVAILABLE_MESSAGE;
 
@@ -41,8 +40,6 @@ mod tests {
 
     fn state(transport_publish_enabled: bool, nip46_public_jsonrpc_enabled: bool) -> Radrootsd {
         let identity = DaemonIdentity::generate();
-        let metadata: Metadata =
-            serde_json::from_str(r#"{"name":"radrootsd-test"}"#).expect("metadata");
         let transport_publish = TransportPublishConfig {
             enabled: transport_publish_enabled,
             ..TransportPublishConfig::default()
@@ -51,13 +48,13 @@ mod tests {
             public_jsonrpc_enabled: nip46_public_jsonrpc_enabled,
             ..Nip46Config::default()
         };
-        Radrootsd::new(identity, metadata, transport_publish, nip46).expect("state")
+        Radrootsd::new(identity, transport_publish, nip46).expect("state")
     }
 
     #[test]
     fn register_all_exposes_transport_publish_methods_by_default() {
         let registry = MethodRegistry::default();
-        let ctx = RpcContext::new(state(true, false), registry.clone());
+        let ctx = RpcContext::new(state(true, false));
         let mut root = RpcModule::new(ctx.clone());
         register_all(&mut root, ctx, registry).expect("register");
 
@@ -75,7 +72,7 @@ mod tests {
     #[test]
     fn register_all_exposes_nip46_when_public_jsonrpc_is_enabled() {
         let registry = MethodRegistry::default();
-        let ctx = RpcContext::new(state(true, true), registry.clone());
+        let ctx = RpcContext::new(state(true, true));
         let mut root = RpcModule::new(ctx.clone());
         register_all(&mut root, ctx, registry).expect("register");
 
@@ -86,7 +83,7 @@ mod tests {
     #[tokio::test]
     async fn publish_capabilities_rejects_unauthenticated_requests() {
         let registry = MethodRegistry::default();
-        let ctx = RpcContext::new(state(true, false), registry.clone());
+        let ctx = RpcContext::new(state(true, false));
         let mut root = RpcModule::new(ctx.clone());
         register_all(&mut root, ctx, registry).expect("register");
 
@@ -103,7 +100,7 @@ mod tests {
     #[tokio::test]
     async fn publish_capabilities_accepts_authenticated_requests() {
         let registry = MethodRegistry::default();
-        let ctx = RpcContext::new(state(true, false), registry.clone());
+        let ctx = RpcContext::new(state(true, false));
         let principal = ctx
             .state
             .transport_publish
