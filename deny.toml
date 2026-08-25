@@ -1,0 +1,65 @@
+[graph]
+targets = [
+  "aarch64-apple-darwin",
+  "aarch64-unknown-linux-gnu",
+  "x86_64-pc-windows-gnu",
+  "x86_64-unknown-linux-gnu",
+]
+all-features = true
+
+[advisories]
+# Nostr 0.44's idna branch is not used as an authorization identity: daemon
+# relay admission canonicalizes through patched `url` before connection.
+# nostr-relay-pool 0.44.3 contains the published integrity and queue fixes;
+# the remaining advisory is its explicit unmaintained status and is removed
+# with the governed Nostr 0.45 migration.
+ignore = ["RUSTSEC-2024-0421", "RUSTSEC-2026-0243"]
+
+[licenses]
+allow = [
+  "0BSD",
+  "AGPL-3.0-or-later",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-1-Clause",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "BSL-1.0",
+  "CC0-1.0",
+  "CDLA-Permissive-2.0",
+  "ISC",
+  "MIT",
+  "MIT-0",
+  "MPL-2.0",
+  "Unicode-3.0",
+  "Unlicense",
+  "Zlib",
+]
+confidence-threshold = 0.93
+
+[licenses.private]
+ignore = false
+registries = []
+
+[bans]
+multiple-versions = "allow"
+wildcards = "deny"
+highlight = "all"
+workspace-default-features = "allow"
+external-default-features = "allow"
+allow = []
+allow-workspace = true
+deny = []
+skip = []
+skip-tree = []
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = ["https://github.com/radrootslabs/lib.git"]
+
+[sources.allow-org]
+github = []
+gitlab = []
+bitbucket = []

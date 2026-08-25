@@ -75,14 +75,16 @@
 
 ## Validation
 
-- Use Nix as the canonical standalone environment. Run the smallest relevant
-  repository-owned lane first, then broaden in proportion to the change:
-  `nix run .#fmt`, `nix run .#check`, and `nix run .#test`.
-- Narrow iteration may use `cargo fmt --all --check`,
-  `cargo check --workspace --all-targets --locked`,
-  `cargo test --workspace --locked`, and
-  `cargo clippy --workspace --all-targets --locked -- -D warnings` from
-  `nix develop`.
+- Through RCLD-RSHR-170, use the native standalone lanes: `cargo fmt --all
+  --check`, `cargo check --workspace --all-targets --locked`, `cargo test
+  --workspace --all-targets --locked`, `cargo clippy --workspace --all-targets
+  --locked -- -D warnings`, warnings-denied Rustdoc, and
+  `scripts/verify-supply-chain.sh`. Route them through extbuild when it is
+  enabled. Nix and OCI remain deferred and unclaimed.
+- The supply-chain gate uses exact cargo-deny 0.19.8 and cargo-vet 0.10.2. Its
+  checked-in exemptions are visible accepted review debt, not claims of
+  independent source audits; only the justified Nostr 0.44 advisory exceptions
+  are allowed.
 - Add deterministic tests for new behavior, failure modes, parsing, recovery,
   protocol verification, and security boundaries. Prefer stable public or
   repo-owned interfaces over implementation-detail tests.

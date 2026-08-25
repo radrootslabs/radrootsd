@@ -9,6 +9,25 @@ messages. Remote `sign_event` results are accepted only when the author and
 canonical event ID match the exact unsigned request and the complete NIP-01
 event verifies.
 
+## Verification
+
+Run the native standalone checks with the declared Rust toolchain and committed
+lockfile. In an extbuild-enabled checkout, first run `cargo extbuild doctor`
+and route each command through `cargo extbuild run --`:
+
+```text
+cargo fmt --all --check
+cargo check --workspace --all-targets --locked
+cargo test --workspace --all-targets --locked
+cargo clippy --workspace --all-targets --locked -- -D warnings
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked
+scripts/verify-supply-chain.sh
+```
+
+The supply-chain command checks the locked dependency, license, advisory, and
+immutable public-source policy. Nix and OCI are deferred and unclaimed through
+RCLD-RSHR-170.
+
 ## Copyright
 
 Except as otherwise noted, all files in the `radrootsd` distribution are
