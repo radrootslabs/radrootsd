@@ -8,6 +8,8 @@ license = "AGPL-3.0-or-later"
 description = "Radroots local runtime daemon for storage, sync, and relay publishing"
 
 [workspace]
+members = [".", "tools/xtask"]
+default-members = ["."]
 resolver = "3"
 
 [workspace.dependencies]
