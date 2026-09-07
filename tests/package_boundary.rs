@@ -34,8 +34,9 @@ fn public_error_is_redacted_and_source_free() {
 #[test]
 fn nix_outputs_are_real_owned_and_exactly_bounded() {
     for required in [
-        "github:radrootslabs/lib/055096853fca95e15d0f813d33a14aca13be3881",
-        "systems = lib.lib.supportedSystems",
+        "github:radrootslabs/lib/3563f3b5a4331eb2cb3f925cafc9de524d844228",
+        "\"aarch64-darwin\"",
+        "\"x86_64-linux\"",
         "craneLib.buildPackage",
         "craneLib.mkCargoDerivation",
         "program = \"${package}/bin/radrootsd\"",
