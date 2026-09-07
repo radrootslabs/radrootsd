@@ -13,14 +13,14 @@ default-members = ["."]
 resolver = "3"
 
 [workspace.dependencies]
-radroots_event = { git = "https://github.com/radrootslabs/lib.git", rev = "055096853fca95e15d0f813d33a14aca13be3881", version = "=0.1.0-alpha" }
-radroots_event_codec = { git = "https://github.com/radrootslabs/lib.git", rev = "055096853fca95e15d0f813d33a14aca13be3881", version = "=0.1.0-alpha" }
-radroots_identity = { git = "https://github.com/radrootslabs/lib.git", rev = "055096853fca95e15d0f813d33a14aca13be3881", version = "=0.1.0-alpha" }
-radroots_nostr = { git = "https://github.com/radrootslabs/lib.git", rev = "055096853fca95e15d0f813d33a14aca13be3881", version = "=0.1.0-alpha" }
-radroots_protocol = { git = "https://github.com/radrootslabs/lib.git", rev = "055096853fca95e15d0f813d33a14aca13be3881", version = "=0.1.0-alpha", default-features = false }
-radroots_secrets = { git = "https://github.com/radrootslabs/lib.git", rev = "055096853fca95e15d0f813d33a14aca13be3881", version = "=0.1.0-alpha", default-features = false }
-radroots_transport_nostr = { git = "https://github.com/radrootslabs/lib.git", rev = "055096853fca95e15d0f813d33a14aca13be3881", version = "=0.1.0-alpha", default-features = false }
-radroots_transport = { git = "https://github.com/radrootslabs/lib.git", rev = "055096853fca95e15d0f813d33a14aca13be3881", version = "=0.1.0-alpha", default-features = false }
+radroots_event = { git = "https://github.com/radrootslabs/lib.git", rev = "3563f3b5a4331eb2cb3f925cafc9de524d844228", version = "=0.1.0-alpha" }
+radroots_event_codec = { git = "https://github.com/radrootslabs/lib.git", rev = "3563f3b5a4331eb2cb3f925cafc9de524d844228", version = "=0.1.0-alpha" }
+radroots_identity = { git = "https://github.com/radrootslabs/lib.git", rev = "3563f3b5a4331eb2cb3f925cafc9de524d844228", version = "=0.1.0-alpha" }
+radroots_nostr = { git = "https://github.com/radrootslabs/lib.git", rev = "3563f3b5a4331eb2cb3f925cafc9de524d844228", version = "=0.1.0-alpha" }
+radroots_protocol = { git = "https://github.com/radrootslabs/lib.git", rev = "3563f3b5a4331eb2cb3f925cafc9de524d844228", version = "=0.1.0-alpha", default-features = false }
+radroots_secrets = { git = "https://github.com/radrootslabs/lib.git", rev = "3563f3b5a4331eb2cb3f925cafc9de524d844228", version = "=0.1.0-alpha", default-features = false }
+radroots_transport_nostr = { git = "https://github.com/radrootslabs/lib.git", rev = "3563f3b5a4331eb2cb3f925cafc9de524d844228", version = "=0.1.0-alpha", default-features = false }
+radroots_transport = { git = "https://github.com/radrootslabs/lib.git", rev = "3563f3b5a4331eb2cb3f925cafc9de524d844228", version = "=0.1.0-alpha", default-features = false }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage_nightly)'] }
