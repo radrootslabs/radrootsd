@@ -1,174 +1,108 @@
 {
-  description = "radrootsd";
+  description = "Radroots public runtime daemon";
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11";
-    rust-overlay = {
-      url = "github:oxalica/rust-overlay";
-      inputs.nixpkgs.follows = "nixpkgs";
+    # Crane 0.23+ currently asks nixpkgs' Cargo vendor helper to fetch
+    # semver-build-metadata crate versions through the crates.io API. That
+    # endpoint rejects the literal `+`; the immutable v0.22.0 input avoids
+    # that upstream fetch defect while preserving the same locked sources.
+    crane.url = "github:ipetkov/crane/01bc1d404a51a0a07e9d8759cd50a7903e218c82";
+    lib = {
+      url = "github:radrootslabs/lib/055096853fca95e15d0f813d33a14aca13be3881";
+      inputs.crane.follows = "crane";
     };
+    nixpkgs.follows = "lib/nixpkgs";
+    rust-overlay.follows = "lib/rust-overlay";
   };
 
   outputs =
-    { nixpkgs, rust-overlay, ... }:
+    {
+      crane,
+      lib,
+      nixpkgs,
+      rust-overlay,
+      ...
+    }:
     let
-      systems = [
-        "aarch64-darwin"
-        "aarch64-linux"
-        "x86_64-darwin"
-        "x86_64-linux"
-      ];
+      systems = lib.lib.supportedSystems;
       forAllSystems =
-        f:
-        nixpkgs.lib.genAttrs systems (
-          system:
-          let
-            pkgs = import nixpkgs {
-              inherit system;
-              overlays = [ rust-overlay.overlays.default ];
-            };
-            rustToolchain = pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
-            basePackages =
-              [
-                pkgs.git
-                rustToolchain
-                pkgs.clang
-                pkgs.llvmPackages.libclang
-                pkgs.libsodium
-                pkgs.openssl
-                pkgs.pkg-config
-                pkgs.sqlite
-              ]
-              ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [
-                pkgs.darwin.libiconv
-              ];
-            libraryPath = pkgs.lib.makeLibraryPath basePackages;
-            includePath = pkgs.lib.makeSearchPathOutput "dev" "include" basePackages;
-            llvmToolsBin = "${pkgs.llvmPackages.llvm}/bin";
-            darwinLdFlags = pkgs.lib.optionalString pkgs.stdenv.isDarwin "-L${pkgs.darwin.libiconv}/lib";
-            darwinRustFlags = pkgs.lib.optionalString pkgs.stdenv.isDarwin "-L native=${pkgs.darwin.libiconv}/lib";
-            coveragePackages = basePackages ++ [
-              pkgs.llvmPackages.llvm
-            ];
-            mkApp =
-              name:
-              {
-                runtimeInputs ? basePackages,
-                text,
-              }:
-              let
-                script = pkgs.writeShellApplication {
-                  inherit name;
-                  inherit runtimeInputs;
-                  text = ''
-                    set -euo pipefail
-                    repo_root="$(git rev-parse --show-toplevel)"
-                    cd "$repo_root"
-                    export LIBCLANG_PATH="${pkgs.llvmPackages.libclang.lib}/lib"
-                    export LIBRARY_PATH="${libraryPath}:''${LIBRARY_PATH:-}"
-                    export DYLD_FALLBACK_LIBRARY_PATH="${libraryPath}:''${DYLD_FALLBACK_LIBRARY_PATH:-}"
-                    export LDFLAGS="${darwinLdFlags} ''${LDFLAGS:-}"
-                    export NIX_LDFLAGS="${darwinLdFlags} ''${NIX_LDFLAGS:-}"
-                    export RUSTFLAGS="${darwinRustFlags} ''${RUSTFLAGS:-}"
-                    export CPATH="${includePath}:''${CPATH:-}"
-                    ${text}
-                  '';
-                };
-              in
-              {
-                type = "app";
-                program = "${script}/bin/${name}";
-              };
-          in
-          f {
-            inherit
-              basePackages
-              coveragePackages
-              darwinLdFlags
-              darwinRustFlags
-              includePath
-              libraryPath
-              llvmToolsBin
-              mkApp
-              pkgs
-              rustToolchain
-              ;
-          }
+        function:
+        builtins.listToAttrs (
+          map (system: {
+            name = system;
+            value = function system;
+          }) systems
         );
+      daemonOutputs =
+        system:
+        let
+          pkgs = import nixpkgs {
+            inherit system;
+            overlays = [ rust-overlay.overlays.default ];
+          };
+          helpers = lib.lib.mkServiceHelpers system;
+          toolchain = helpers.mkToolchain {
+            rustToolchainFile = ./rust-toolchain.toml;
+          };
+          nativeInputs = helpers.mkNativeInputs { };
+          craneLib = (crane.mkLib pkgs).overrideToolchain toolchain;
+          source = pkgs.lib.cleanSourceWith {
+            src = ./.;
+            filter =
+              path: type:
+              craneLib.filterCargoSources path type
+              || baseNameOf path == "README";
+            name = "radrootsd-source";
+          };
+          commonArgs = {
+            src = source;
+            cargoLock = ./Cargo.lock;
+            strictDeps = true;
+            nativeBuildInputs = nativeInputs.nativeBuildInputs;
+            buildInputs = nativeInputs.buildInputs;
+            env = nativeInputs.environment;
+            doCheck = false;
+          };
+          cargoArtifacts = craneLib.buildDepsOnly commonArgs;
+          package = craneLib.buildPackage (
+            commonArgs
+            // {
+              inherit cargoArtifacts;
+              pname = "radrootsd";
+              version = "0.1.0";
+              CARGO_PROFILE = "release";
+              cargoExtraArgs = "--locked --package radrootsd --bin radrootsd";
+            }
+          );
+          check = craneLib.mkCargoDerivation (
+            commonArgs
+            // {
+              inherit cargoArtifacts;
+              pname = "radrootsd-check";
+              version = "1";
+              buildPhaseCargoCommand = "cargo check --locked --package radrootsd --all-targets";
+              installPhaseCommand = "mkdir -p $out";
+            }
+          );
+          app = {
+            type = "app";
+            program = "${package}/bin/radrootsd";
+            meta.description = "Run the built radrootsd daemon";
+          };
+        in
+        {
+          inherit app check package;
+        };
     in
     {
-      apps = forAllSystems (
-        {
-          coveragePackages,
-          llvmToolsBin,
-          mkApp,
-          ...
-        }:
-        rec {
-          default = check;
-          check = mkApp "check" {
-            text = ''
-              cargo metadata --format-version 1 --no-deps
-              cargo check
-            '';
-          };
-          coverage-report = mkApp "coverage-report" {
-            runtimeInputs = coveragePackages;
-            text = ''
-              export PATH="$HOME/.cargo/bin:$PATH"
-              cargo +nightly llvm-cov --version >/dev/null 2>&1 || {
-                echo "cargo +nightly llvm-cov must be available to run coverage-report" >&2
-                exit 1
-              }
-              export LLVM_COV="${llvmToolsBin}/llvm-cov"
-              export LLVM_PROFDATA="${llvmToolsBin}/llvm-profdata"
-              mkdir -p target/coverage
-              cargo +nightly llvm-cov clean --workspace
-              cargo +nightly llvm-cov --workspace --all-features --branch --no-report
-              cargo +nightly llvm-cov report --json --summary-only --output-path target/coverage/summary.json
-              cargo +nightly llvm-cov report --lcov --output-path target/coverage/lcov.info
-              cargo +nightly llvm-cov report --summary-only
-              echo "coverage summary: target/coverage/summary.json"
-              echo "coverage lcov: target/coverage/lcov.info"
-            '';
-          };
-          fmt = mkApp "fmt" {
-            text = ''
-              cargo fmt --all --check
-            '';
-          };
-          test = mkApp "test" {
-            text = ''
-              cargo test
-            '';
-          };
-        }
-      );
-
-      devShells = forAllSystems (
-        {
-          basePackages,
-          darwinLdFlags,
-          darwinRustFlags,
-          includePath,
-          libraryPath,
-          pkgs,
-          ...
-        }:
-        {
-          default = pkgs.mkShell {
-            packages = basePackages;
-            shellHook = ''
-              export LIBCLANG_PATH="${pkgs.llvmPackages.libclang.lib}/lib"
-              export LIBRARY_PATH="${libraryPath}:''${LIBRARY_PATH:-}"
-              export DYLD_FALLBACK_LIBRARY_PATH="${libraryPath}:''${DYLD_FALLBACK_LIBRARY_PATH:-}"
-              export LDFLAGS="${darwinLdFlags} ''${LDFLAGS:-}"
-              export NIX_LDFLAGS="${darwinLdFlags} ''${NIX_LDFLAGS:-}"
-              export RUSTFLAGS="${darwinRustFlags} ''${RUSTFLAGS:-}"
-              export CPATH="${includePath}:''${CPATH:-}"
-            '';
-          };
-        }
-      );
+      packages = forAllSystems (system: {
+        default = (daemonOutputs system).package;
+      });
+      checks = forAllSystems (system: {
+        default = (daemonOutputs system).check;
+      });
+      apps = forAllSystems (system: {
+        default = (daemonOutputs system).app;
+      });
     };
 }

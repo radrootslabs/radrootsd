@@ -28,8 +28,11 @@ scripts/verify-supply-chain.sh
 The boundary command byte-compares the root-only public API against its
 reviewed baseline and rejects forbidden repository roots or credential
 material. The supply-chain command checks the locked dependency, license,
-advisory, and immutable public-source policy. Nix and OCI are deferred and
-unclaimed through RCLD-RSHR-170.
+advisory, and immutable public-source policy.
+
+The standalone flake exposes exactly one real `radrootsd` package, check, and
+application for `aarch64-darwin` and `x86_64-linux`. It exposes no checkout
+wrapper, development shell, NixOS module, OCI artifact, or other system.
 
 ## Copyright
 

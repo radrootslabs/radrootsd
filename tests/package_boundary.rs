@@ -2,6 +2,7 @@
 
 const ROOT: &str = include_str!("../src/lib.rs");
 const PUBLIC_API: &str = include_str!("../contracts/api_baselines/radrootsd.txt");
+const FLAKE: &str = include_str!("../flake.nix");
 
 #[test]
 fn implementation_modules_are_private_and_api_is_owned() {
@@ -28,4 +29,37 @@ fn public_error_is_redacted_and_source_free() {
         assert!(source.contains(required), "missing {required}");
     }
     assert!(!PUBLIC_API.contains("std::io::Error"));
+}
+
+#[test]
+fn nix_outputs_are_real_owned_and_exactly_bounded() {
+    for required in [
+        "github:radrootslabs/lib/055096853fca95e15d0f813d33a14aca13be3881",
+        "systems = lib.lib.supportedSystems",
+        "craneLib.buildPackage",
+        "craneLib.mkCargoDerivation",
+        "program = \"${package}/bin/radrootsd\"",
+        "default = (daemonOutputs system).package",
+        "default = (daemonOutputs system).check",
+        "default = (daemonOutputs system).app",
+    ] {
+        assert!(
+            FLAKE.contains(required),
+            "missing governed Nix source: {required}"
+        );
+    }
+    for forbidden in [
+        "writeShellApplication",
+        "git rev-parse",
+        "repo_root",
+        "devShells",
+        "nixosModules",
+        "aarch64-linux",
+        "x86_64-darwin",
+    ] {
+        assert!(
+            !FLAKE.contains(forbidden),
+            "forbidden Nix surface is present: {forbidden}"
+        );
+    }
 }
