@@ -51,6 +51,9 @@
             filter =
               path: type:
               craneLib.filterCargoSources path type
+              || pkgs.lib.hasSuffix ".json" (baseNameOf path)
+              || pkgs.lib.hasSuffix ".txt" (baseNameOf path)
+              || baseNameOf path == "flake.nix"
               || baseNameOf path == "README";
             name = "radrootsd-source";
           };

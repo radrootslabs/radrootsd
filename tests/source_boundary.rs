@@ -198,7 +198,7 @@ fn transport_publish_sources_reject_removed_protocol_identifiers() {
     }
     assert!(
         manifest_source.contains(
-            "radroots_transport_nostr = { git = \"https://github.com/radrootslabs/lib.git\", rev = \"3563f3b5a4331eb2cb3f925cafc9de524d844228\", version = \"=0.1.0-alpha\""
+            "radroots_transport_nostr = { git = \"https://github.com/radrootslabs/lib.git\", rev = \"055096853fca95e15d0f813d33a14aca13be3881\", version = \"=0.1.0-alpha\""
         ),
         "Cargo.toml must pin radroots_transport_nostr to the approved Lib revision and exact version"
     );
