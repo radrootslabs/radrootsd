@@ -25,9 +25,11 @@ scripts/verify-boundaries.sh
 scripts/verify-supply-chain.sh
 ```
 
-The boundary command byte-compares the root-only public API against its
-reviewed baseline and rejects forbidden repository roots or credential
-material. The supply-chain command checks the locked dependency, license,
+The boundary command verifies the source-lock digest against the actual
+Cargo.lock and the exact public foundation dependencies resolved offline. It
+also byte-compares the root-only public API against its reviewed baseline and
+rejects forbidden repository roots or credential material. The supply-chain
+command checks the locked dependency, license,
 advisory, and immutable public-source policy.
 
 The standalone flake exposes exactly one real `radrootsd` package, check, and

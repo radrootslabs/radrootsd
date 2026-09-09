@@ -4,6 +4,8 @@ set -euo pipefail
 repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root"
 
+cargo test --locked --offline --test source_lock
+
 for forbidden_root in docs .github .act; do
   test ! -e "$forbidden_root"
   test ! -L "$forbidden_root"
