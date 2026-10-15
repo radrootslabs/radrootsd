@@ -4,6 +4,7 @@ set -euo pipefail
 repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root"
 
+cargo run --locked --offline -p radrootsd_xtask -- source-lock check
 cargo test --locked --offline --test source_lock
 
 for forbidden_root in docs .github .act; do

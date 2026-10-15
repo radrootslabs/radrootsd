@@ -2,8 +2,17 @@
 
 mod rshr_202_step_303_gate;
 mod rshr_202_step_303_platform;
+mod source_lock;
 
 fn main() {
+    if std::env::args().nth(1).as_deref() == Some("source-lock") {
+        let arguments = std::env::args().skip(2).collect::<Vec<_>>();
+        if source_lock::run(&arguments).is_err() {
+            eprintln!("source_lock_failed");
+            std::process::exit(1);
+        }
+        return;
+    }
     if run().is_err() {
         eprintln!("step_303_gate_failed");
         std::process::exit(1);

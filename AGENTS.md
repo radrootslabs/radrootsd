@@ -49,8 +49,12 @@
   service state, fallback path searches, compatibility aliases, deprecated
   APIs or re-exports, dual wire encodings, or old/new behavior switches. Update
   affected callers directly.
-- Use Rust `1.97.1`, edition `2024`, and resolver `3` as declared by the
-  repository. Use dependency versions and feature choices from `Cargo.toml`.
+- Use exact stable Rust and MSRV `1.99.0`, edition `2024`, and resolver `3`.
+  Keep current package minimums, the stable selector and Cargo metadata aligned.
+  Preserve original compiler identities in frozen execution history and the
+  dedicated nightly API tooling. Compiler minimums alone do not qualify Nix
+  acquisition or a new release candidate. Use dependency versions and feature
+  choices from `Cargo.toml`.
 - Prefer typed models, explicit state transitions, deterministic behavior,
   narrow side effects, and precise error enums. Avoid hidden production
   panics. Avoid `unsafe`; if it is strictly necessary, document the invariant

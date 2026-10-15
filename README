@@ -32,6 +32,20 @@ rejects forbidden repository roots or credential material. The supply-chain
 command checks the locked dependency, license,
 advisory, and immutable public-source policy.
 
+After an intentional dependency-lock update, refresh its digest through the
+private owning tool, then check freshness (route these commands through
+extbuild in an enabled checkout):
+
+```text
+cargo run --locked --offline -p radrootsd_xtask -- source-lock refresh
+cargo run --locked --offline -p radrootsd_xtask -- source-lock check
+```
+
+The producer verifies the existing typed source-lock schema and actual offline
+public dependency graph before atomically replacing only the lockfile digest.
+It preserves the selected Lib revision, archive, catalog and version identity;
+it does not qualify a new Lib source archive or a release artifact.
+
 The standalone flake exposes exactly one real `radrootsd` package, check, and
 application for `aarch64-darwin` and `x86_64-linux`. It exposes no checkout
 wrapper, development shell, NixOS module, OCI artifact, or other system.
