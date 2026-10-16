@@ -1,4 +1,8 @@
 
 # cargo-vet audits file
 
-[audits]
+[[audits.negentropy]]
+who = "Codex (automated single-owner source review)"
+criteria = "safe-to-deploy"
+delta = "0.5.0 -> 0.5.2"
+notes = "Automated single-owner review of the complete checksum-verified published 0.5.0 -> 0.5.2 delta. All 21 retained current source/support hashes match the previously reviewed 0.5.2 snapshot. Reviewed fixed-array ID copying, modulo-2^256 accumulator carry propagation, equivalent duplicate sorting, bounded ID-list admission before allocation, private always-Ok varint cleanup, and retained regressions. Both manifests declare MIT; 0.5.2 adds the MIT license text absent from the 0.5.0 archive. No new dependency or default feature is introduced. This delta relies on the existing 0.5.0 baseline exemption; it does not claim an independent full-crate audit, full parser canonicality or release qualification."
