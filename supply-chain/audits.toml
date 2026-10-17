@@ -1,8 +1,198 @@
 
 # cargo-vet audits file
 
+[criteria.network-parser-reviewed]
+description = "The package's untrusted network parsing, canonicalization, size limits, recursion limits, and malformed-input behavior were reviewed for fail-closed operation."
+implies = "safe-to-deploy"
+
+[[audits.async-wsocket]]
+who = "Codex (automated single-owner source review)"
+criteria = "network-parser-reviewed"
+version = "0.17.0"
+notes = "Reused exact published Lib 3af7814ea4f76f2cca3d33d4c2bd8a854f3fb78f source review for the identical registry version/checksum and same private native transport composition. Rand 0.10.1 is the reviewed baseline for a separately recorded 0.10.3 delta. Original use restrictions remain binding; this is not a second independent audit. Reviewed the complete native production modules, message/socket conversions, manifest and selected SDK WebSocket SPI, plus browser actor/stream ownership. Native errors and sink/stream polling delegate to Tokio/Tungstenite; no new unsafe Send wrapper is introduced. The Radroots adapter supplies its own DNS/address/TLS policy, exact wire-identifier admission, configured connection deadline, fixed frame bounds and metered ingress, so default proxy/SOCKS dialing is not admitted. Both native loopback suites exercise the actual composition. The new browser actor uses unbounded channels; it is not admitted as the bounded Radroots browser implementation. This focused automated native-use review does not qualify those browser queues or unrestricted default dialing."
+
+[[audits.autocfg]]
+who = "Codex (automated single-owner source review)"
+criteria = "network-parser-reviewed"
+version = "1.5.1"
+notes = "Reused exact published Lib 3af7814ea4f76f2cca3d33d4c2bd8a854f3fb78f source review for the identical registry version/checksum and same private native transport composition. Rand 0.10.1 is the reviewed baseline for a separately recorded 0.10.3 delta. Original use restrictions remain binding; this is not a second independent audit. Reviewed the complete production sources and the published 1.5.0 -> 1.5.1 delta. This build-only helper accepts trusted build-script snippets and compiler/wrapper/flag inputs, invokes Command without a shell, checks the output directory, writes compiler IR there and removes only its generated probe path. Version/IO/process failures remain errors; it has no runtime network parser. The release changes the wrapper test harness, not production probing. Current Rust 1.99 compilation executes the selected build dependency. This automated review assumes governed compiler/build inputs and is not an independent audit or permission to compile untrusted network text."
+
+[[audits.bech32]]
+who = "Codex (automated single-owner source review)"
+criteria = "network-parser-reviewed"
+version = "0.12.0"
+notes = "Reused exact published Lib 3af7814ea4f76f2cca3d33d4c2bd8a854f3fb78f source review for the identical registry version/checksum and same private native transport composition. Rand 0.10.1 is the reviewed baseline for a separately recorded 0.10.3 delta. Original use restrictions remain binding; this is not a second independent audit. Reviewed the manifest, top-level decode entry, HRP admission, character/separator checking and checksum-to-byte-iterator path. HRPs have a fixed 83-byte buffer; invalid characters, mixed case, missing separators, insufficient checksum and code-length violations return errors before collecting decoded bytes. Allocating decoding is proportional to admitted input, so callers still need input bounds. The private native Nostr path receives bounded frames and requires canonical hexadecimal EVENT/OK identities before SDK parsing; it does not accept Bech32 aliases as wire identity. This focused automated native-use review does not qualify Bitcoin witness policies, checksum selection by arbitrary callers or unbounded NIP-19 data."
+
+[[audits.bitcoin-consensus-encoding]]
+who = "Codex (automated single-owner source review)"
+criteria = "network-parser-reviewed"
+version = "1.3.0"
+notes = "Reused exact published Lib 3af7814ea4f76f2cca3d33d4c2bd8a854f3fb78f source review for the identical registry version/checksum and same private native transport composition. Rand 0.10.1 is the reviewed baseline for a separately recorded 0.10.3 delta. Original use restrictions remain binding; this is not a second independent audit. Reviewed the manifest and feature boundaries, slice decoder drivers, fixed ArrayDecoder and byte/array encoders, and complete compact-size byte admission and minimal-encoding checks. The selected native dependency has no alloc/std/serde features; bitcoin_hashes uses fixed-size array codec traits, not a Bitcoin peer or transaction parser. Fixed buffers advance by the available remaining bytes and reject incomplete completion; exact slice decoding rejects trailing input. Arbitrary user-supplied decoders must make progress, and optional allocating collection/IO drivers are outside this admitted use. This focused automated native-use review does not qualify those optional APIs or provide a general resource bound for caller-defined codecs."
+
+[[audits.bitcoin-internals]]
+who = "Codex (automated single-owner source review)"
+criteria = "network-parser-reviewed"
+version = "0.6.0"
+notes = "Reused exact published Lib 3af7814ea4f76f2cca3d33d4c2bd8a854f3fb78f source review for the identical registry version/checksum and same private native transport composition. Rand 0.10.1 is the reviewed baseline for a separately recorded 0.10.3 delta. Original use restrictions remain binding; this is not a second independent audit. Reviewed all production modules and the build script/manifest: fixed-array/slice transformations, the Copy-only ArrayVec safety boundary, bounded serde insertion, error/storage macros and integer casts. ArrayVec tracks initialized elements within static capacity; safe insertion refuses excess capacity and its raw slice view covers only initialized elements. Slice chunking checks nonzero constant chunk sizes. Some caller APIs can panic on invalid ranges/capacity, and allocating errors can retain raw input. Native hash callers use fixed block/array sizes and public adapter errors normalize upstream causes. The build script runs the governed rustc directly and writes only OUT_DIR/rust_version.rs. This automated source review is not a general unsafe-code proof or redaction guarantee for arbitrary callers."
+
+[[audits.bitcoin-internals]]
+who = "Codex (automated single-owner source review)"
+criteria = "network-parser-reviewed"
+delta = "0.6.0 -> 0.7.0"
+notes = "Reused exact published Lib 3af7814ea4f76f2cca3d33d4c2bd8a854f3fb78f source review for the identical registry version/checksum and same private native transport composition. Rand 0.10.1 is the reviewed baseline for a separately recorded 0.10.3 delta. Original use restrictions remain binding; this is not a second independent audit. Reviewed the complete production delta and manifest: shared array/slice safety code and build script remain unchanged, input-error formatting escapes debug characters, an integer widening cast is added, and U256 uses two fixed u128 words. U256 hex/byte serde requires exactly 32 bytes; decimal parsing returns overflow/invalid-input errors, formatting uses fixed buffers, and arithmetic/division retain documented panic conditions. Test-only serde dependencies move out of the production feature surface. Current native dependencies select no optional serde/alloc features on either internals version and do not expose U256 arithmetic as Radroots agreement values. This automated delta inherits the reviewed 0.6 source and does not qualify arbitrary arithmetic operands or monetary semantics."
+
+[[audits.bitcoin_hashes]]
+who = "Codex (automated single-owner source review)"
+criteria = "network-parser-reviewed"
+version = "1.2.0"
+notes = "Reused exact published Lib 3af7814ea4f76f2cca3d33d4c2bd8a854f3fb78f source review for the identical registry version/checksum and same private native transport composition. Rand 0.10.1 is the reviewed baseline for a separately recorded 0.10.3 delta. Original use restrictions remain binding; this is not a second independent audit. Reviewed the selected feature manifest, fixed-hash construction/serde/hex macros, SHA256 buffering and finalization, normal software and CPU-dispatched block-processing paths, and native call sites. Fixed hash byte decoding requires exact array length; string decoding uses the reviewed fixed-size hex decoder. SHA256 buffers at most one 64-byte block and dispatches intrinsic implementations only after CPU feature detection; their four 16-byte block loads are reached with complete blocks. Native adapter ingress is bounded before hashing and its interoperation tests compare event identities across the independent codecs on macOS and Linux. This focused automated native-use review does not independently certify the cryptographic algorithm, every hash family, batch hashing API, unlimited incremental input, or another platform."
+
+[[audits.bitflags]]
+who = "Codex (automated single-owner source review)"
+criteria = "network-parser-reviewed"
+version = "1.3.2"
+notes = "Reused exact published Lib 3af7814ea4f76f2cca3d33d4c2bd8a854f3fb78f source review for the identical registry version/checksum and same private native transport composition. Rand 0.10.1 is the reviewed baseline for a separately recorded 0.10.3 delta. Original use restrictions remain binding; this is not a second independent audit. Reviewed the manifest and complete production macro expansion and attribute filtering. Generated values contain a caller-selected integer; checked from_bits rejects unknown bits, truncate masks them, and remove uses bit-clear while toggle uses XOR. The unsafe constructor preserves bits and requires the caller's documented validity invariant. There is no byte decoder, allocation, filesystem or process access. This same-version package was already locked with a safe-to-deploy exemption; its newly inherited network criterion is evaluated for the current native composition, where the optional embedded logging edge is not selected. This is automated source review, not application authorization or optional-feature execution evidence."
+
+[[audits.byteorder]]
+who = "Codex (automated single-owner source review)"
+criteria = "network-parser-reviewed"
+version = "1.5.0"
+notes = "Reused exact published Lib 3af7814ea4f76f2cca3d33d4c2bd8a854f3fb78f source review for the identical registry version/checksum and same private native transport composition. Rand 0.10.1 is the reviewed baseline for a separately recorded 0.10.3 delta. Original use restrictions remain binding; this is not a second independent audit. Reviewed feature boundaries, fixed integer reads/writes, variable-byte-length admission and slice conversion macros used by the hash32 edge. The selected no_std feature set excludes I/O extension helpers. Primitive reads use exact bounded slices and native endian conversions; invalid caller buffer lengths panic, rather than supplying partial values. This edge is compiled through heapless, while the admitted faster-hex std/alloc runtime uses its allocating implementation and no hash32 parser. This focused automated native-use review qualifies no arbitrary-length reader, dynamic allocation policy or invalid-call panic freedom."
+
+[[audits.defmt]]
+who = "Codex (automated single-owner source review)"
+criteria = "network-parser-reviewed"
+version = "0.3.101"
+notes = "Reused exact published Lib 3af7814ea4f76f2cca3d33d4c2bd8a854f3fb78f source review for the identical registry version/checksum and same private native transport composition. Rand 0.10.1 is the reviewed baseline for a separately recorded 0.10.3 delta. Original use restrictions remain binding; this is not a second independent audit. Reviewed the complete production source and manifest. This compatibility package reexports defmt 1.x macros, traits and encoding helpers and forwards its feature flags; it has no independent build script, runtime parser or network owner. Both selected native public graphs exclude it. This automated review admits that inactive reexport package for the current composition and does not qualify embedded logging, arbitrary global logger implementations or another platform."
+
+[[audits.defmt]]
+who = "Codex (automated single-owner source review)"
+criteria = "network-parser-reviewed"
+version = "1.2.0"
+notes = "Reused exact published Lib 3af7814ea4f76f2cca3d33d4c2bd8a854f3fb78f source review for the identical registry version/checksum and same private native transport composition. Rand 0.10.1 is the reviewed baseline for a separately recorded 0.10.3 delta. Original use restrictions remain binding; this is not a second independent audit. Reviewed manifest/module boundaries, the complete build script, logger safety contract and raw-frame/rzcobs encoder ownership. The script reads the packaged linker template and writes only its generated linker script under Cargo OUT_DIR; the encoder consumes caller slices with fixed run/zero counters, not a network decoding API. Global logger thread/interrupt safety remains the implementing host's obligation. This package and build script are absent from both selected native public graphs. This focused automated review admits the inactive dependency for that composition, not embedded runtime qualification, every formatter implementation or a global logger safety proof."
+
+[[audits.defmt-macros]]
+who = "Codex (automated single-owner source review)"
+criteria = "network-parser-reviewed"
+version = "1.2.0"
+notes = "Reused exact published Lib 3af7814ea4f76f2cca3d33d4c2bd8a854f3fb78f source review for the identical registry version/checksum and same private native transport composition. Rand 0.10.1 is the reviewed baseline for a separately recorded 0.10.3 delta. Original use restrictions remain binding; this is not a second independent audit. Reviewed manifest/build entry, macro dispatch and format-string argument parsing, log expansion/code generation, symbol construction and compile-time environment filtering. The build script emits only DEFMT_LOG rerun tracking; macros accept Rust token streams and literal format strings and generate typed Rust/linker metadata. The selected native graphs exclude this package. Format argument indices and generated code are trusted compiler inputs, not admitted network text; optional logger/panic attributes still require their host safety contracts. This focused automated inactive-use review does not certify all macro expansions or bounded parsing of arbitrary untrusted Rust/format strings."
+
+[[audits.defmt-parser]]
+who = "Codex (automated single-owner source review)"
+criteria = "network-parser-reviewed"
+version = "1.1.0"
+notes = "Reused exact published Lib 3af7814ea4f76f2cca3d33d4c2bd8a854f3fb78f source review for the identical registry version/checksum and same private native transport composition. Rand 0.10.1 is the reviewed baseline for a separately recorded 0.10.3 delta. Original use restrictions remain binding; this is not a second independent audit. Reviewed all production parsing modules: format fragments, type names, display hints, array/range integers, brace admission and argument consistency. Parsing follows UTF-8 character boundaries and reports malformed types/ranges/braces. Argument indices control vector resizing and index-plus-one arithmetic, so this parser is unsuitable for untrusted network input without separate input/index bounds. The only relevant dependency route is optional compile-time defmt macros with trusted literals, and both selected native graphs exclude it. This automated inactive-use review supplies no runtime parser/resource qualification or permission to route network strings through this API."
+
+[[audits.faster-hex]]
+who = "Codex (automated single-owner source review)"
+criteria = "network-parser-reviewed"
+version = "0.10.1"
+notes = "Reused exact published Lib 3af7814ea4f76f2cca3d33d4c2bd8a854f3fb78f source review for the identical registry version/checksum and same private native transport composition. Rand 0.10.1 is the reviewed baseline for a separately recorded 0.10.3 delta. Original use restrictions remain binding; this is not a second independent audit. Reviewed all production encoder, decoder, dispatch, error, serde and build-probe source and the actual Nostr fixed-array call sites. CPU dispatch checks x86 processor/OS state or aarch64 NEON support; vector reads and writes require complete source and destination chunks, with scalar tails. Encoding returns only its initialized ASCII prefix. Checked decoding rejects odd/nonhex input but permits a longer even source than the destination: it is not an exact-identifier validator. The bounded native adapter therefore checks canonical exact-length EVENT and OK identifiers before upstream normalization; real socket regressions retain the previously observed failures. Allocating helpers assume caller-sized inputs, and the admitted messages retain the adapter's frame/ingress limits. This automated native-use review does not claim general constant-time behavior, unrestricted allocation safety, optional embedded logging or browser qualification."
+
+[[audits.hash32]]
+who = "Codex (automated single-owner source review)"
+criteria = "network-parser-reviewed"
+version = "0.3.1"
+notes = "Reused exact published Lib 3af7814ea4f76f2cca3d33d4c2bd8a854f3fb78f source review for the identical registry version/checksum and same private native transport composition. Rand 0.10.1 is the reviewed baseline for a separately recorded 0.10.3 delta. Original use restrictions remain binding; this is not a second independent audit. Reviewed all three production modules and the manifest: trait forwarding, stateless hasher construction, FNV wrapping accumulation and the Murmur3 block/tail implementation. This is a non-cryptographic hash dependency, not an event-identity or signature algorithm. The only selected reverse edge is heapless through faster-hex; the native faster-hex std/alloc implementation invokes neither those collections nor either hasher. Murmur3's potentially uninitialized buffer references are outside the admitted native call path and require separate review/proving inputs before any use. This automated use-scoped review does not certify that unsafe implementation, adversarial collision resistance or an embedded runtime."
+
+[[audits.heapless]]
+who = "Codex (automated single-owner source review)"
+criteria = "network-parser-reviewed"
+version = "0.8.0"
+notes = "Reused exact published Lib 3af7814ea4f76f2cca3d33d4c2bd8a854f3fb78f source review for the identical registry version/checksum and same private native transport composition. Rand 0.10.1 is the reviewed baseline for a separately recorded 0.10.3 delta. Original use restrictions remain binding; this is not a second independent audit. Reviewed module/feature and build-probe boundaries plus fixed-capacity Vec/String insertion, initialization and UTF-8 conversion paths referenced by faster-hex's non-alloc alternative. Checked push/extend refuse excess capacity and strings preserve UTF-8 after safe insertion; unsafe constructors retain caller initialization/encoding requirements. The build script compiles a fixed trusted probe under OUT_DIR with governed compiler/wrapper arguments and owns no runtime network parser. The only selected reverse edge is faster-hex, whose actual std/alloc implementation uses alloc Vec/String instead; optional embedded logging and non-alloc containers are not invoked by this native composition. This focused automated review does not qualify every pool/queue/map API or the hash32 Murmur3 implementation."
+
+[[audits.hex-conservative]]
+who = "Codex (automated single-owner source review)"
+criteria = "network-parser-reviewed"
+version = "1.3.0"
+notes = "Reused exact published Lib 3af7814ea4f76f2cca3d33d4c2bd8a854f3fb78f source review for the identical registry version/checksum and same private native transport composition. Rand 0.10.1 is the reviewed baseline for a separately recorded 0.10.3 delta. Original use restrictions remain binding; this is not a second independent audit. Reviewed manifest/feature boundaries, fixed/variable decoding entries, complete hex iterators and their initialized-output handling, Char representation/table conversion and the bounded buffer encoder. Fixed-array decoding checks exactly N*2 bytes before writing; invalid/odd/nonhex input returns typed errors, and decoded Vec length is published only after initialization succeeds. Unchecked ASCII conversions originate from the closed ASCII Char variants. Allocating helpers scale with caller input, so they are not standalone network size limits. The native graph supplies bounded frames and fixed-size public hash values. This focused automated source review does not qualify unbounded formatting/collection by arbitrary callers or every optional feature."
+
+[[audits.lru]]
+who = "Codex (automated single-owner source review)"
+criteria = "safe-to-deploy"
+delta = "0.16.3 -> 0.16.4"
+notes = "Automated single-owner review of the complete checksum-verified published 0.16.3 to 0.16.4 production and manifest delta. Four with-key insertion variants pass a borrowed key to their initializer before node replacement; existing no-key APIs forward through closures. Map/list ownership and raw pointer accesses are unchanged. Fallible initializers return before mutation and cache hits never invoke the initializer. Added regressions and unchanged dependencies/license are reviewed. This bridges the existing 0.16.3 exemption to the separately reused 0.16.4 to 0.18.5 review. It does not qualify either old version as free of known unsoundness; the direct legacy SDK and old LRU remain explicit 070/130 migration debt. No independent full-crate or unsafe-code proof is claimed."
+
+[[audits.lru]]
+who = "Codex (automated single-owner source review)"
+criteria = "network-parser-reviewed"
+delta = "0.16.4 -> 0.18.5"
+notes = "Reused exact published Lib 3af7814ea4f76f2cca3d33d4c2bd8a854f3fb78f source review for the identical registry version/checksum and same private native transport composition. Rand 0.10.1 is the reviewed baseline for a separately recorded 0.10.3 delta. Original use restrictions remain binding; this is not a second independent audit. Reviewed the complete published release delta: the returned mutable reference now borrows the cache, pop detaches before a potentially panicking key destructor, allocation replaces unchecked NonNull construction, and sparse/find-and-promote/retain preserve list ownership. Reviewed the borrowed return and added retention, promotion and destructor regressions. Native SDK callers retain bounded capacities and immutable EventId keys. This delta inherits the existing 0.16.4 exemption; it is not an independent full-crate audit or a general unsafe-code proof."
+
 [[audits.negentropy]]
 who = "Codex (automated single-owner source review)"
 criteria = "safe-to-deploy"
 delta = "0.5.0 -> 0.5.2"
 notes = "Automated single-owner review of the complete checksum-verified published 0.5.0 -> 0.5.2 delta. All 21 retained current source/support hashes match the previously reviewed 0.5.2 snapshot. Reviewed fixed-array ID copying, modulo-2^256 accumulator carry propagation, equivalent duplicate sorting, bounded ID-list admission before allocation, private always-Ok varint cleanup, and retained regressions. Both manifests declare MIT; 0.5.2 adds the MIT license text absent from the 0.5.0 archive. No new dependency or default feature is introduced. This delta relies on the existing 0.5.0 baseline exemption; it does not claim an independent full-crate audit, full parser canonicality or release qualification."
+
+[[audits.opaquerr]]
+who = "Codex (automated single-owner source review)"
+criteria = "network-parser-reviewed"
+version = "0.2.0"
+notes = "Reused exact published Lib 3af7814ea4f76f2cca3d33d4c2bd8a854f3fb78f source review for the identical registry version/checksum and same private native transport composition. Rand 0.10.1 is the reviewed baseline for a separately recorded 0.10.3 delta. Original use restrictions remain binding; this is not a second independent audit. Reviewed both complete production modules and the manifest. The no_std error container and declarative macros construct typed kinds and optional boxed sources; they do not decode network input, invoke processes, access files or use unsafe code. Allocating construction caches the source Display text and Debug exposes the source, so this dependency supplies neither redaction nor an independent allocation limit. The native adapter maps upstream causes into its existing typed public errors, with ingress bounded before parsing. This is automated source review for that use, not a secret-handling or unrestricted-error-formatting claim."
+
+[[audits.rand]]
+who = "Codex (automated single-owner source review)"
+criteria = "network-parser-reviewed"
+version = "0.10.1"
+notes = "Reused exact published Lib 3af7814ea4f76f2cca3d33d4c2bd8a854f3fb78f source review for the identical registry version/checksum and same private native transport composition. Rand 0.10.1 is the reviewed baseline for a separately recorded 0.10.3 delta. Original use restrictions remain binding; this is not a second independent audit. Reviewed the feature manifest, RNG extension interface and integer uniform sampling used by the selected SDK. Its actual features select std/alloc/sys_rng and the getrandom SysRng reexport; software StdRng/ThreadRng and their optional ChaCha generator are not selected. The SDK uses fixed ping bytes and a constant nonempty bounded reconnect-jitter range, with no network-controlled sampling range or collection allocation. Infallible wrappers can panic on OS entropy failure and invalid caller ranges; this review does not claim those are impossible. This focused automated native-use review is not a full distribution/cryptographic algorithm audit or another platform's runtime qualification."
+
+[[audits.rand]]
+who = "Codex (automated single-owner source review)"
+criteria = "safe-to-deploy"
+delta = "0.10.1 -> 0.10.3"
+notes = "Automated single-owner review of the complete checksum-verified published 0.10.1 -> 0.10.3 production/manifest delta. Core RNG/SysRng and fixed-byte filling remain unchanged. Checked Unicode and slice access replace unchecked access; sampler deserialization validates ranges. Weighted constructors/updates return overflow before mutation, float-inclusive range rounding handles finite overflow and NaN masks, and weighted sampling rejects non-finite progress. The private native SDK uses fixed arrays and a trusted bounded integer jitter range, not weighted, float or serde samplers. This delta inherits the exact reused Lib 0.10.1 source review; it adds no exemption and does not independently audit cryptographic algorithms, every optional feature or entropy-failure panic freedom."
+
+[[audits.rand_core]]
+who = "Codex (automated single-owner source review)"
+criteria = "network-parser-reviewed"
+version = "0.10.1"
+notes = "Reused exact published Lib 3af7814ea4f76f2cca3d33d4c2bd8a854f3fb78f source review for the identical registry version/checksum and same private native transport composition. Rand 0.10.1 is the reviewed baseline for a separately recorded 0.10.3 delta. Original use restrictions remain binding; this is not a second independent audit. Reviewed the TryRng/Rng and crypto-marker trait interfaces, dereference forwarding, complete UnwrapErr adapter and integer/byte conversion helpers used by SysRng. These interfaces own no network decoder or variable-length packet queue; they forward bounded caller buffers and propagate fallible completion. The explicit UnwrapErr conversion panics on provider errors, and a crypto marker alone proves no algorithm properties. The selected native SDK supplies fixed-size arrays and trusted sampling bounds. This focused automated source review does not qualify optional block/seed generators, arbitrary provider implementations or secret generation policy."
+
+[[audits.secp256k1]]
+who = "Codex (automated single-owner source review)"
+criteria = "network-parser-reviewed"
+delta = "0.29.1 -> 0.30.0"
+notes = "Reused exact published Lib 3af7814ea4f76f2cca3d33d4c2bd8a854f3fb78f source review for the identical registry version/checksum and same private native transport composition. Rand 0.10.1 is the reviewed baseline for a separately recorded 0.10.3 delta. Original use restrictions remain binding; this is not a second independent audit. Reviewed the complete published Rust release delta and manifest. Fixed-array key/signature constructors reject incorrect slice lengths before FFI; recovery IDs become a closed checked enum. Schnorr signing and verification now pass an explicit message slice length through the existing C backend, and the admitted Nostr path supplies a fixed 32-byte event digest. Secret Debug output remains hidden or an explicit feature-gated fingerprint, and removed no-context parsing paths no longer panic unconditionally. The resolved secp256k1-sys 0.10.1 source is unchanged. This automated delta review inherits the existing 0.29.1 network-parser exemption and does not claim a fresh C/cryptographic algorithm audit, arbitrary-message signing policy, or another platform's runtime qualification."
+
+[[audits.syn]]
+who = "Codex (automated single-owner source review)"
+criteria = "network-parser-reviewed"
+version = "3.0.2"
+notes = "Reused exact published Lib 3af7814ea4f76f2cca3d33d4c2bd8a854f3fb78f source review for the identical registry version/checksum and same private native transport composition. Rand 0.10.1 is the reviewed baseline for a separately recorded 0.10.3 delta. Original use restrictions remain binding; this is not a second independent audit. Reviewed package/features, parser entry/completion checks and token-buffer construction/cursor ownership, tracing the optional defmt procedural-macro route. It parses compiler-owned token streams and rejects unconsumed tokens; recursive token construction and syntax trees do not supply a network-input allocation/depth limit. Version 3.0.2 is absent from both selected native public graphs, including build dependencies. This focused automated review admits that inactive compile-time dependency for the current composition; it does not audit every Rust grammar/unsafe cursor operation or qualify an untrusted runtime source parser."
+
+[[audits.syn]]
+who = "Codex (automated single-owner source review)"
+criteria = "safe-to-deploy"
+delta = "3.0.2 -> 3.0.9"
+notes = "Automated single-owner review of the complete checksum-verified published 3.0.2 to 3.0.9 production and manifest delta. Parser changes distinguish grouped lifetimes and double-colon labels, reject ambiguous arrow operators, admit explicit safe foreign signatures and preserve literal error spans; retain uses existing safe Vec/Option traversal. Other changes document verbatim grammar and add regressions. The only new route is optional defmt macro syntax over compiler-owned tokens; actual native normal/build discovery excludes Syn 3.0.9. This delta inherits the exact Lib 3.0.2 use-scoped source review and adds no exemption. It does not audit every grammar/unsafe cursor, qualify arbitrary runtime source input or execute the optional macro feature."
+
+[[audits.tokio-happy-eyeballs]]
+who = "Codex (automated single-owner source review)"
+criteria = "network-parser-reviewed"
+version = "0.1.0"
+notes = "Reused exact published Lib 3af7814ea4f76f2cca3d33d4c2bd8a854f3fb78f source review for the identical registry version/checksum and same private native transport composition. Rand 0.10.1 is the reviewed baseline for a separately recorded 0.10.3 delta. Original use restrictions remain binding; this is not a second independent audit. Reviewed the entire unsafe-free source and manifest, including empty resolution, IPv4/IPv6 partitioning, the 250 ms race, error completion and remaining-address iteration. The helper extracts the prior Async WebSocket dialing algorithm; it owns no protocol decoder, filesystem or credential input. Its caller owns total dialing deadlines and destination admission. The configured Radroots native connector bypasses this default dialer and enforces its own bounded DNS/address/TLS admission and deadline. This automated native-use review does not qualify unrestricted default dialing or another platform."
+
+[[audits.tokio-tungstenite]]
+who = "Codex (automated single-owner source review)"
+criteria = "network-parser-reviewed"
+delta = "0.26.2 -> 0.28.0"
+notes = "Reused exact published Lib 3af7814ea4f76f2cca3d33d4c2bd8a854f3fb78f source review for the identical registry version/checksum and same private native transport composition. Rand 0.10.1 is the reviewed baseline for a separately recorded 0.10.3 delta. Original use restrictions remain binding; this is not a second independent audit. Reviewed the complete published release delta: into-inner/get-ref accessors, boxed TLS error conversion, the matching Tungstenite parent and example error adaptation. The native connector retains its verified TLS roots, original server name, pinned addresses and bounded frame configuration; real socket, exact-byte, cancellation, authentication and deadline controls execute separately. This automated delta review inherits the existing 0.26.2 exemption and does not claim an independent full-crate audit or browser/runtime-platform qualification."
+
+[[audits.tungstenite]]
+who = "Codex (automated single-owner source review)"
+criteria = "network-parser-reviewed"
+delta = "0.26.2 -> 0.28.0"
+notes = "Reused exact published Lib 3af7814ea4f76f2cca3d33d4c2bd8a854f3fb78f source review for the identical registry version/checksum and same private native transport composition. Rand 0.10.1 is the reviewed baseline for a separately recorded 0.10.3 delta. Original use restrictions remain binding; this is not a second independent audit. Reviewed the complete published release delta: boxed errors, HTTP-version admission and duplicate-header handling, frame buffer reservation/read bounds, borrowed UTF-8 hashing, fragment/control/close state transitions and TLS error conversion. The native Radroots connector supplies fixed message/frame limits and metered ingress before this decoder. Real malformed, oversized, continuation, exact-byte and deadline cases execute separately. This automated delta review inherits the existing 0.26.2 exemption; it is not an independent full-crate audit, unbounded-input guarantee or 32-bit/browser qualification."
+
+[[audits.universal-time]]
+who = "Codex (automated single-owner source review)"
+criteria = "network-parser-reviewed"
+version = "0.3.1"
+notes = "Reused exact published Lib 3af7814ea4f76f2cca3d33d4c2bd8a854f3fb78f source review for the identical registry version/checksum and same private native transport composition. Rand 0.10.1 is the reviewed baseline for a separately recorded 0.10.3 delta. Original use restrictions remain binding; this is not a second independent audit. Reviewed all production source, feature gates and manifest: native std time uses a OnceLock monotonic origin and explicit wall-clock conversion; checked arithmetic returns Option and duration subtraction saturates, while duration operators can panic on overflow/underflow. There is no network parser or variable-sized input allocation. Native SDK connection durations come from validated adapter configuration, and packet timestamps do not supply Instant arithmetic. The no_std/WASM provider is a separately linked Sync static and is not admitted as the Radroots browser clock. This automated native-use source review is not independent audit, arbitrary-duration panic freedom or browser/no_std runtime qualification."
+
+[[audits.zeroize]]
+who = "Codex (automated single-owner source review)"
+criteria = "safe-to-deploy"
+delta = "1.8.2 -> 1.9.0"
+notes = "Automated single-owner review of the complete checksum-verified published 1.8.2 -> 1.9.0 production and manifest delta, new barrier/stack modules, x86 delta and retained daemon/provider callers. Initialized fixed arrays and owned Vec/String Drop paths retain volatile erasure; native optimization barriers now use readonly inline assembly with the referenced address. Zeroizing gains transparent unsized support; daemon retains initialized owned buffers. The new opt-in stack API is not called. Edition/MSRV and unchanged dual MIT/Apache licenses are checked. This delta inherits the existing 1.8.2 safe-to-deploy baseline exemption; it does not prove erasure of prior copies, constant-time behavior, every backend, or an independent full-crate audit."

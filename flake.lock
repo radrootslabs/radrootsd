@@ -45,17 +45,17 @@
         "treefmt-nix": "treefmt-nix"
       },
       "locked": {
-        "lastModified": 1792158226,
-        "narHash": "sha256-JuDYlQok9ujR5TAOvSHAMbi6SwPLXk1A5KOyxI53658=",
+        "lastModified": 1792185203,
+        "narHash": "sha256-cBfLxPOMFAJ7d6r1MLf1N9utwuRBe4jDCcMx/u/jk7c=",
         "owner": "radrootslabs",
         "repo": "lib",
-        "rev": "386e2d7e8cca95bdd0f6ce3444b5e741ea61ef8a",
+        "rev": "3af7814ea4f76f2cca3d33d4c2bd8a854f3fb78f",
         "type": "github"
       },
       "original": {
         "owner": "radrootslabs",
         "repo": "lib",
-        "rev": "386e2d7e8cca95bdd0f6ce3444b5e741ea61ef8a",
+        "rev": "3af7814ea4f76f2cca3d33d4c2bd8a854f3fb78f",
         "type": "github"
       }
     },
