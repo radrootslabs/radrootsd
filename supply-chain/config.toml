@@ -745,8 +745,9 @@ version = "1.14.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.rustls-webpki]]
-version = "0.103.15"
+version = "0.103.16"
 criteria = "safe-to-deploy"
+notes = "Existing version-specific TLS review debt follows the patched provider selection. Independent full-crate audit remains outstanding; no advisory ignore or audit claim is added."
 
 [[exemptions.rustversion]]
 version = "1.0.22"
@@ -1145,8 +1146,9 @@ version = "0.26.11"
 criteria = "safe-to-deploy"
 
 [[exemptions.webpki-roots]]
-version = "1.0.6"
+version = "1.0.10"
 criteria = "safe-to-deploy"
+notes = "Existing version-specific TLS review debt follows the patched provider selection. Independent full-crate audit remains outstanding; no advisory ignore or audit claim is added."
 
 [[exemptions.windows-link]]
 version = "0.2.1"
