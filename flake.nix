@@ -8,7 +8,7 @@
     # that upstream fetch defect while preserving the same locked sources.
     crane.url = "github:ipetkov/crane/01bc1d404a51a0a07e9d8759cd50a7903e218c82";
     lib = {
-      url = "github:radrootslabs/lib/a903133cdcd78b6a25687bd23c793d17d17b90c8";
+      url = "github:radrootslabs/lib/4b4aa8a7feaab08492c3f596df9182070ee8d814";
       inputs.crane.follows = "crane";
     };
     nixpkgs.follows = "lib/nixpkgs";
