@@ -11,6 +11,10 @@ event verifies.
 
 ## Verification
 
+`radrootsd --help`, `--version` and subcommand help exit successfully before
+loading configuration or creating logging, identity, database or network state.
+Malformed arguments retain the redacted nonzero failure boundary.
+
 Run the native standalone checks with the declared Rust toolchain and committed
 lockfile. In an extbuild-enabled checkout, first run `cargo extbuild doctor`
 and route each command through `cargo extbuild run --`:

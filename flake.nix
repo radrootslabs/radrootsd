@@ -8,7 +8,7 @@
     # that upstream fetch defect while preserving the same locked sources.
     crane.url = "github:ipetkov/crane/01bc1d404a51a0a07e9d8759cd50a7903e218c82";
     lib = {
-      url = "github:radrootslabs/lib/4b4aa8a7feaab08492c3f596df9182070ee8d814";
+      url = "github:radrootslabs/lib/60ce9294ff271bc311b7d18af97dc78e48e75377";
       inputs.crane.follows = "crane";
     };
     nixpkgs.follows = "lib/nixpkgs";
@@ -71,6 +71,9 @@
               version = "0.1.0";
               CARGO_PROFILE = "release";
               cargoExtraArgs = "--locked --package radrootsd --bin radrootsd";
+              postInstall = ''
+                install -Dm444 ${lib.outPath}/crates/domain/NOTICE "$out/share/doc/radrootsd/NOTICE"
+              '';
             }
           );
           check = craneLib.mkCargoDerivation (

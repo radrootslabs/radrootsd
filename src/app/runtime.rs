@@ -174,18 +174,30 @@ fn take_start_rpc_hook_result() -> Option<Result<ServerHandle, String>> {
         .take()
 }
 
-fn load_args_and_settings() -> Result<(cli::Args, config::Settings)> {
+fn load_args_and_settings() -> Result<Option<(cli::Args, config::Settings)>> {
     #[cfg(test)]
     {
         if let Some(result) = take_load_hook_result() {
-            return result.map_err(anyhow::Error::msg);
+            return result.map(Some).map_err(anyhow::Error::msg);
         }
         Err(anyhow::anyhow!("run loader hook not set"))
     }
 
     #[cfg(not(test))]
     {
-        let args = cli::Args::try_parse()?;
+        let args = match cli::Args::try_parse() {
+            Ok(args) => args,
+            Err(display)
+                if matches!(
+                    display.kind(),
+                    clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion
+                ) =>
+            {
+                display.print()?;
+                return Ok(None);
+            }
+            Err(error) => return Err(error.into()),
+        };
         let config_path = args
             .service
             .config
@@ -198,7 +210,7 @@ fn load_args_and_settings() -> Result<(cli::Args, config::Settings)> {
             std::path::Path::new(settings.config.service.logs_dir.as_str()),
             None,
         )?;
-        Ok((args, settings))
+        Ok(Some((args, settings)))
     }
 }
 
@@ -542,7 +554,9 @@ async fn handle_command(command: cli::Command, settings: &config::Settings) -> R
 }
 
 pub async fn run() -> Result<()> {
-    let (args, settings): (cli::Args, config::Settings) = load_args_and_settings()?;
+    let Some((args, settings)) = load_args_and_settings()? else {
+        return Ok(());
+    };
     settings.validate()?;
     let authored_profile = settings.authored_profile()?;
 
