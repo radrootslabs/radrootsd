@@ -17,6 +17,12 @@ criteria = "network-parser-reviewed"
 version = "1.5.1"
 notes = "Reused exact published Lib 3af7814ea4f76f2cca3d33d4c2bd8a854f3fb78f source review for the identical registry version/checksum and same private native transport composition. Rand 0.10.1 is the reviewed baseline for a separately recorded 0.10.3 delta. Original use restrictions remain binding; this is not a second independent audit. Reviewed the complete production sources and the published 1.5.0 -> 1.5.1 delta. This build-only helper accepts trusted build-script snippets and compiler/wrapper/flag inputs, invokes Command without a shell, checks the output directory, writes compiler IR there and removes only its generated probe path. Version/IO/process failures remain errors; it has no runtime network parser. The release changes the wrapper test harness, not production probing. Current Rust 1.99 compilation executes the selected build dependency. This automated review assumes governed compiler/build inputs and is not an independent audit or permission to compile untrusted network text."
 
+[[audits.base16ct]]
+who = "Codex (same-owner reuse of published RDP050 source review)"
+criteria = "safe-to-deploy"
+version = "1.0.0"
+notes = "Reused exact published Lib e55c1749902811732167a2ce5c099e22e964624f source review for the identical registry version/checksum and the same identity public-point parser composition. Provider crypto-reviewed implies the required safe-to-deploy criterion. Original use restrictions remain binding; this is not a second independent audit. Reviewed the no_std feature boundary, decoded-length and decode_inner implementations. Decoding requires even input length and a sufficiently large destination, accumulates invalid-nibble errors and returns a bounded slice. Identity uses its own exact-size public hexadecimal admission and calls k256 with bytes, not this package's text API. No key generation or entropy source is selected by that call. Constant-time descriptions remain best effort, with public input length observable. This is automated single-owner source review, not an independent full-crate audit."
+
 [[audits.bech32]]
 who = "Codex (automated single-owner source review)"
 criteria = "network-parser-reviewed"
@@ -59,6 +65,42 @@ criteria = "network-parser-reviewed"
 version = "1.5.0"
 notes = "Reused exact published Lib 3af7814ea4f76f2cca3d33d4c2bd8a854f3fb78f source review for the identical registry version/checksum and same private native transport composition. Rand 0.10.1 is the reviewed baseline for a separately recorded 0.10.3 delta. Original use restrictions remain binding; this is not a second independent audit. Reviewed feature boundaries, fixed integer reads/writes, variable-byte-length admission and slice conversion macros used by the hash32 edge. The selected no_std feature set excludes I/O extension helpers. Primitive reads use exact bounded slices and native endian conversions; invalid caller buffer lengths panic, rather than supplying partial values. This edge is compiled through heapless, while the admitted faster-hex std/alloc runtime uses its allocating implementation and no hash32 parser. This focused automated native-use review qualifies no arbitrary-length reader, dynamic allocation policy or invalid-call panic freedom."
 
+[[audits.cmov]]
+who = "Codex (same-owner reuse of published RDP050 source review)"
+criteria = "safe-to-deploy"
+version = "0.5.4"
+notes = "Reused exact published Lib e55c1749902811732167a2ce5c099e22e964624f source review for the identical registry version/checksum and the same identity public-point parser composition. Provider crypto-reviewed implies the required safe-to-deploy criterion. Original use restrictions remain binding; this is not a second independent audit. Reviewed backend selection and the aarch64 CSEL, x86 CMOV and portable mask-selection implementations. Native inline assembly uses register operands with nomem/nostack; the portable backend explicitly documents compiler-dependent branch limitations. This supports fixed-width selection in the selected public-key parser. It is not proof of compiler output, a universal side-channel guarantee, or qualification of secret operations on every architecture. This is automated single-owner source review, not an independent full-crate audit."
+
+[[audits.const-oid]]
+who = "Codex (same-owner reuse of published RDP050 source review)"
+criteria = "safe-to-deploy"
+version = "0.10.2"
+notes = "Reused exact published Lib e55c1749902811732167a2ce5c099e22e964624f source review for the identical registry version/checksum and the same identity public-point parser composition. Provider crypto-reviewed implies the required safe-to-deploy criterion. Original use restrictions remain binding; this is not a second independent audit. Reviewed the no_std/deny-unsafe boundary and bounded ObjectIdentifier construction, fallible byte admission and default 39-byte storage. Its new inherited criterion belongs to the SEC1/DER type graph; identity supplies a fixed 33-byte compressed point and never parses an OID or private-key document. No randomness or secret owner is introduced. General ASN.1/BER admission is outside this public-key use review. This is automated single-owner source review, not an independent full-crate audit."
+
+[[audits.cpubits]]
+who = "Codex (same-owner reuse of published RDP050 source review)"
+criteria = "safe-to-deploy"
+version = "0.1.1"
+notes = "Reused exact published Lib e55c1749902811732167a2ce5c099e22e964624f source review for the identical registry version/checksum and the same identity public-point parser composition. Provider crypto-reviewed implies the required safe-to-deploy criterion. Original use restrictions remain binding; this is not a second independent audit. Reviewed the macro selector and target overrides. It chooses fixed 32/64-bit arithmetic backends at compile time, including the explicit wasm32 promotion to 64-bit arithmetic; no runtime feature input, entropy or key material is involved. Governed builds do not supply a cpubits override. Native and wasm32 identity checks exercise the selected configurations. This does not qualify unsupported 16-bit or arbitrary overridden configurations. This is automated single-owner source review, not an independent full-crate audit."
+
+[[audits.crypto-bigint]]
+who = "Codex (same-owner reuse of published RDP050 source review)"
+criteria = "safe-to-deploy"
+version = "0.7.6"
+notes = "Reused exact published Lib e55c1749902811732167a2ce5c099e22e964624f source review for the identical registry version/checksum and the same identity public-point parser composition. Provider crypto-reviewed implies the required safe-to-deploy criterion. Original use restrictions remain binding; this is not a second independent audit. Reviewed the selected fixed-width comparison, limb subtraction/word primitives, fixed safegcd inversion and its constant-time versus explicitly variable-time entry points, plus the 0.7.6 correction scope. Comparison scans the public limb count; subtraction delegates to ctutils borrow primitives; fixed inversion runs a precision-derived iteration count and returns invertibility through CtOption. The release removes the affected 0.5.5/0.7.5 selections identified by RUSTSEC-2026-0387. Identity admits public points only; retained X448 remains behind its existing adapter and independent RFC7748 vectors. This focused use review is not a complete review of the 0.5-to-0.7 rewrite, arbitrary dynamic integers, all arithmetic methods or generated-code timing proof. This is automated single-owner source review, not an independent full-crate audit."
+
+[[audits.crypto-common]]
+who = "Codex (same-owner reuse of published RDP050 source review)"
+criteria = "safe-to-deploy"
+version = "0.2.2"
+notes = "Reused exact published Lib e55c1749902811732167a2ce5c099e22e964624f source review for the identical registry version/checksum and the same identity public-point parser composition. Provider crypto-reviewed implies the required safe-to-deploy criterion. Original use restrictions remain binding; this is not a second independent audit. Reviewed the no_std/forbid-unsafe boundary, fixed-size key/IV traits and Generate implementations. Generation requires a caller-supplied TryCryptoRng, propagates failure and only enables ambient SysRng behind getrandom. Identity's arithmetic-only parser invokes neither generation nor key/IV initialization and adds no entropy source. This same-version inherited criterion does not certify arbitrary caller-provided RNGs or optional encryption implementations. This is automated single-owner source review, not an independent full-crate audit."
+
+[[audits.ctutils]]
+who = "Codex (same-owner reuse of published RDP050 source review)"
+criteria = "safe-to-deploy"
+version = "0.4.5"
+notes = "Reused exact published Lib e55c1749902811732167a2ce5c099e22e964624f source review for the identical registry version/checksum and the same identity public-point parser composition. Provider crypto-reviewed implies the required safe-to-deploy criterion. Original use restrictions remain binding; this is not a second independent audit. Reviewed the complete 0.4.4 -> 0.4.5 Rust/manifest delta. Comparison helpers preserve bitwise predicates, borrow subtraction uses a full-width black_box barrier, and leading/trailing-zero operations use advertised native instructions or a fixed-stage fallback. Architecture workarounds are explicitly gated; addition and subtraction return Choice carry/borrow predicates. Boundary and differential regressions are present upstream. The selected identity path processes public values; no compiler-output constant-time proof or unexecuted architecture/runtime claim is made. This is automated single-owner source review, not an independent full-crate audit."
+
 [[audits.defmt]]
 who = "Codex (automated single-owner source review)"
 criteria = "network-parser-reviewed"
@@ -83,11 +125,35 @@ criteria = "network-parser-reviewed"
 version = "1.1.0"
 notes = "Reused exact published Lib 3af7814ea4f76f2cca3d33d4c2bd8a854f3fb78f source review for the identical registry version/checksum and same private native transport composition. Rand 0.10.1 is the reviewed baseline for a separately recorded 0.10.3 delta. Original use restrictions remain binding; this is not a second independent audit. Reviewed all production parsing modules: format fragments, type names, display hints, array/range integers, brace admission and argument consistency. Parsing follows UTF-8 character boundaries and reports malformed types/ranges/braces. Argument indices control vector resizing and index-plus-one arithmetic, so this parser is unsuitable for untrusted network input without separate input/index bounds. The only relevant dependency route is optional compile-time defmt macros with trusted literals, and both selected native graphs exclude it. This automated inactive-use review supplies no runtime parser/resource qualification or permission to route network strings through this API."
 
+[[audits.der]]
+who = "Codex (same-owner reuse of published RDP050 source review)"
+criteria = "safe-to-deploy"
+version = "0.8.2"
+notes = "Reused exact published Lib e55c1749902811732167a2ce5c099e22e964624f source review for the identical registry version/checksum and the same identity public-point parser composition. Provider crypto-reviewed implies the required safe-to-deploy criterion. Original use restrictions remain binding; this is not a second independent audit. Reviewed the feature boundary, Reader completion and SliceReader construction, nested limits, checked cursor advancement and failed-state handling. These bounds reject incomplete/trailing input rather than returning partial documents. Identity passes SEC1 point bytes and invokes no DER/private-key decoder; this same-version dependency criterion is scoped to that inactive decoding surface in the identity composition. It does not qualify arbitrary recursive documents, BER mode, encrypted keys or all workspace consumers. This is automated single-owner source review, not an independent full-crate audit."
+
+[[audits.elliptic-curve]]
+who = "Codex (same-owner reuse of published RDP050 source review)"
+criteria = "safe-to-deploy"
+version = "0.14.1"
+notes = "Reused exact published Lib e55c1749902811732167a2ce5c099e22e964624f source review for the identical registry version/checksum and the same identity public-point parser composition. Provider crypto-reviewed implies the required safe-to-deploy criterion. Original use restrictions remain binding; this is not a second independent audit. Reviewed the complete rc.35 -> 0.14.1 delta, checked public-key SEC1 admission and curve byte-order helpers. PublicKey construction decodes the point and rejects the identity; the selected compressed representation has a fixed size. The stable API uses explicit curve endianness rather than the former encoding trait, and distinguishes variable-time arithmetic entry points. Identity enables arithmetic/SEC1 only and invokes no secret generation, signing or PKCS8 decoder. This is a focused selected-use review, not blanket certification of every optional algorithm or secret lifecycle. This is automated single-owner source review, not an independent full-crate audit."
+
 [[audits.faster-hex]]
 who = "Codex (automated single-owner source review)"
 criteria = "network-parser-reviewed"
 version = "0.10.1"
 notes = "Reused exact published Lib 3af7814ea4f76f2cca3d33d4c2bd8a854f3fb78f source review for the identical registry version/checksum and same private native transport composition. Rand 0.10.1 is the reviewed baseline for a separately recorded 0.10.3 delta. Original use restrictions remain binding; this is not a second independent audit. Reviewed all production encoder, decoder, dispatch, error, serde and build-probe source and the actual Nostr fixed-array call sites. CPU dispatch checks x86 processor/OS state or aarch64 NEON support; vector reads and writes require complete source and destination chunks, with scalar tails. Encoding returns only its initialized ASCII prefix. Checked decoding rejects odd/nonhex input but permits a longer even source than the destination: it is not an exact-identifier validator. The bounded native adapter therefore checks canonical exact-length EVENT and OK identifiers before upstream normalization; real socket regressions retain the previously observed failures. Allocating helpers assume caller-sized inputs, and the admitted messages retain the adapter's frame/ingress limits. This automated native-use review does not claim general constant-time behavior, unrestricted allocation safety, optional embedded logging or browser qualification."
+
+[[audits.ff]]
+who = "Codex (same-owner reuse of published RDP050 source review)"
+criteria = "safe-to-deploy"
+version = "0.14.0"
+notes = "Reused exact published Lib e55c1749902811732167a2ce5c099e22e964624f source review for the identical registry version/checksum and the same identity public-point parser composition. Provider crypto-reviewed implies the required safe-to-deploy criterion. Original use restrictions remain binding; this is not a second independent audit. Reviewed the no_std/forbid-unsafe feature boundary and field trait definitions, random generation/error propagation, CtOption inversion/square-root contracts and constant-time versus variable-time method distinctions. Concrete curve implementations own arithmetic; identity's checked parser selects the reviewed k256 field implementation and calls no random sampler. This same-version dependency review does not certify arbitrary third-party Field implementations, derive-generated fields or every exponentiation caller. This is automated single-owner source review, not an independent full-crate audit."
+
+[[audits.group]]
+who = "Codex (same-owner reuse of published RDP050 source review)"
+criteria = "safe-to-deploy"
+version = "0.14.0"
+notes = "Reused exact published Lib e55c1749902811732167a2ce5c099e22e964624f source review for the identical registry version/checksum and the same identity public-point parser composition. Provider crypto-reviewed implies the required safe-to-deploy criterion. Original use restrictions remain binding; this is not a second independent audit. Reviewed the no_std feature boundary, group/curve/scalar traits, random-generation propagation and fixed input/output length requirement for batch normalization. The package supplies interfaces, with arithmetic delegated to concrete curve implementations. Identity's public-point parser neither samples a random group element nor invokes its scalar-multiplication/wNAF helpers. This same-version inherited criterion is limited to that composition; it does not qualify arbitrary group implementations or secret scalar algorithms. This is automated single-owner source review, not an independent full-crate audit."
 
 [[audits.hash32]]
 who = "Codex (automated single-owner source review)"
@@ -106,6 +172,18 @@ who = "Codex (automated single-owner source review)"
 criteria = "network-parser-reviewed"
 version = "1.3.0"
 notes = "Reused exact published Lib 3af7814ea4f76f2cca3d33d4c2bd8a854f3fb78f source review for the identical registry version/checksum and same private native transport composition. Rand 0.10.1 is the reviewed baseline for a separately recorded 0.10.3 delta. Original use restrictions remain binding; this is not a second independent audit. Reviewed manifest/feature boundaries, fixed/variable decoding entries, complete hex iterators and their initialized-output handling, Char representation/table conversion and the bounded buffer encoder. Fixed-array decoding checks exactly N*2 bytes before writing; invalid/odd/nonhex input returns typed errors, and decoded Vec length is published only after initialization succeeds. Unchecked ASCII conversions originate from the closed ASCII Char variants. Allocating helpers scale with caller input, so they are not standalone network size limits. The native graph supplies bounded frames and fixed-size public hash values. This focused automated source review does not qualify unbounded formatting/collection by arbitrary callers or every optional feature."
+
+[[audits.hybrid-array]]
+who = "Codex (same-owner reuse of published RDP050 source review)"
+criteria = "safe-to-deploy"
+version = "0.4.15"
+notes = "Reused exact published Lib e55c1749902811732167a2ce5c099e22e964624f source review for the identical registry version/checksum and the same identity public-point parser composition. Provider crypto-reviewed implies the required safe-to-deploy criterion. Original use restrictions remain binding; this is not a second independent audit. Reviewed the complete 0.4.12 -> 0.4.15 production/manifest delta and fixed-size array feature boundary. The delta adds supported type-level sizes, including retained SNTRUP buffers, without changing arithmetic, allocation or reference-conversion bodies. Arrays remain statically sized and the existing zeroize forwarding is preserved. The newly inherited crypto criterion covers these fixed buffers in the identity composition, not every unsafe reference conversion, optional serialization implementation or arbitrary array-size implementation. This is automated single-owner source review, not an independent full-crate audit."
+
+[[audits.k256]]
+who = "Codex (same-owner reuse of published RDP050 source review)"
+criteria = "safe-to-deploy"
+version = "0.14.0"
+notes = "Reused exact published Lib e55c1749902811732167a2ce5c099e22e964624f source review for the identical registry version/checksum and the same identity public-point parser composition. Provider crypto-reviewed implies the required safe-to-deploy criterion. Original use restrictions remain binding; this is not a second independent audit. Reviewed the arithmetic-only manifest selection, checked SEC1/public-key route, affine decompression and the selected field parsing, normalization, fixed square-root addition chain and 5x52 multiplication/reduction. Decoding rejects noncanonical field elements, verifies the square root, chooses the encoded parity and rejects the identity through PublicKey. Identity supplies only 32 public x-coordinate bytes with a fixed even compressed prefix; no private scalar, signer, ECDSA, Schnorr, entropy acquisition or PKCS8 API is introduced. Native/no_std/wasm checks and independent valid/invalid field-boundary vectors pass. This focused review does not certify all of k256 0.14, secret scalar multiplication or every architecture backend. This is automated single-owner source review, not an independent full-crate audit."
 
 [[audits.lru]]
 who = "Codex (automated single-owner source review)"
@@ -131,6 +209,18 @@ criteria = "network-parser-reviewed"
 version = "0.2.0"
 notes = "Reused exact published Lib 3af7814ea4f76f2cca3d33d4c2bd8a854f3fb78f source review for the identical registry version/checksum and same private native transport composition. Rand 0.10.1 is the reviewed baseline for a separately recorded 0.10.3 delta. Original use restrictions remain binding; this is not a second independent audit. Reviewed both complete production modules and the manifest. The no_std error container and declarative macros construct typed kinds and optional boxed sources; they do not decode network input, invoke processes, access files or use unsafe code. Allocating construction caches the source Display text and Debug exposes the source, so this dependency supplies neither redaction nor an independent allocation limit. The native adapter maps upstream causes into its existing typed public errors, with ingress bounded before parsing. This is automated source review for that use, not a secret-handling or unrestricted-error-formatting claim."
 
+[[audits.primefield]]
+who = "Codex (same-owner reuse of published RDP050 source review)"
+criteria = "safe-to-deploy"
+version = "0.14.0"
+notes = "Reused exact published Lib e55c1749902811732167a2ce5c099e22e964624f source review for the identical registry version/checksum and the same identity public-point parser composition. Provider crypto-reviewed implies the required safe-to-deploy criterion. Original use restrictions remain binding; this is not a second independent audit. Reviewed the no_std/forbid-unsafe exports, fixed-size Montgomery field admission and explicit endian conversion traits. Canonical bytes are copied into a fixed integer representation according to trusted field parameters; concrete arithmetic delegates to the selected crypto-bigint implementation. K256 identity decompression uses its own concrete base-field implementation and introduces no generic-field random generation. This selected-use review does not certify arbitrary field parameters, every Montgomery operation or a new secret-key protocol. This is automated single-owner source review, not an independent full-crate audit."
+
+[[audits.primeorder]]
+who = "Codex (same-owner reuse of published RDP050 source review)"
+criteria = "safe-to-deploy"
+version = "0.14.0"
+notes = "Reused exact published Lib e55c1749902811732167a2ce5c099e22e964624f source review for the identical registry version/checksum and the same identity public-point parser composition. Provider crypto-reviewed implies the required safe-to-deploy criterion. Original use restrictions remain binding; this is not a second independent audit. Reviewed the generic curve-parameter boundary and affine-point implementation, including checked coordinate construction, curve-equation verification, identity state and conditional selection. K256 uses its own affine/field implementation for identity decompression; its new generic arithmetic support is not a new Radroots secret-key or signer boundary. Optional precomputed tables, arbitrary curves and variable-time multiplication are outside this focused public-parser use review. This is automated single-owner source review, not an independent full-crate audit."
+
 [[audits.rand]]
 who = "Codex (automated single-owner source review)"
 criteria = "network-parser-reviewed"
@@ -148,6 +238,12 @@ who = "Codex (automated single-owner source review)"
 criteria = "network-parser-reviewed"
 version = "0.10.1"
 notes = "Reused exact published Lib 3af7814ea4f76f2cca3d33d4c2bd8a854f3fb78f source review for the identical registry version/checksum and same private native transport composition. Rand 0.10.1 is the reviewed baseline for a separately recorded 0.10.3 delta. Original use restrictions remain binding; this is not a second independent audit. Reviewed the TryRng/Rng and crypto-marker trait interfaces, dereference forwarding, complete UnwrapErr adapter and integer/byte conversion helpers used by SysRng. These interfaces own no network decoder or variable-length packet queue; they forward bounded caller buffers and propagate fallible completion. The explicit UnwrapErr conversion panics on provider errors, and a crypto marker alone proves no algorithm properties. The selected native SDK supplies fixed-size arrays and trusted sampling bounds. This focused automated source review does not qualify optional block/seed generators, arbitrary provider implementations or secret generation policy."
+
+[[audits.sec1]]
+who = "Codex (same-owner reuse of published RDP050 source review)"
+criteria = "safe-to-deploy"
+version = "0.8.1"
+notes = "Reused exact published Lib e55c1749902811732167a2ce5c099e22e964624f source review for the identical registry version/checksum and the same identity public-point parser composition. Provider crypto-reviewed implies the required safe-to-deploy criterion. Original use restrictions remain binding; this is not a second independent audit. Reviewed fixed-size point representation and from_bytes admission: a valid tag determines one exact length before copying into the statically sized buffer. The identity path always supplies 33 bytes with compressed-even tag; the concrete curve then checks field membership and curve validity. DER/private-key and optional serde paths are not called by identity. This same-version selected-use review does not treat SEC1 syntax alone as curve validation or certify unrelated key-document APIs. This is automated single-owner source review, not an independent full-crate audit."
 
 [[audits.secp256k1]]
 who = "Codex (automated single-owner source review)"
@@ -185,6 +281,12 @@ criteria = "network-parser-reviewed"
 delta = "0.26.2 -> 0.28.0"
 notes = "Reused exact published Lib 3af7814ea4f76f2cca3d33d4c2bd8a854f3fb78f source review for the identical registry version/checksum and same private native transport composition. Rand 0.10.1 is the reviewed baseline for a separately recorded 0.10.3 delta. Original use restrictions remain binding; this is not a second independent audit. Reviewed the complete published release delta: boxed errors, HTTP-version admission and duplicate-header handling, frame buffer reservation/read bounds, borrowed UTF-8 hashing, fragment/control/close state transitions and TLS error conversion. The native Radroots connector supplies fixed message/frame limits and metered ingress before this decoder. Real malformed, oversized, continuation, exact-byte and deadline cases execute separately. This automated delta review inherits the existing 0.26.2 exemption; it is not an independent full-crate audit, unbounded-input guarantee or 32-bit/browser qualification."
 
+[[audits.typenum]]
+who = "Codex (automated single-owner type-level dependency review)"
+criteria = "safe-to-deploy"
+version = "1.20.1"
+notes = "Reviewed the no_std/forbid-unsafe source boundary, marker/operator exports and const-generics selection. hybrid-array0.4.15 requires typenum1.20; the provider already selects this exact version/checksum. Its selected use fixes trusted array dimensions at compile time; identity invokes neither a runtime number parser, secret-key owner nor entropy source in this package. Current native and wasm32 compilation and public field-boundary cases exercise those fixed representations. This focused use review is not a full-crate independent audit, arithmetic-algorithm certification or approval of arbitrary type-level implementations."
+
 [[audits.universal-time]]
 who = "Codex (automated single-owner source review)"
 criteria = "network-parser-reviewed"
@@ -196,6 +298,12 @@ who = "Codex (automated single-owner source review)"
 criteria = "safe-to-deploy"
 version = "1.1.0"
 notes = "Reused exact published RHI fa61581f3aaa6e6714288ba06e7e94f5b6a43b01 review for the identical archive and native std-clock composition. Original restrictions remain binding; this is not a second independent audit. Automated single-owner review of all seven production Rust modules, both manifests and exact registry archive SHA-256 5a6580f308b1fad9207618087a65c04e7a10bc77e02c8e84e9b00dd4b12fa0bb. The current daemon macOS/Linux composition selects only the cfg-gated std::time reexport; no build script, filesystem/network access, unsafe code or independent native clock implementation is present. Browser modules use fixed Duration arithmetic and thread-local Performance/Date bindings; missing Performance, negative wall time and unchecked duration operators can panic, and host clocks are not trusted authorization time. Optional Serde checks numeric epoch-offset overflow and duplicate/missing/unknown fields, but the caller must bound deserializer input and normalize errors. The daemon does not select those browser/Serde modules. This audit admits the exact native daemon dependency use; it is not an independent review, browser clock/resource qualification, a guarantee about hostile JavaScript globals or permission to deserialize unbounded network input."
+
+[[audits.wnaf]]
+who = "Codex (same-owner reuse of published RDP050 source review)"
+criteria = "safe-to-deploy"
+version = "0.14.1"
+notes = "Reused exact published Lib e55c1749902811732167a2ce5c099e22e964624f source review for the identical registry version/checksum and the same identity public-point parser composition. Provider crypto-reviewed implies the required safe-to-deploy criterion. Original use restrictions remain binding; this is not a second independent audit. Reviewed the no_std/forbid-unsafe feature boundary and bounded-window representation constructor. Representation generation has value-dependent control flow and must not be treated as a general constant-time secret-scalar primitive. Identity only invokes checked public-point decompression, which does not use wNAF generation or scalar multiplication. The package's inherited criterion is scoped to that unused arithmetic surface in the identity composition, with no new signer or private scalar API admitted. This is automated single-owner source review, not an independent full-crate audit."
 
 [[audits.zeroize]]
 who = "Codex (automated single-owner source review)"
